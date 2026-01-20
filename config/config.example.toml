@@ -1,0 +1,75 @@
+# Dictate Agent Configuration
+# Copy to ~/.config/dictate-agent/config.toml
+
+[whisper]
+# Model for transcription (HuggingFace model ID)
+# Options:
+#   - openai/whisper-large-v3        # Best accuracy, slowest
+#   - openai/whisper-large-v3-turbo  # 6-8x faster, ~large-v2 accuracy (RECOMMENDED)
+#   - distil-whisper/distil-large-v3 # 6x faster, English only
+model = "openai/whisper-large-v3-turbo"
+
+# Assistant model for speculative decoding (2x additional speedup)
+assistant_model = "distil-whisper/distil-large-v3"
+
+# Device: cuda or cpu
+device = "cuda"
+
+# Compute type: float16 (GPU), int8 (CPU), float32 (fallback)
+compute_type = "float16"
+
+# Enable speculative decoding (recommended for batch_size=1)
+use_speculative_decoding = true
+
+# Chunk length for long audio (seconds)
+chunk_length_s = 30
+
+# Batch size (1 is optimal for speculative decoding)
+batch_size = 1
+
+# Threshold for filtering non-speech (0.0-1.0, higher = stricter)
+no_speech_threshold = 0.6
+
+[router]
+# Ollama configuration for intelligent routing
+ollama_host = "http://localhost:11434"
+ollama_model = "qwen3:0.6b"
+ollama_timeout_ms = 500
+
+# Default Claude model when routing is ambiguous
+default_model = "sonnet"
+
+# Word count thresholds for fallback routing
+short_threshold = 20   # Below this -> haiku
+long_threshold = 100   # Above this -> opus
+
+# Keywords that trigger specific models
+haiku_keywords = ["easy", "quick", "simple", "haiku"]
+sonnet_keywords = ["medium", "normal", "sonnet"]
+opus_keywords = ["hard", "complex", "difficult", "opus", "analyze", "architect"]
+
+# Code-related terms that bump complexity to sonnet minimum
+code_terms = ["code", "function", "bug", "error", "refactor", "implement", "debug"]
+
+[editor]
+# Text editing mode (e.g., "edit: make this more concise")
+enabled = true
+triggers = ["edit:", "fix:", "change:", "rewrite:", "transform:"]
+model = "haiku"
+
+[commands]
+# Keyboard/system command mode (e.g., "close window", "volume up")
+enabled = true
+fuzzy_threshold = 0.8
+confirm_destructive = true
+destructive_patterns = ["kill", "close", "exit", "shutdown", "restart"]
+
+[output]
+# Typing configuration
+typing_delay_ms = 10
+use_clipboard = false  # Use clipboard for faster long-text typing
+auto_type = true       # Automatically type transcribed/response text
+
+[notifications]
+enabled = true
+timeout_ms = 3000
