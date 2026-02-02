@@ -50,7 +50,6 @@ class DictateAgent:
         self.audio = AudioCapture()
         self.output = OutputHandler(
             typing_delay_ms=self.config.output.typing_delay_ms,
-            use_clipboard=self.config.output.use_clipboard,
             auto_type=self.config.output.auto_type,
         )
         self.router = Router(self.config.router)
@@ -91,6 +90,26 @@ class DictateAgent:
             self._stop_recording()
         else:
             self._start_recording()
+
+    def cancel(self) -> None:
+        """Cancel recording without transcription."""
+        if not self.recording:
+            return
+
+        print("Cancelling recording...")
+        self.recording = False
+        self.audio.stop()
+        self.audio.cleanup()
+
+        # Resume media if it was playing
+        self._resume_media_if_needed()
+
+        self.notifier.notify(
+            "Recording Cancelled",
+            "Discarded without transcription",
+            "dialog-cancel",
+            2000,
+        )
 
     def _start_recording(self) -> None:
         """Start recording audio."""
@@ -261,6 +280,7 @@ class DictateAgent:
 
         print("Waiting for SIGUSR1 to toggle recording...")
         print("Use: dictate-toggle or kill -USR1 $(cat ~/.config/dictate-agent/dictate.pid)")
+        print("Cancel: dictate-cancel or kill -USR2 $(cat ~/.config/dictate-agent/dictate.pid)")
         print("Press Ctrl+C to quit.")
         print()
 
@@ -331,9 +351,13 @@ def main() -> None:
     def handle_sigusr1(sig, frame):
         agent.toggle()
 
+    def handle_sigusr2(sig, frame):
+        agent.cancel()
+
     signal.signal(signal.SIGINT, handle_sigint)
     signal.signal(signal.SIGTERM, handle_sigint)
     signal.signal(signal.SIGUSR1, handle_sigusr1)
+    signal.signal(signal.SIGUSR2, handle_sigusr2)
 
     # Run
     agent.run()

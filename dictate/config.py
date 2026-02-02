@@ -84,7 +84,6 @@ class OutputConfig:
     """Output configuration."""
 
     typing_delay_ms: int = 10
-    use_clipboard: bool = False
     auto_type: bool = True
 
 
@@ -181,7 +180,6 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         o = data["output"]
         config.output = OutputConfig(
             typing_delay_ms=o.get("typing_delay_ms", config.output.typing_delay_ms),
-            use_clipboard=o.get("use_clipboard", config.output.use_clipboard),
             auto_type=o.get("auto_type", config.output.auto_type),
         )
 
