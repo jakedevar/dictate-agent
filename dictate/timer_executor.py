@@ -199,19 +199,29 @@ class TimerExecutor:
         human_duration = _format_duration_human(seconds)
         systemd_duration = _format_duration_systemd(seconds)
 
-        # Build the notification command that fires when the timer expires
-        notify_cmd = (
-            f'notify-send -a "Dictate Agent" -i alarm-symbolic '
-            f'-u critical '
-            f'"Timer: {display_label}" '
-            f'"{human_duration} elapsed"'
-        )
-
-        # Optionally play a sound
+        # Build the command that fires when the timer expires.
+        # Uses dunstify (blocks until dismissed) with a looping sound.
+        # Sound loops in background; dunstify blocks until user clicks
+        # the notification; then the sound loop is killed.
         if self.sound_enabled:
-            notify_cmd += (
-                " ; paplay /usr/share/sounds/freedesktop/stereo/complete.oga 2>/dev/null"
-                " || true"
+            notify_cmd = (
+                f'SOUND_FILE=$HOME/.config/dictate-agent/sounds/timer_alarm.wav; '
+                f'( while true; do play -q "$SOUND_FILE" 2>/dev/null; sleep 1; done ) & '
+                f'SOUND_PID=$!; '
+                f'dunstify -a "Dictate Agent" -i alarm-symbolic -u critical '
+                f'-t 0 '
+                f'"Timer: {display_label}" '
+                f'"{human_duration} elapsed" '
+                f'--action="default,Dismiss"; '
+                f'kill $SOUND_PID 2>/dev/null; wait $SOUND_PID 2>/dev/null'
+            )
+        else:
+            notify_cmd = (
+                f'dunstify -a "Dictate Agent" -i alarm-symbolic -u critical '
+                f'-t 0 '
+                f'"Timer: {display_label}" '
+                f'"{human_duration} elapsed" '
+                f'--action="default,Dismiss"'
             )
 
         try:

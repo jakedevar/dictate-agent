@@ -64,6 +64,16 @@ fuzzy_threshold = 0.8
 confirm_destructive = true
 destructive_patterns = ["kill", "close", "exit", "shutdown", "restart"]
 
+[grammar]
+# Auto-correct grammar on transcribed text before routing
+enabled = true
+# Ollama model for grammar correction (reuses router's model by default)
+model = "qwen3:0.6b"
+# Timeout in seconds (grammar on a sentence should be very fast)
+timeout_s = 10.0
+# Skip correction for text shorter than this (preserves trigger words)
+min_words = 3
+
 [output]
 # Typing configuration
 typing_delay_ms = 10

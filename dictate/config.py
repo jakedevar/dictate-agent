@@ -80,6 +80,16 @@ class CommandConfig:
 
 
 @dataclass
+class GrammarConfig:
+    """Grammar correction configuration."""
+
+    enabled: bool = True
+    model: str = "qwen3:0.6b"
+    timeout_s: float = 10.0
+    min_words: int = 3
+
+
+@dataclass
 class OutputConfig:
     """Output configuration."""
 
@@ -103,6 +113,7 @@ class Config:
     router: RouterConfig = field(default_factory=RouterConfig)
     editor: EditorConfig = field(default_factory=EditorConfig)
     commands: CommandConfig = field(default_factory=CommandConfig)
+    grammar: GrammarConfig = field(default_factory=GrammarConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
@@ -173,6 +184,16 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             destructive_patterns=c.get(
                 "destructive_patterns", config.commands.destructive_patterns
             ),
+        )
+
+    # Grammar config
+    if "grammar" in data:
+        g = data["grammar"]
+        config.grammar = GrammarConfig(
+            enabled=g.get("enabled", config.grammar.enabled),
+            model=g.get("model", config.grammar.model),
+            timeout_s=g.get("timeout_s", config.grammar.timeout_s),
+            min_words=g.get("min_words", config.grammar.min_words),
         )
 
     # Output config

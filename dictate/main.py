@@ -27,6 +27,7 @@ from .config import (
     load_config,
 )
 from .executor import ClaudeExecutor, check_executor_dependencies
+from .grammar import GrammarCorrector
 from .local_executor import LocalExecutor, check_local_dependencies, ensure_ollama_running
 from .notify import Notifier, check_notify_dependencies
 from .output import OutputHandler, check_output_dependencies
@@ -58,6 +59,14 @@ class DictateAgent:
 
         # Ensure Ollama is running for local model inference
         ensure_ollama_running(host=self.config.router.ollama_host)
+
+        self.grammar = GrammarCorrector(
+            host=self.config.router.ollama_host,
+            model=self.config.grammar.model,
+            timeout_s=self.config.grammar.timeout_s,
+            enabled=self.config.grammar.enabled,
+            min_words=self.config.grammar.min_words,
+        )
 
         self.local_executor = LocalExecutor(
             host=self.config.router.ollama_host,
@@ -159,6 +168,15 @@ class DictateAgent:
 
         text = result.text
         print(f"Transcribed: {text}")
+
+        # Grammar correction (fail-open: original text on failure)
+        if self.grammar.enabled:
+            grammar_result = self.grammar.correct(text)
+            if grammar_result.success and grammar_result.corrected != grammar_result.original:
+                print(f"Grammar corrected: {grammar_result.corrected}")
+            elif grammar_result.error:
+                print(f"Grammar skipped: {grammar_result.error}")
+            text = grammar_result.corrected
 
         # Route the text
         route_result = self.router.route(text)
