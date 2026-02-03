@@ -21,9 +21,9 @@ warnings.filterwarnings("ignore", message=".*chunk_length_s.*is very experimenta
 warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*deprecated.*")
 
 from transformers import (
-    AutoModelForCausalLM,
     AutoModelForSpeechSeq2Seq,
     AutoProcessor,
+    pipeline as hf_pipeline,
 )
 
 from .config import WhisperConfig
@@ -42,8 +42,9 @@ class Transcriber:
     """
     Optimized Whisper transcriber with speculative decoding.
 
-    Uses HuggingFace Transformers with direct model.generate() calls for
-    proper speculative decoding support (not pipeline which has issues).
+    Uses HuggingFace pipeline with chunk_length_s for automatic long-form
+    audio support. Audio >30s is split into overlapping chunks, each
+    transcribed independently and merged.
     """
 
     def __init__(
@@ -56,9 +57,7 @@ class Transcriber:
         self.on_ready = on_ready
         self.on_error = on_error
 
-        self.model = None
-        self.processor = None
-        self.assistant_model = None
+        self.pipe = None
         self.model_loaded = threading.Event()
         self.model_error: Optional[str] = None
 
@@ -72,35 +71,47 @@ class Transcriber:
         thread.start()
 
     def _load_models(self) -> None:
-        """Internal: Load Whisper model and optional assistant for speculative decoding."""
+        """Internal: Load Whisper model and build pipeline with chunking support."""
         try:
             print(f"Loading Whisper model: {self.config.model}")
             print(f"Device: {self.device}, dtype: {self.torch_dtype}")
 
             # Load main model with SDPA attention (Blackwell compatible)
-            self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
                 self.config.model,
                 dtype=self.torch_dtype,
                 low_cpu_mem_usage=True,
                 use_safetensors=True,
                 attn_implementation="sdpa",
             )
-            self.model.to(self.device)
+            model.to(self.device)
 
-            self.processor = AutoProcessor.from_pretrained(self.config.model)
+            processor = AutoProcessor.from_pretrained(self.config.model)
 
-            # Load assistant model for speculative decoding (2x additional speedup)
+            generate_kwargs = {
+                "language": "en",
+                "task": "transcribe",
+            }
+
+            # Note: speculative decoding (assistant_model) is incompatible with
+            # Whisper's chunked pipeline — its custom generate_with_fallback path
+            # doesn't route assistant_model to assisted generation, causing it to
+            # leak into forward(). Chunked long-form support is the better tradeoff.
             if self.config.use_speculative_decoding:
-                print(f"Loading assistant model: {self.config.assistant_model}")
-                self.assistant_model = AutoModelForCausalLM.from_pretrained(
-                    self.config.assistant_model,
-                    dtype=self.torch_dtype,
-                    low_cpu_mem_usage=True,
-                    use_safetensors=True,
-                    attn_implementation="sdpa",
-                )
-                self.assistant_model.to(self.device)
-                print("Speculative decoding enabled (2x speedup)")
+                print("Speculative decoding skipped (incompatible with chunked pipeline)")
+
+            # Pipeline handles chunking automatically for audio >30s
+            self.pipe = hf_pipeline(
+                "automatic-speech-recognition",
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
+                torch_dtype=self.torch_dtype,
+                device=self.device,
+                chunk_length_s=self.config.chunk_length_s,
+                batch_size=self.config.batch_size,
+                generate_kwargs=generate_kwargs,
+            )
 
             self.model_loaded.set()
             print("Models loaded. Ready for transcription!")
@@ -118,8 +129,8 @@ class Transcriber:
 
     def transcribe(self, audio_path: Path) -> Optional[TranscriptionResult]:
         """
-        Transcribe audio file using direct model.generate() for proper
-        speculative decoding support.
+        Transcribe audio file using HuggingFace pipeline with automatic
+        chunking for long-form audio support.
 
         Args:
             audio_path: Path to WAV file (16kHz mono)
@@ -127,71 +138,34 @@ class Transcriber:
         Returns:
             TranscriptionResult or None on error
         """
-        # Wait for model to be loaded
         self.model_loaded.wait()
 
         if self.model_error:
             print(f"Cannot transcribe: {self.model_error}")
             return None
 
-        if not self.model or not self.processor:
-            print("Model not initialized")
+        if not self.pipe:
+            print("Pipeline not initialized")
             return None
 
         try:
-            import librosa
-        except ImportError:
-            # Fallback to torchaudio if librosa not available
-            import torchaudio
+            # Compute duration from WAV file (16kHz, 16-bit mono = 32000 bytes/sec)
+            file_size = audio_path.stat().st_size
+            duration_s = max(0, (file_size - 44)) / (16000 * 2)
 
-        try:
-            # Load audio - try librosa first, fall back to torchaudio
-            try:
-                import librosa
-                audio, sr = librosa.load(str(audio_path), sr=16000)
-            except ImportError:
-                import torchaudio
-                audio, sr = torchaudio.load(str(audio_path))
-                if sr != 16000:
-                    resampler = torchaudio.transforms.Resample(sr, 16000)
-                    audio = resampler(audio)
-                audio = audio.squeeze().numpy()
+            # Pipeline chunks audio automatically for recordings >30s
+            result = self.pipe(str(audio_path))
+            text = result["text"].strip()
 
-            # Process audio
-            inputs = self.processor(
-                audio,
-                sampling_rate=16000,
-                return_tensors="pt",
-            )
-            input_features = inputs.input_features.to(self.device, dtype=self.torch_dtype)
+            if not text:
+                return None
 
-            # Generate with or without speculative decoding
-            generate_kwargs = {
-                "input_features": input_features,
-                "language": "en",
-                "task": "transcribe",
-                "return_timestamps": False,
-            }
-
-            if self.assistant_model is not None:
-                generate_kwargs["assistant_model"] = self.assistant_model
-
-            with torch.no_grad():
-                predicted_ids = self.model.generate(**generate_kwargs)
-
-            # Decode
-            text = self.processor.batch_decode(
-                predicted_ids,
-                skip_special_tokens=True,
-            )[0].strip()
-
-            # Apply common corrections
             text = self._apply_corrections(text)
 
             return TranscriptionResult(
                 text=text,
                 language="en",
-                duration_s=len(audio) / 16000,
+                duration_s=duration_s,
             )
 
         except Exception as e:
@@ -224,6 +198,10 @@ class Transcriber:
             ("Implement plan", "/implement_plan"),
             ("validate plan", "/validate_plan"),
             ("Validate plan", "/validate_plan"),
+            ("create handoff", "/create_handoff"),
+            ("Create handoff", "/create_handoff"),
+            ("create hand off", "/create_handoff"),
+            ("Create hand off", "/create_handoff"),
         ]
 
         for old, new in corrections:
