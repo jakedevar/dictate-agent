@@ -60,7 +60,7 @@ These items were deferred for human review:
 
 - [ ] Install Ollama and pull qwen3:0.6b model
 - [ ] Create config file at ~/.config/dictate-agent/config.toml
-- [ ] Add i3 keybind for dictate-toggle script
+
 - [ ] Test SIGUSR1 signal handling
 - [ ] Test full voice-to-text pipeline
 - [ ] Verify transcription accuracy with your voice
@@ -100,7 +100,7 @@ cargo build --release
 # Start daemon
 ./target/release/dictate-agent
 
-# Toggle recording (from another terminal or i3 keybind)
+# Toggle recording
 ./scripts/dictate-toggle
 
 # Or send signal directly
@@ -110,12 +110,7 @@ kill -USR1 $(cat ~/.config/dictate-agent/dictate.pid)
 kill $(cat ~/.config/dictate-agent/dictate.pid)
 ```
 
-**i3 Integration**:
-```bash
-# Add to ~/.config/i3/config
-exec --no-startup-id ~/dictate_agent/target/release/dictate-agent
-bindsym $mod+m exec --no-startup-id ~/dictate_agent/scripts/dictate-toggle
-```
+
 
 ### Known Limitations
 

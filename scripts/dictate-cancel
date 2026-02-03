@@ -1,0 +1,21 @@
+#!/bin/bash
+# Cancel recording for dictate-agent daemon (no transcription)
+# Send SIGUSR2 to cancel and discard audio
+
+PID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dictate-agent/dictate.pid"
+
+if [ ! -f "$PID_FILE" ]; then
+    notify-send -a "Dictate Agent" "Not running" "Start with: dictate-agent"
+    exit 1
+fi
+
+PID=$(cat "$PID_FILE")
+
+if ! kill -0 "$PID" 2>/dev/null; then
+    notify-send -a "Dictate Agent" "Not running" "Process $PID not found"
+    rm -f "$PID_FILE"
+    exit 1
+fi
+
+# Send SIGUSR2 to cancel recording
+kill -USR2 "$PID"

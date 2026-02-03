@@ -3,6 +3,7 @@ Simplified routing based on first-word triggers.
 
 Default is TYPE (just transcribe and type).
 Keywords activate different backends:
+- "Timer ..." -> Timer (systemd notification timer)
 - "Simple ..." -> Local (Ollama)
 - "Easy ..."   -> Haiku
 - "Medium ..." -> Sonnet
@@ -24,6 +25,7 @@ class RouteType(Enum):
     OPUS = "opus"  # Complex analysis, long-form
     EDIT = "edit"  # Text transformation mode
     COMMAND = "command"  # Keyboard/system command
+    TIMER = "timer"  # Set a timer with notification
     TYPE = "type"  # Just type the text (no Claude)
 
 
@@ -73,7 +75,9 @@ class Router:
         first_word = words[0].lower().rstrip(".,!?:;")  # Strip trailing punctuation
         rest = words[1] if len(words) > 1 else ""
 
-        if first_word == "simple":
+        if first_word == "timer":
+            return RouteResult(RouteType.TIMER, "", rest, 1.0)
+        elif first_word == "simple":
             return RouteResult(RouteType.LOCAL, "local", rest, 1.0)
         elif first_word == "easy":
             return RouteResult(RouteType.HAIKU, "haiku", rest, 1.0)

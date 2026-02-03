@@ -46,7 +46,7 @@ Power users with voice dictation who want to extend it beyond transcription into
 - Custom wake word detection (use keybind instead)
 - Multi-turn dialogue in a single activation
 - GUI configuration interface
-- Cross-platform support (Linux/i3 only)
+- Linux support
 
 ## Core Features (MVP)
 
@@ -169,7 +169,7 @@ Respond with ONLY the category name in caps, nothing else.
 
 ### 9. Keyboard Command Mode
 **What**: Voice-triggered keyboard shortcuts and OS commands
-**Why**: Full voice control of i3, applications, and system without touching keyboard
+**Why**: Full voice control of applications and system without touching keyboard
 **Acceptance Criteria**:
 - [ ] Router (Ollama) classifies as COMMAND
 - [ ] Static mapping for common commands (no LLM needed)
@@ -189,7 +189,7 @@ Respond with ONLY the category name in caps, nothing else.
 | Volume | "volume up", "mute" | `pactl set-sink-volume...` |
 | Screenshot | "take screenshot" | `flameshot gui` |
 | Common Hotkeys | "save", "undo", "copy", "paste" | `enigo key ctrl+s/z/c/v` |
-| i3 | "reload config", "restart i3" | `enigo key super+shift+c/r` |
+
 
 **Static Command Map** (loaded from TOML config):
 ```rust
@@ -232,9 +232,7 @@ lazy_static! {
         m.insert("screenshot", "super+shift+0");
         m.insert("take screenshot", "super+shift+0");
 
-        // i3 management
-        m.insert("reload config", "super+shift+c");
-        m.insert("restart i3", "super+shift+r");
+
         m
     };
 
@@ -389,7 +387,7 @@ mkdir -p ~/.local/share/piper-voices
 └───────────────────────────────────────────────────────────────────────────┘
 
 Signal Flow:
-  $mod+m (i3) ──SIGUSR1──▶ dictate-agent daemon
+  $mod+m ──SIGUSR1──▶ dictate-agent daemon
 
 Mode Routing (via Ollama qwen3:0.6b):
   "edit: fix grammar"     ──▶ EDIT     ──▶ Haiku transform ──▶ Replace text
@@ -566,12 +564,7 @@ cargo run --example test_router -- "what is the capital of France"
 cargo run --example test_whisper -- test.wav
 ```
 
-### i3 Integration
-```bash
-# Add to ~/.config/i3/config
-exec --no-startup-id ~/dictate_agent/target/release/dictate-agent
-bindsym $mod+m exec --no-startup-id kill -USR1 $(cat ~/.config/dictate-agent/dictate.pid)
-```
+
 
 ## Router Decision Matrix
 

@@ -37,6 +37,7 @@ class AudioCapture:
         flush.wait()
 
         # Start recording at 16kHz mono (what Whisper expects)
+        # Use larger buffer (200ms) to prevent dropouts on longer recordings
         self.process = subprocess.Popen(
             [
                 "parecord",
@@ -44,7 +45,7 @@ class AudioCapture:
                 "--rate=16000",
                 "--channels=1",
                 "--file-format=wav",
-                "--latency-msec=50",
+                "--latency-msec=200",
                 str(self.temp_file),
             ],
             stdout=subprocess.DEVNULL,
@@ -58,6 +59,9 @@ class AudioCapture:
         """Stop recording and return path to the audio file."""
         if not self.is_recording or not self.process:
             return None
+
+        # Brief delay to capture trailing audio (prevents cutoff at end of speech)
+        time.sleep(0.5)
 
         # Send SIGINT for clean shutdown
         import signal

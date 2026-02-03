@@ -31,6 +31,7 @@ from .local_executor import LocalExecutor, check_local_dependencies, ensure_olla
 from .notify import Notifier, check_notify_dependencies
 from .output import OutputHandler, check_output_dependencies
 from .router import RouteType, Router
+from .timer_executor import TimerExecutor
 from .transcribe import Transcriber, check_transcription_dependencies
 
 
@@ -63,6 +64,7 @@ class DictateAgent:
             model=self.config.router.ollama_model,
             timeout_s=self.config.router.ollama_timeout_s,
         )
+        self.timer_executor = TimerExecutor()
 
         # Transcriber loads models in background
         self.transcriber = Transcriber(
@@ -180,6 +182,15 @@ class DictateAgent:
             print(f"Command mode not yet implemented: {route_result.text}")
             self.output.type_text(route_result.text)
             self.notifier.done(route_result.text)
+
+        elif route_result.route == RouteType.TIMER:
+            # Set a timer via systemd-run
+            result = self.timer_executor.execute(route_result.text)
+            if result.success:
+                self.notifier.done(result.response)
+            else:
+                print(f"Timer error: {result.error}")
+                self.notifier.error(result.error or "Failed to set timer")
 
         elif route_result.route == RouteType.EDIT:
             # TODO: Implement edit mode (get selected text, transform, replace)

@@ -45,6 +45,7 @@ class ClaudeExecutor:
         cmd = [
             "claude",
             "--print",  # Print response to stdout
+            "--dangerously-skip-permissions",  # Skip permission prompts for headless operation
             "--model", use_model,
             prompt,
         ]
