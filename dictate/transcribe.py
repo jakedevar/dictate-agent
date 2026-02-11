@@ -91,6 +91,9 @@ class Transcriber:
             generate_kwargs = {
                 "language": "en",
                 "task": "transcribe",
+                "return_timestamps": True,
+                "max_new_tokens": 128,
+                "no_repeat_ngram_size": 3,
             }
 
             # Note: speculative decoding (assistant_model) is incompatible with
@@ -106,7 +109,7 @@ class Transcriber:
                 model=model,
                 tokenizer=processor.tokenizer,
                 feature_extractor=processor.feature_extractor,
-                torch_dtype=self.torch_dtype,
+                dtype=self.torch_dtype,
                 device=self.device,
                 chunk_length_s=self.config.chunk_length_s,
                 batch_size=self.config.batch_size,
@@ -149,12 +152,18 @@ class Transcriber:
             return None
 
         try:
+            import time as _time
+
             # Compute duration from WAV file (16kHz, 16-bit mono = 32000 bytes/sec)
             file_size = audio_path.stat().st_size
             duration_s = max(0, (file_size - 44)) / (16000 * 2)
+            print(f"[timing] Audio: {duration_s:.1f}s ({file_size} bytes)")
 
             # Pipeline chunks audio automatically for recordings >30s
+            t0 = _time.monotonic()
             result = self.pipe(str(audio_path))
+            t1 = _time.monotonic()
+            print(f"[timing] Transcription: {t1 - t0:.2f}s")
             text = result["text"].strip()
 
             if not text:

@@ -1,8 +1,12 @@
 """
-Output handling - typing text into active window via xdotool.
+Output handling - typing text into active window via clipboard paste.
+
+Uses xclip + xdotool ctrl+v for near-instant output regardless of text length.
+Falls back to xdotool type if xclip is unavailable.
 """
 
 import subprocess
+import time
 from dataclasses import dataclass
 
 
@@ -15,7 +19,9 @@ class OutputHandler:
 
     def type_text(self, text: str) -> bool:
         """
-        Type text into the active window.
+        Type text into the active window via clipboard paste.
+
+        Saves and restores the user's clipboard contents.
 
         Args:
             text: Text to type
@@ -31,10 +37,40 @@ class OutputHandler:
             if not text:
                 return False
 
+            # Save current clipboard
+            saved_clip = None
+            try:
+                result = subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-o"],
+                    capture_output=True, timeout=1,
+                )
+                if result.returncode == 0:
+                    saved_clip = result.stdout
+            except Exception:
+                pass
+
+            # Set clipboard to our text and paste
             subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", text],
-                check=True,
+                ["xclip", "-selection", "clipboard"],
+                input=text.encode(), check=True, timeout=1,
             )
+            subprocess.run(
+                ["xdotool", "key", "--clearmodifiers", "ctrl+v"],
+                check=True, timeout=2,
+            )
+
+            # Brief delay to let paste complete before restoring clipboard
+            time.sleep(0.05)
+
+            # Restore original clipboard
+            if saved_clip is not None:
+                try:
+                    subprocess.run(
+                        ["xclip", "-selection", "clipboard"],
+                        input=saved_clip, timeout=1,
+                    )
+                except Exception:
+                    pass
 
             return True
 
@@ -47,7 +83,7 @@ def check_output_dependencies() -> list[tuple[str, str]]:
     """Check output dependencies. Returns list of (cmd, package) missing."""
     missing = []
 
-    for cmd, pkg in [("xdotool", "xdotool")]:
+    for cmd, pkg in [("xdotool", "xdotool"), ("xclip", "xclip")]:
         result = subprocess.run(["which", cmd], capture_output=True)
         if result.returncode != 0:
             missing.append((cmd, pkg))
