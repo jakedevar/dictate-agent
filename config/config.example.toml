@@ -83,3 +83,11 @@ auto_type = true       # Automatically type transcribed/response text
 [notifications]
 enabled = true
 timeout_ms = 3000
+
+[history]
+# Enable interaction history logging for analytics
+enabled = true
+# Database location (empty = ~/.local/share/dictate-agent/history.db)
+db_path = ""
+# Truncate stored responses beyond this length (characters)
+max_response_length = 10000

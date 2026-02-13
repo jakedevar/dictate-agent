@@ -106,6 +106,15 @@ class NotificationConfig:
 
 
 @dataclass
+class HistoryConfig:
+    """Interaction history configuration."""
+
+    enabled: bool = True
+    db_path: str = ""  # Empty string means use default XDG path
+    max_response_length: int = 10000  # Truncate stored responses beyond this
+
+
+@dataclass
 class Config:
     """Main configuration container."""
 
@@ -116,6 +125,7 @@ class Config:
     grammar: GrammarConfig = field(default_factory=GrammarConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    history: HistoryConfig = field(default_factory=HistoryConfig)
 
 
 def load_config(config_path: Optional[Path] = None) -> Config:
@@ -210,6 +220,17 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         config.notifications = NotificationConfig(
             enabled=n.get("enabled", config.notifications.enabled),
             timeout_ms=n.get("timeout_ms", config.notifications.timeout_ms),
+        )
+
+    # History config
+    if "history" in data:
+        h = data["history"]
+        config.history = HistoryConfig(
+            enabled=h.get("enabled", config.history.enabled),
+            db_path=h.get("db_path", config.history.db_path),
+            max_response_length=h.get(
+                "max_response_length", config.history.max_response_length
+            ),
         )
 
     return config

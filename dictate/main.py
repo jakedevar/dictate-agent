@@ -28,6 +28,7 @@ from .config import (
 )
 from .executor import ClaudeExecutor, check_executor_dependencies
 from .grammar import GrammarCorrector
+from .history import HistoryStore
 from .local_executor import LocalExecutor, check_local_dependencies, ensure_ollama_running
 from .notify import Notifier, check_notify_dependencies
 from .output import OutputHandler, check_output_dependencies
@@ -74,6 +75,17 @@ class DictateAgent:
             timeout_s=self.config.router.ollama_timeout_s,
         )
         self.timer_executor = TimerExecutor()
+
+        # History
+        if self.config.history.enabled:
+            db_path = (
+                Path(self.config.history.db_path)
+                if self.config.history.db_path
+                else None
+            )
+            self.history = HistoryStore(db_path=db_path)
+        else:
+            self.history = None
 
         # Transcriber loads models in background
         self.transcriber = Transcriber(
@@ -153,11 +165,16 @@ class DictateAgent:
             print("No audio recorded")
             return
 
+        # Begin tracking interaction
+        interaction = self.history.begin() if self.history else None
+
         print("Transcribing...")
         self.notifier.transcribing()
 
-        # Transcribe
+        # Transcribe (timed)
+        t0 = time.monotonic()
         result = self.transcriber.transcribe(audio_path)
+        t1 = time.monotonic()
         self.audio.cleanup()
 
         if not result or not result.text:
@@ -169,31 +186,73 @@ class DictateAgent:
         text = result.text
         print(f"Transcribed: {text}")
 
+        # Record transcription data
+        if interaction:
+            interaction.audio_duration_s = getattr(result, "duration", None)
+            interaction.raw_transcription = text
+            interaction.corrected_transcription = text
+            interaction.transcription_duration_s = t1 - t0
+
         # Grammar correction (fail-open: original text on failure)
         if self.grammar.enabled:
+            t2 = time.monotonic()
             grammar_result = self.grammar.correct(text)
+            t3 = time.monotonic()
             if grammar_result.success and grammar_result.corrected != grammar_result.original:
                 print(f"Grammar corrected: {grammar_result.corrected}")
             elif grammar_result.error:
                 print(f"Grammar skipped: {grammar_result.error}")
             text = grammar_result.corrected
 
+            # Record grammar correction data
+            if interaction:
+                interaction.grammar_input = grammar_result.original
+                interaction.grammar_output = grammar_result.corrected
+                interaction.grammar_changed = int(
+                    grammar_result.corrected != grammar_result.original
+                )
+                interaction.grammar_error = grammar_result.error
+                interaction.grammar_duration_s = t3 - t2
+                interaction.corrected_transcription = text
+
         # Route the text
         route_result = self.router.route(text)
         print(f"Route: {route_result.route.value} (confidence: {route_result.confidence:.2f})")
 
+        # Record routing data
+        if interaction:
+            interaction.route_type = route_result.route.value
+            interaction.route_model = route_result.model
+            interaction.route_confidence = route_result.confidence
+
         # Handle based on route
-        self._handle_route(route_result)
+        self._handle_route(route_result, interaction)
 
         # Resume media if it was playing
         self._resume_media_if_needed()
 
-    def _handle_route(self, route_result) -> None:
+        # Commit interaction record
+        if interaction:
+            interaction.completed = 1
+            self.history.commit(interaction)
+
+    def _handle_route(self, route_result, interaction=None) -> None:
         """Handle routed text based on type."""
+        max_len = (
+            self.config.history.max_response_length
+            if self.config.history.enabled
+            else 10000
+        )
+
         if route_result.route == RouteType.TYPE:
             # Just type the text
             self.output.type_text(route_result.text)
             self.notifier.done(route_result.text)
+
+            if interaction:
+                interaction.response_text = route_result.text
+                interaction.output_typed = 1
+                interaction.output_char_count = len(route_result.text)
 
         elif route_result.route == RouteType.COMMAND:
             # TODO: Implement command execution
@@ -210,6 +269,10 @@ class DictateAgent:
                 print(f"Timer error: {result.error}")
                 self.notifier.error(result.error or "Failed to set timer")
 
+            if interaction:
+                interaction.execution_success = int(result.success)
+                interaction.execution_error = getattr(result, "error", None)
+
         elif route_result.route == RouteType.EDIT:
             # TODO: Implement edit mode (get selected text, transform, replace)
             print(f"Edit mode not yet implemented: {route_result.text}")
@@ -218,13 +281,25 @@ class DictateAgent:
         elif route_result.route == RouteType.LOCAL:
             # Send to local Ollama model
             self.notifier.processing("local")
+            t0 = time.monotonic()
             result = self.local_executor.execute(route_result.text)
+            t1 = time.monotonic()
             if result.success:
                 self.output.type_text(result.response)
                 self.notifier.done(result.response)
             else:
                 print(f"Local model error: {result.error}")
                 self.notifier.error(result.error or "Local model error")
+
+            if interaction:
+                interaction.prompt_sent = route_result.text
+                interaction.response_text = (result.response or "")[:max_len]
+                interaction.execution_model = "local"
+                interaction.execution_duration_s = t1 - t0
+                interaction.execution_success = int(result.success)
+                interaction.execution_error = result.error
+                interaction.output_typed = int(result.success)
+                interaction.output_char_count = len(result.response) if result.success else 0
 
         elif route_result.route in (RouteType.HAIKU, RouteType.SONNET, RouteType.OPUS):
             # Send to Claude
@@ -236,19 +311,32 @@ class DictateAgent:
             def on_delta(text: str) -> None:
                 response.append(text)
 
+            t0 = time.monotonic()
             result = self.executor.execute(
                 route_result.text,
                 model=model,
                 on_delta=on_delta,
             )
+            t1 = time.monotonic()
 
             if result.success:
                 full_response = result.response or "".join(response)
                 self.output.type_text(full_response)
                 self.notifier.done(full_response)
             else:
+                full_response = ""
                 print(f"Claude error: {result.error}")
                 self.notifier.error(result.error or "Unknown error")
+
+            if interaction:
+                interaction.prompt_sent = route_result.text
+                interaction.response_text = (full_response or "")[:max_len]
+                interaction.execution_model = model
+                interaction.execution_duration_s = t1 - t0
+                interaction.execution_success = int(result.success)
+                interaction.execution_error = result.error
+                interaction.output_typed = int(result.success)
+                interaction.output_char_count = len(full_response) if result.success else 0
 
     def _is_media_playing(self) -> bool:
         """Check if media is currently playing."""
@@ -292,6 +380,9 @@ class DictateAgent:
         self.running = False
 
         # Cleanup
+        if self.history:
+            self.history.close()
+
         if PID_FILE.exists():
             PID_FILE.unlink()
 
