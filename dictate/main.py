@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Dictate Agent - Ultimate voice dictation with Claude integration.
+Dictate Agent - Voice dictation with local Ollama inference.
 
 A signal-based daemon that:
 1. Records audio via parecord
 2. Transcribes with optimized Whisper (large-v3-turbo + speculative decoding)
-3. Routes to appropriate Claude model
+3. Routes to local Ollama model (qwen3:14b)
 4. Types response or executes commands
 """
 
@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from . import __version__
 from .audio import AudioCapture, check_audio_dependencies
@@ -26,13 +27,12 @@ from .config import (
     PID_FILE,
     load_config,
 )
-from .executor import ClaudeExecutor, check_executor_dependencies
-from .grammar import GrammarCorrector
 from .history import HistoryStore
 from .local_executor import LocalExecutor, check_local_dependencies, ensure_ollama_running
 from .notify import Notifier, check_notify_dependencies
 from .output import OutputHandler, check_output_dependencies
 from .router import RouteType, Router
+from .status_window import StatusWindow, check_status_window_dependencies
 from .timer_executor import TimerExecutor
 from .transcribe import Transcriber, check_transcription_dependencies
 
@@ -56,18 +56,20 @@ class DictateAgent:
             auto_type=self.config.output.auto_type,
         )
         self.router = Router(self.config.router)
-        self.executor = ClaudeExecutor(model=self.config.router.default_model)
+
+        # Status window (persistent floating overlay)
+        sw_cfg = self.config.status_window
+        if sw_cfg.enabled:
+            self.status_window: Optional[StatusWindow] = StatusWindow(
+                position=sw_cfg.position,
+                margin=sw_cfg.margin,
+            )
+            self.status_window.start()
+        else:
+            self.status_window = None
 
         # Ensure Ollama is running for local model inference
         ensure_ollama_running(host=self.config.router.ollama_host)
-
-        self.grammar = GrammarCorrector(
-            host=self.config.router.ollama_host,
-            model=self.config.grammar.model,
-            timeout_s=self.config.grammar.timeout_s,
-            enabled=self.config.grammar.enabled,
-            min_words=self.config.grammar.min_words,
-        )
 
         self.local_executor = LocalExecutor(
             host=self.config.router.ollama_host,
@@ -127,6 +129,9 @@ class DictateAgent:
         # Resume media if it was playing
         self._resume_media_if_needed()
 
+        if self.status_window:
+            self.status_window.cancelled()
+
         self.notifier.notify(
             "Recording Cancelled",
             "Discarded without transcription",
@@ -152,6 +157,8 @@ class DictateAgent:
 
         print("Recording... (toggle again to stop)")
         self.notifier.recording()
+        if self.status_window:
+            self.status_window.recording()
 
     def _stop_recording(self) -> None:
         """Stop recording and process audio."""
@@ -170,6 +177,8 @@ class DictateAgent:
 
         print("Transcribing...")
         self.notifier.transcribing()
+        if self.status_window:
+            self.status_window.transcribing()
 
         # Transcribe (timed)
         t0 = time.monotonic()
@@ -180,6 +189,8 @@ class DictateAgent:
         if not result or not result.text:
             print("No speech detected")
             self.notifier.no_speech()
+            if self.status_window:
+                self.status_window.hide()
             self._resume_media_if_needed()
             return
 
@@ -193,28 +204,6 @@ class DictateAgent:
             interaction.corrected_transcription = text
             interaction.transcription_duration_s = t1 - t0
 
-        # Grammar correction (fail-open: original text on failure)
-        if self.grammar.enabled:
-            t2 = time.monotonic()
-            grammar_result = self.grammar.correct(text)
-            t3 = time.monotonic()
-            if grammar_result.success and grammar_result.corrected != grammar_result.original:
-                print(f"Grammar corrected: {grammar_result.corrected}")
-            elif grammar_result.error:
-                print(f"Grammar skipped: {grammar_result.error}")
-            text = grammar_result.corrected
-
-            # Record grammar correction data
-            if interaction:
-                interaction.grammar_input = grammar_result.original
-                interaction.grammar_output = grammar_result.corrected
-                interaction.grammar_changed = int(
-                    grammar_result.corrected != grammar_result.original
-                )
-                interaction.grammar_error = grammar_result.error
-                interaction.grammar_duration_s = t3 - t2
-                interaction.corrected_transcription = text
-
         # Route the text
         route_result = self.router.route(text)
         print(f"Route: {route_result.route.value} (confidence: {route_result.confidence:.2f})")
@@ -227,6 +216,10 @@ class DictateAgent:
 
         # Handle based on route
         self._handle_route(route_result, interaction)
+
+        # Hide status window — back to idle
+        if self.status_window:
+            self.status_window.hide()
 
         # Resume media if it was playing
         self._resume_media_if_needed()
@@ -300,43 +293,6 @@ class DictateAgent:
                 interaction.execution_error = result.error
                 interaction.output_typed = int(result.success)
                 interaction.output_char_count = len(result.response) if result.success else 0
-
-        elif route_result.route in (RouteType.HAIKU, RouteType.SONNET, RouteType.OPUS):
-            # Send to Claude
-            model = route_result.model
-            self.notifier.processing(model)
-
-            response = []
-
-            def on_delta(text: str) -> None:
-                response.append(text)
-
-            t0 = time.monotonic()
-            result = self.executor.execute(
-                route_result.text,
-                model=model,
-                on_delta=on_delta,
-            )
-            t1 = time.monotonic()
-
-            if result.success:
-                full_response = result.response or "".join(response)
-                self.output.type_text(full_response)
-                self.notifier.done(full_response)
-            else:
-                full_response = ""
-                print(f"Claude error: {result.error}")
-                self.notifier.error(result.error or "Unknown error")
-
-            if interaction:
-                interaction.prompt_sent = route_result.text
-                interaction.response_text = (full_response or "")[:max_len]
-                interaction.execution_model = model
-                interaction.execution_duration_s = t1 - t0
-                interaction.execution_success = int(result.success)
-                interaction.execution_error = result.error
-                interaction.output_typed = int(result.success)
-                interaction.output_char_count = len(full_response) if result.success else 0
 
     def _is_media_playing(self) -> bool:
         """Check if media is currently playing."""
@@ -416,8 +372,8 @@ def check_all_dependencies() -> list[tuple[str, str]]:
     missing.extend(check_output_dependencies())
     missing.extend(check_notify_dependencies())
     missing.extend(check_transcription_dependencies())
-    # Don't require claude CLI or ollama for basic operation
-    # missing.extend(check_executor_dependencies())
+    missing.extend(check_status_window_dependencies())
+    # Ollama is optional for basic operation (TYPE mode works without it)
     # missing.extend(check_local_dependencies())
     return missing
 
@@ -425,7 +381,7 @@ def check_all_dependencies() -> list[tuple[str, str]]:
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Dictate Agent - Voice dictation with Claude integration"
+        description="Dictate Agent - Voice dictation with local Ollama inference"
     )
     parser.add_argument(
         "-v", "--version",

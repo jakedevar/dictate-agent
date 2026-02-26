@@ -32,28 +32,11 @@ class WhisperConfig:
 
 @dataclass
 class RouterConfig:
-    """Claude model routing configuration."""
+    """Routing configuration for local Ollama inference."""
 
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:0.6b"
-    ollama_timeout_s: float = 30.0
-    default_model: str = "sonnet"
-    short_threshold: int = 20
-    long_threshold: int = 100
-    haiku_keywords: list[str] = field(
-        default_factory=lambda: ["easy", "quick", "haiku"]
-    )
-    sonnet_keywords: list[str] = field(
-        default_factory=lambda: ["medium", "normal", "sonnet"]
-    )
-    opus_keywords: list[str] = field(
-        default_factory=lambda: ["hard", "complex", "difficult", "opus", "analyze"]
-    )
-    code_terms: list[str] = field(
-        default_factory=lambda: [
-            "code", "function", "bug", "error", "refactor", "implement", "debug"
-        ]
-    )
+    ollama_model: str = "qwen3:14b"
+    ollama_timeout_s: float = 120.0
 
 
 @dataclass
@@ -64,7 +47,6 @@ class EditorConfig:
     triggers: list[str] = field(
         default_factory=lambda: ["edit:", "fix:", "change:", "rewrite:", "transform:"]
     )
-    model: str = "haiku"
 
 
 @dataclass
@@ -77,16 +59,6 @@ class CommandConfig:
     destructive_patterns: list[str] = field(
         default_factory=lambda: ["kill", "close", "exit", "shutdown", "restart"]
     )
-
-
-@dataclass
-class GrammarConfig:
-    """Grammar correction configuration."""
-
-    enabled: bool = True
-    model: str = "qwen3:0.6b"
-    timeout_s: float = 10.0
-    min_words: int = 3
 
 
 @dataclass
@@ -115,6 +87,15 @@ class HistoryConfig:
 
 
 @dataclass
+class StatusWindowConfig:
+    """Persistent floating status window configuration."""
+
+    enabled: bool = True
+    position: str = "top-right"  # top-right, top-left, bottom-right, bottom-left
+    margin: int = 20
+
+
+@dataclass
 class Config:
     """Main configuration container."""
 
@@ -122,10 +103,10 @@ class Config:
     router: RouterConfig = field(default_factory=RouterConfig)
     editor: EditorConfig = field(default_factory=EditorConfig)
     commands: CommandConfig = field(default_factory=CommandConfig)
-    grammar: GrammarConfig = field(default_factory=GrammarConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
+    status_window: StatusWindowConfig = field(default_factory=StatusWindowConfig)
 
 
 def load_config(config_path: Optional[Path] = None) -> Config:
@@ -164,13 +145,6 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             ollama_host=r.get("ollama_host", config.router.ollama_host),
             ollama_model=r.get("ollama_model", config.router.ollama_model),
             ollama_timeout_s=r.get("ollama_timeout_s", config.router.ollama_timeout_s),
-            default_model=r.get("default_model", config.router.default_model),
-            short_threshold=r.get("short_threshold", config.router.short_threshold),
-            long_threshold=r.get("long_threshold", config.router.long_threshold),
-            haiku_keywords=r.get("haiku_keywords", config.router.haiku_keywords),
-            sonnet_keywords=r.get("sonnet_keywords", config.router.sonnet_keywords),
-            opus_keywords=r.get("opus_keywords", config.router.opus_keywords),
-            code_terms=r.get("code_terms", config.router.code_terms),
         )
 
     # Editor config
@@ -179,7 +153,6 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         config.editor = EditorConfig(
             enabled=e.get("enabled", config.editor.enabled),
             triggers=e.get("triggers", config.editor.triggers),
-            model=e.get("model", config.editor.model),
         )
 
     # Command config
@@ -194,16 +167,6 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             destructive_patterns=c.get(
                 "destructive_patterns", config.commands.destructive_patterns
             ),
-        )
-
-    # Grammar config
-    if "grammar" in data:
-        g = data["grammar"]
-        config.grammar = GrammarConfig(
-            enabled=g.get("enabled", config.grammar.enabled),
-            model=g.get("model", config.grammar.model),
-            timeout_s=g.get("timeout_s", config.grammar.timeout_s),
-            min_words=g.get("min_words", config.grammar.min_words),
         )
 
     # Output config
@@ -231,6 +194,15 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             max_response_length=h.get(
                 "max_response_length", config.history.max_response_length
             ),
+        )
+
+    # Status window config
+    if "status_window" in data:
+        sw = data["status_window"]
+        config.status_window = StatusWindowConfig(
+            enabled=sw.get("enabled", config.status_window.enabled),
+            position=sw.get("position", config.status_window.position),
+            margin=sw.get("margin", config.status_window.margin),
         )
 
     return config
