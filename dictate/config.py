@@ -91,8 +91,9 @@ class StatusWindowConfig:
     """Persistent floating status window configuration."""
 
     enabled: bool = True
-    position: str = "top-right"  # top-right, top-left, bottom-right, bottom-left
-    margin: int = 20
+    position: str = "center"  # top-right, top-left, bottom-right, bottom-left, center
+    margin: int = 50
+    center_offset_y: int = 0
 
 
 @dataclass
@@ -203,6 +204,7 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             enabled=sw.get("enabled", config.status_window.enabled),
             position=sw.get("position", config.status_window.position),
             margin=sw.get("margin", config.status_window.margin),
+            center_offset_y=sw.get("center_offset_y", config.status_window.center_offset_y),
         )
 
     return config

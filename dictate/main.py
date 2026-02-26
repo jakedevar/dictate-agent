@@ -63,6 +63,8 @@ class DictateAgent:
             self.status_window: Optional[StatusWindow] = StatusWindow(
                 position=sw_cfg.position,
                 margin=sw_cfg.margin,
+                center_mode=sw_cfg.position == "center",
+                center_offset_y=sw_cfg.center_offset_y,
             )
             self.status_window.start()
         else:

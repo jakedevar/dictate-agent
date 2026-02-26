@@ -50,9 +50,17 @@ class StatusWindow:
     recording() / transcribing() / cancelled() / hide() from any thread.
     """
 
-    def __init__(self, position: str = "top-right", margin: int = 20):
+    def __init__(
+        self,
+        position: str = "top-right",
+        margin: int = 20,
+        center_offset_y: int = 0,
+        center_mode: bool = False,
+    ):
         self.position = position
         self.margin = margin
+        self.center_offset_y = center_offset_y
+        self.center_mode = center_mode
         self._state = WindowState.IDLE
         self._root: Optional[tk.Tk] = None
         self._frame: Optional[tk.Frame] = None
@@ -163,6 +171,10 @@ class StatusWindow:
 
     def _compute_position(self, w: int, h: int, sw: int, sh: int) -> tuple[int, int]:
         m = self.margin
+        if self.center_mode:
+            cx = (sw - w) // 2
+            cy = self.margin + self.center_offset_y
+            return cx, cy
         if self.position == "top-left":
             return m, m
         elif self.position == "bottom-left":

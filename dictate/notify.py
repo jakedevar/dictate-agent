@@ -1,6 +1,5 @@
-"""Desktop notifications via notify-send."""
+"""Console-based notifier (no desktop notifications)."""
 
-import subprocess
 from dataclasses import dataclass
 
 
@@ -33,25 +32,12 @@ class Notifier:
         if not self.enabled:
             return
 
-        timeout = timeout_ms or self.default_timeout_ms
-
-        cmd = [
-            "notify-send",
-            "-a", self.app_name,
-            "-i", icon,
-            "-t", str(timeout),
-        ]
-
-        # Use synchronous hint to replace previous notifications
-        if replace:
-            cmd.extend(["-h", "string:x-canonical-private-synchronous:dictate-agent"])
-
-        cmd.extend([title, message])
-
-        try:
-            subprocess.run(cmd, capture_output=True, check=False)
-        except Exception:
-            pass  # Don't let notification failures break the app
+        # Instead of hitting notify-send/dunst, log to stdout so the daemon
+        # still emits useful breadcrumbs when running interactively.
+        line = f"[{self.app_name}] {title}"
+        if message:
+            line = f"{line}: {message}"
+        print(line)
 
     def recording(self) -> None:
         """Show recording notification."""
@@ -72,10 +58,10 @@ class Notifier:
         )
 
     def processing(self, model: str) -> None:
-        """Show processing with Claude notification."""
+        """Show processing notification."""
         self.notify(
             f"Processing with {model}...",
-            "Waiting for Claude",
+            "Working on your request",
             "emblem-synchronizing",
             30000,
         )
@@ -120,11 +106,5 @@ class Notifier:
 
 
 def check_notify_dependencies() -> list[tuple[str, str]]:
-    """Check notification dependencies."""
-    missing = []
-
-    result = subprocess.run(["which", "notify-send"], capture_output=True)
-    if result.returncode != 0:
-        missing.append(("notify-send", "libnotify"))
-
-    return missing
+    """Notifications no longer depend on external tools."""
+    return []
