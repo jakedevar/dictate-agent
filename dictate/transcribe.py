@@ -185,7 +185,7 @@ class Transcriber:
 
     def _apply_corrections(self, text: str) -> str:
         """Apply common transcription corrections."""
-        # Claude name corrections
+        # Name corrections (Whisper often mishears "Claude")
         corrections = [
             (".clod", ".claude"),
             (".cloud", ".claude"),

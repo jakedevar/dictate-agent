@@ -1,7 +1,7 @@
 [project]
 name = "dictate-agent"
 version = "1.0.0"
-description = "Ultimate voice dictation agent with Claude integration"
+description = "Voice dictation agent with local Ollama inference"
 authors = [{name = "Jake"}]
 license = {text = "MIT"}
 readme = "README.md"

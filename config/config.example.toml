@@ -31,31 +31,15 @@ batch_size = 1
 no_speech_threshold = 0.6
 
 [router]
-# Ollama configuration for intelligent routing
+# Ollama configuration for local inference
 ollama_host = "http://localhost:11434"
-ollama_model = "qwen3:0.6b"
-ollama_timeout_ms = 500
-
-# Default Claude model when routing is ambiguous
-default_model = "sonnet"
-
-# Word count thresholds for fallback routing
-short_threshold = 20   # Below this -> haiku
-long_threshold = 100   # Above this -> opus
-
-# Keywords that trigger specific models
-haiku_keywords = ["easy", "quick", "simple", "haiku"]
-sonnet_keywords = ["medium", "normal", "sonnet"]
-opus_keywords = ["hard", "complex", "difficult", "opus", "analyze", "architect"]
-
-# Code-related terms that bump complexity to sonnet minimum
-code_terms = ["code", "function", "bug", "error", "refactor", "implement", "debug"]
+ollama_model = "qwen3:14b"
+ollama_timeout_s = 120.0
 
 [editor]
 # Text editing mode (e.g., "edit: make this more concise")
 enabled = true
 triggers = ["edit:", "fix:", "change:", "rewrite:", "transform:"]
-model = "haiku"
 
 [commands]
 # Keyboard/system command mode (e.g., "close window", "volume up")
@@ -63,16 +47,6 @@ enabled = true
 fuzzy_threshold = 0.8
 confirm_destructive = true
 destructive_patterns = ["kill", "close", "exit", "shutdown", "restart"]
-
-[grammar]
-# Auto-correct grammar on transcribed text before routing
-enabled = true
-# Ollama model for grammar correction (reuses router's model by default)
-model = "qwen3:0.6b"
-# Timeout in seconds (grammar on a sentence should be very fast)
-timeout_s = 10.0
-# Skip correction for text shorter than this (preserves trigger words)
-min_words = 3
 
 [output]
 # Typing configuration
@@ -91,3 +65,10 @@ enabled = true
 db_path = ""
 # Truncate stored responses beyond this length (characters)
 max_response_length = 10000
+
+[status_window]
+# Persistent floating overlay while recording/transcribing
+enabled = true
+position = "center"         # top-right/top-left/bottom-right/bottom-left/center
+margin = 20                  # Used for non-center positions
+center_offset_y = 20         # Pixels to nudge downward when centered

@@ -24,35 +24,37 @@ class LocalExecutor:
     def __init__(
         self,
         host: str = "http://localhost:11434",
-        model: str = "qwen3:0.6b",
-        timeout_s: float = 30.0,
+        model: str = "qwen3:14b",
+        timeout_s: float = 120.0,
     ):
         self.host = host
         self.model = model
         self.timeout = timeout_s
 
-    def execute(self, prompt: str) -> ExecutionResult:
+    def execute(self, prompt: str, model: str | None = None) -> ExecutionResult:
         """
         Execute a prompt via Ollama.
 
         Args:
             prompt: The prompt to send to the local model
+            model: Optional model override
 
         Returns:
             ExecutionResult with response or error
         """
+        use_model = model or self.model
         try:
             import ollama
 
             client = ollama.Client(host=self.host, timeout=self.timeout)
 
-            print(f"Executing Ollama ({self.model}): {prompt[:50]}...")
+            print(f"Executing Ollama ({use_model}): {prompt[:50]}...")
 
             response = client.generate(
-                model=self.model,
+                model=use_model,
                 prompt=prompt,
                 options={
-                    "num_predict": 256,  # Keep responses short
+                    "num_predict": 2048,
                 },
             )
 
@@ -76,7 +78,7 @@ class LocalExecutor:
             if "connection" in error_msg.lower() or "refused" in error_msg.lower():
                 error_msg = f"Cannot connect to Ollama at {self.host}. Is it running? (ollama serve)"
             elif "not found" in error_msg.lower():
-                error_msg = f"Model '{self.model}' not found. Pull it with: ollama pull {self.model}"
+                error_msg = f"Model '{use_model}' not found. Pull it with: ollama pull {use_model}"
 
             print(f"Ollama error: {error_msg}")
             return ExecutionResult(
@@ -84,6 +86,29 @@ class LocalExecutor:
                 response="",
                 error=error_msg,
             )
+
+    def execute_edit(self, instruction: str, selected_text: str) -> ExecutionResult:
+        """
+        Execute a text editing instruction via Ollama.
+
+        Args:
+            instruction: What to do with the text
+            selected_text: The text to transform
+
+        Returns:
+            ExecutionResult with transformed text
+        """
+        prompt = f"""Transform the following text according to the instruction.
+Return ONLY the transformed text, nothing else.
+
+Instruction: {instruction}
+
+Text to transform:
+{selected_text}
+
+Transformed text:"""
+
+        return self.execute(prompt)
 
 
 def is_ollama_running(host: str = "http://localhost:11434", timeout: float = 1.0) -> bool:
