@@ -27,6 +27,7 @@ from .config import (
     PID_FILE,
     load_config,
 )
+from .grammar import GrammarCorrector
 from .history import HistoryStore
 from .local_executor import LocalExecutor, check_local_dependencies, ensure_ollama_running
 from .notify import Notifier, check_notify_dependencies
@@ -72,6 +73,15 @@ class DictateAgent:
 
         # Ensure Ollama is running for local model inference
         ensure_ollama_running(host=self.config.router.ollama_host)
+
+        # Grammar correction (fail-open pipeline middleware)
+        self.grammar = GrammarCorrector(
+            host=self.config.router.ollama_host,
+            model=self.config.grammar.model,
+            timeout_s=self.config.grammar.timeout_s,
+            enabled=self.config.grammar.enabled,
+            min_words=self.config.grammar.min_words,
+        )
 
         self.local_executor = LocalExecutor(
             host=self.config.router.ollama_host,
@@ -203,8 +213,23 @@ class DictateAgent:
         if interaction:
             interaction.audio_duration_s = getattr(result, "duration", None)
             interaction.raw_transcription = text
-            interaction.corrected_transcription = text
             interaction.transcription_duration_s = t1 - t0
+
+        # Grammar correction (fail-open: original text on failure)
+        grammar_result = self.grammar.correct(text)
+        if grammar_result.success and grammar_result.corrected != grammar_result.original:
+            print(f"Grammar corrected: {grammar_result.corrected}")
+        elif grammar_result.error:
+            print(f"Grammar skipped: {grammar_result.error}")
+        text = grammar_result.corrected
+
+        if interaction:
+            interaction.corrected_transcription = text
+            interaction.grammar_input = grammar_result.original
+            interaction.grammar_output = grammar_result.corrected
+            interaction.grammar_changed = int(grammar_result.corrected != grammar_result.original)
+            interaction.grammar_error = grammar_result.error
+            interaction.grammar_duration_s = grammar_result.duration_s
 
         # Route the text
         route_result = self.router.route(text)

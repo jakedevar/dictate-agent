@@ -66,6 +66,13 @@ db_path = ""
 # Truncate stored responses beyond this length (characters)
 max_response_length = 10000
 
+[grammar]
+# Auto grammar correction (runs between transcription and routing)
+enabled = true
+model = "qwen3:0.6b"         # Small, fast model already used for routing
+timeout_s = 10.0              # Max seconds to wait for correction
+min_words = 3                 # Skip correction for very short inputs
+
 [status_window]
 # Persistent floating overlay while recording/transcribing
 enabled = true

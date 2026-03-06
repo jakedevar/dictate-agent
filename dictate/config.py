@@ -97,6 +97,16 @@ class StatusWindowConfig:
 
 
 @dataclass
+class GrammarConfig:
+    """Grammar correction pipeline middleware configuration."""
+
+    enabled: bool = True
+    model: str = "qwen3:0.6b"
+    timeout_s: float = 10.0
+    min_words: int = 3
+
+
+@dataclass
 class Config:
     """Main configuration container."""
 
@@ -108,6 +118,7 @@ class Config:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     status_window: StatusWindowConfig = field(default_factory=StatusWindowConfig)
+    grammar: GrammarConfig = field(default_factory=GrammarConfig)
 
 
 def load_config(config_path: Optional[Path] = None) -> Config:
@@ -205,6 +216,16 @@ def load_config(config_path: Optional[Path] = None) -> Config:
             position=sw.get("position", config.status_window.position),
             margin=sw.get("margin", config.status_window.margin),
             center_offset_y=sw.get("center_offset_y", config.status_window.center_offset_y),
+        )
+
+    # Grammar config
+    if "grammar" in data:
+        g = data["grammar"]
+        config.grammar = GrammarConfig(
+            enabled=g.get("enabled", config.grammar.enabled),
+            model=g.get("model", config.grammar.model),
+            timeout_s=g.get("timeout_s", config.grammar.timeout_s),
+            min_words=g.get("min_words", config.grammar.min_words),
         )
 
     return config
