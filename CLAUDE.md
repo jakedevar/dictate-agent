@@ -2,196 +2,94 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Project
 
-**Dictate Agent** is a voice-activated AI assistant daemon that:
-- Captures audio via keybind (`$mod+n`)
-- Transcribes speech using Whisper
-- Routes requests intelligently to Claude models (Haiku/Sonnet/Opus) via local Ollama
-- Executes tasks through Claude Code CLI
-- Types responses into active windows
-- Provides toast notifications for status
+`dictate-agent` is a signal-driven Python daemon for voice dictation on Linux. It records audio via `parecord`, transcribes with Whisper (HuggingFace Transformers), runs a grammar-correction pass through Ollama, routes the text by first-word trigger, and either types it back with `xdotool` or dispatches to an executor (local Ollama model, systemd timer, etc.).
 
-**Status**: Python implementation (MVP). Original spec planned Rust, but Python was implemented for faster iteration.
+There is an archived Rust port in `src_rust_archive/` — ignore it unless the user explicitly asks about the rewrite. The active implementation is the `dictate/` Python package.
+
+## Commands
+
+The project uses a `.venv/` at the repo root; `scripts/run.sh` activates it and runs `python -m dictate.main`.
+
+```bash
+# Run the daemon (foreground, for development)
+./scripts/run.sh
+
+# Verify external dependencies without starting the daemon
+.venv/bin/python -m dictate.main --check
+
+# Trigger the running daemon (requires a live PID file)
+./scripts/dictate-toggle     # SIGUSR1 — start/stop recording
+./scripts/dictate-cancel     # SIGUSR2 — cancel without transcription
+
+# Install as a systemd user service (see systemd/dictate-agent.service —
+# note: the unit file points at a stale Rust binary path; edit ExecStart
+# to ~/dictate_agent/scripts/run.sh before enabling)
+systemctl --user daemon-reload && systemctl --user enable --now dictate-agent
+
+# Lint (configured in pyproject.toml, line-length 100, target py310)
+.venv/bin/ruff check dictate/
+```
+
+There is no test suite. `pyproject.toml` lists `pytest` as a dev extra but no tests exist yet.
 
 ## Architecture
 
-### Signal Flow
+Hub-and-spoke: `dictate/main.py` (`DictateAgent`) owns every component and drives the pipeline. Modules don't import each other — they only import config dataclasses and are wired together in `DictateAgent.__init__`.
+
+### Signal-driven daemon loop
+
+`main()` writes `~/.config/dictate-agent/dictate.pid`, installs `SIGUSR1`/`SIGUSR2`/`SIGINT` handlers, then sits in `signal.pause()`. All state transitions happen inside signal handlers — there is no event loop. The helper scripts (`dictate-toggle`, `dictate-cancel`) are thin `kill -USR1/-USR2` wrappers over that PID file; external keybindings bind to the scripts.
+
+### Recording → output pipeline (`_stop_recording` in main.py)
+
 ```
-User presses $mod+n → SIGUSR1 → dictate-agent daemon
-→ Audio capture → Whisper transcription → Ollama routing
-→ Claude Code execution → Stream response → Type into window
-```
-
-### Core Modules
-
-| Module | Purpose | Key Classes |
-|--------|---------|-------------|
-| `main.py` | Daemon orchestration, signal handling | `DictateAgent` |
-| `audio.py` | Audio recording via parec (PipeWire) | `AudioCapture` |
-| `transcribe.py` | Whisper transcription (transformers) | N/A |
-| `router.py` | Ollama classification + keyword fallback | `Router`, `RouteType` |
-| `executor.py` | Claude Code subprocess management | `ClaudeExecutor`, `ExecutionResult` |
-| `local_executor.py` | Ollama local inference (without Claude) | `LocalExecutor` |
-| `timer_executor.py` | Timer via systemd-run transient timers | `TimerExecutor` |
-| `output.py` | Text typing via xdotool | N/A |
-| `notify.py` | Toast notifications via notify-send | N/A |
-| `config.py` | TOML configuration loading | N/A |
-
-### Routing Logic
-
-**Primary**: Ollama (qwen3:0.6b) classifies requests into:
-- `HAIKU` - Simple questions, quick lookups
-- `SONNET` - Normal tasks, typical complexity
-- `OPUS` - Complex analysis, architecture decisions
-- `EDIT` - Text transformation (not implemented)
-- `COMMAND` - System commands (not implemented)
-- `TIMER` - Set a timer with desktop notification + sound
-- `SIMPLE` - Trigger word for local Ollama inference (no Claude)
-
-**Fallback**: If Ollama unavailable, keyword-based routing:
-- Explicit keywords: "easy"→Haiku, "hard"→Opus
-- Word count: <20→Haiku, >100→Opus
-- Code terms bump to Sonnet minimum
-- Default: Sonnet
-
-## Development Commands
-
-### Setup
-```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -e .
-
-# Copy and configure
-mkdir -p ~/.config/dictate-agent
-cp config/config.example.toml ~/.config/dictate-agent/config.toml
-
-# Verify dependencies
-python -m dictate.main  # Will check for parec, xdotool, notify-send, claude
+parecord (audio.py, 16 kHz mono WAV)
+  → Transcriber.transcribe()        whisper-large-v3-turbo via HF pipeline
+  → Transcriber._apply_corrections() hardcoded fixups (Whisper mis-hears "Claude", slash commands)
+  → GrammarCorrector.correct()       qwen3:0.6b via Ollama, fail-open
+  → Router.route()                   first-word trigger → RouteType
+  → _handle_route() dispatch:
+      TYPE    → OutputHandler.type_text() via xdotool
+      TIMER   → TimerExecutor (systemd-run transient unit + dunstify)
+      LOCAL   → LocalExecutor (Ollama qwen3:14b) → xdotool
+      EDIT    → not implemented
+      COMMAND → not implemented
+  → HistoryStore.commit()            SQLite row in ~/.local/share/dictate-agent/history.db
 ```
 
-### Running
+Around this, `main.py` pauses/resumes media via `playerctl` (state tracked in `~/.config/dictate-agent/media_was_playing`) and drives a `StatusWindow` overlay.
 
-```bash
-# Start daemon directly
-./scripts/run.sh
+### Routing (`dictate/router.py`)
 
-# Or via Python module
-source .venv/bin/activate
-python -m dictate.main
+Default route is `TYPE` (verbatim typing). Triggers:
+- First word `timer …` → `TIMER`
+- First word `simple|easy|medium|hard …` → `LOCAL` (all four route identically; the word is treated as a prefix marker, not a difficulty signal)
+- Prefix `edit:|fix:|change:|rewrite:|transform:` → `EDIT` (not yet wired up)
 
-# Toggle recording (send SIGUSR1)
-./scripts/dictate-toggle
+`GrammarCorrector` skips inputs under `min_words` (default 3) specifically so short utterances starting with these trigger words aren't reworded away before routing.
 
-# Stop daemon (send SIGINT)
-kill $(cat ~/.config/dictate-agent/dictate.pid)
-```
+### Configuration (`dictate/config.py`)
 
-### Testing
-```bash
-# Run all tests
-pytest
+Config is a tree of dataclasses loaded from `~/.config/dictate-agent/config.toml` (copy `config/config.example.toml`). Each subsection is re-constructed from `.get()` calls with the dataclass default as fallback, so missing keys are fine but unknown keys are silently ignored. When adding a new field: add it to the dataclass default and to the matching branch in `load_config()` — both edits are required.
 
-# Test individual components (examples, not implemented)
-python -c "from dictate.router import Router; print(Router().route('what is Python'))"
-```
+### Transcription quirks
 
-## Configuration
+- Uses HF `pipeline("automatic-speech-recognition")` with `chunk_length_s` for long-form support, on SDPA attention (works on Blackwell / RTX 5080).
+- `use_speculative_decoding` in config is honored as a flag but **intentionally skipped** — the assistant-model path is incompatible with the chunked pipeline (see comment in `transcribe.py`). Don't "fix" this without addressing that incompatibility.
+- Models load in a background thread (`load_models_async`); `transcribe()` blocks on `model_loaded` until they're ready. First recording after daemon start will wait on the initial load.
 
-Config location: `~/.config/dictate-agent/config.toml`
+### Executor conventions
 
-Key settings:
-- `whisper.model`: Transcription model (default: `openai/whisper-large-v3-turbo`)
-- `whisper.use_speculative_decoding`: 2x speedup (default: `true`)
-- `router.ollama_model`: Classification model (default: `qwen3:0.6b`)
-- `router.default_model`: Fallback when ambiguous (default: `sonnet`)
-- `output.auto_type`: Enable automatic typing (default: `true`)
+Every executor (`local_executor.py`, `timer_executor.py`, `grammar.py`) exposes an `execute()`/`correct()` method that **never raises** — all errors are caught and returned as a result dataclass (`success`, `response`/`corrected`, `error`). `main.py` relies on this: it branches on `result.success` and never wraps executor calls in try/except. Preserve this contract when adding new executors.
 
-## Dependencies
+Grammar correction is a **fail-open pipeline middleware**: on any failure (timeout, empty response, length-ratio sanity check outside 0.5–1.5) it returns the original text and the pipeline continues. Anything added between transcription and routing should follow the same pattern.
 
-**System** (checked via `check_all_dependencies()`):
-- `parec` - PipeWire/PulseAudio recording
-- `xdotool` - X11 keyboard simulation
-- `notify-send` - Desktop notifications
-- `claude` - Claude Code CLI
-- `ollama` - Local LLM runtime (optional, for routing)
+### Dependency checking
 
-**Python** (from `pyproject.toml`):
-- `torch`, `transformers` - Whisper transcription
-- `accelerate`, `optimum` - Model optimization
-- `ollama` - Ollama client library
-- `tomli` - TOML config parsing
+Each module with external deps exports `check_*_dependencies() -> list[tuple[str, str]]` returning `(missing_cmd, install_hint)` pairs. `main.check_all_dependencies()` aggregates them and `--check` reports them. New modules with subprocess dependencies should add a checker and wire it in.
 
-## Key Implementation Details
+## Further reading
 
-### Media Playback Handling
-The agent detects playing media via `playerctl status` and pauses it during transcription/response, resuming afterward. This prevents audio conflicts.
-
-### Speculative Decoding
-Whisper uses assistant model (`distil-whisper/distil-large-v3`) for 2x speedup during transcription. Configured in `config.toml`.
-
-### Claude Code Stream Parsing
-Responses are NDJSON streams parsed line-by-line. Text deltas are extracted and typed character-by-character.
-
-### Signal Handling
-- `SIGUSR1`: Toggle recording (start/stop)
-- `SIGUSR2`: Cancel recording (discard without transcription)
-- `SIGINT`: Graceful shutdown
-- `SIGTERM`: Graceful shutdown
-
-Signals must be sent to PID stored in `~/.config/dictate-agent/dictate.pid`.
-
-### Local Ollama Mode
-Trigger word "simple" bypasses Claude entirely and uses local Ollama (qwen3:0.6b) for inference. Useful for offline or cost-free operation.
-
-## i3wm Integration
-
-Add to i3 config:
-```
-bindsym $mod+n exec ~/dictate_agent/scripts/dictate-toggle
-bindsym $mod+Shift+n exec ~/dictate_agent/scripts/dictate-cancel
-```
-
-| Keybind | Action |
-|---------|--------|
-| `$mod+n` | Start recording / Stop and transcribe |
-| `$mod+Shift+n` | Cancel recording (discard without transcription) |
-
-Systemd service provided at `systemd/dictate-agent.service` for auto-start.
-
-## Known Limitations
-
-1. **No TTS**: General questions not spoken aloud (planned Phase 3)
-2. **No edit mode**: Text transformation detection exists but not implemented
-3. **No keyboard commands**: System command detection exists but not implemented
-4. **No silence detection**: Recording continues until manual stop
-5. **X11 only**: xdotool requires X11, won't work on Wayland
-
-## Project Context
-
-This was originally planned as a Rust project for single-binary deployment, but Python was chosen for MVP to leverage existing PyTorch ecosystem. See `thoughts/shared/project/2026-01-15-dictate-agent.md` for full original specification.
-
-The completion report at `thoughts/shared/project/2026-01-15-dictate-agent-completion.md` documents what was built vs. planned.
-
-## Troubleshooting
-
-### "No module named 'dictate'"
-Run from project root with `python -m dictate.main`, not `python dictate/main.py`.
-
-### "parec not found"
-Install PipeWire/PulseAudio: `sudo pacman -S pipewire-pulse`
-
-### Ollama classification timing out
-Check Ollama is running: `systemctl --user status ollama`
-Pull model: `ollama pull qwen3:0.6b`
-
-### Text not typing into window
-Verify xdotool: `xdotool version`
-Check X11 (not Wayland): `echo $XDG_SESSION_TYPE`
-
-### Claude Code not found
-Install Claude Code CLI and ensure `claude` is in PATH.
+`.claude/skills/dictate-agent-developer/SKILL.md` is the detailed developer guide — it covers the executor pattern, how to add a new route type (the 3 files that need to change), subprocess conventions per tool, notification icon conventions, and specs for the unimplemented EDIT / COMMAND / TTS features. Read it before non-trivial changes.

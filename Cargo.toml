@@ -1,0 +1,58 @@
+[package]
+name = "dictate-agent"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Config
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+# Duration parsing
+regex = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Signal handling (Phase 2)
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+tokio-stream = "0.1"
+
+# Audio capture (Phase 3)
+cpal = "0.15"
+
+# Whisper transcription (Phase 4)
+# Build with WHISPER_DONT_GENERATE_BINDINGS=1 to use pre-generated bindings
+whisper-rs = { version = "0.16", features = ["cuda"] }
+
+# Ollama client (Phase 6)
+ollama-rs = { version = "0.3", features = ["stream"] }
+serde_json = "1"
+
+# Clipboard + keyboard (Phase 5)
+arboard = "3"
+enigo = { version = "0.3", features = ["x11rb"] }
+
+# Desktop notifications (Phase 5)
+notify-rust = "4"
+
+# SQLite (Phase 7)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Misc (Phase 7)
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
