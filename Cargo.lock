@@ -626,6 +626,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-proto"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dictate-stt"
 version = "0.2.0"
 dependencies = [

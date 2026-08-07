@@ -1,0 +1,19 @@
+[package]
+name = "dictate-proto"
+version.workspace = true
+edition.workspace = true
+description = "Wire protocol for dictate-agent: commands, events, errors, versioned envelope, and the binary audio-frame codec. Types and (de)serialization only — no transport, no async runtime, no I/O."
+
+# DEPENDENCY BUDGET (deliberate — see lib.rs "Dependency budget").
+# This crate is depended on by the daemon (S02), the network server (S33), the
+# Tauri UI (S32), and any future thin phone client. Every dependency added here
+# is paid for by all four. Additions require a stated reason in lib.rs.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Reason: audio bytes must ride inside a JSON command for the single-request
+# `POST /v1/transcribe` thin-client path (Decision Q3). serde_json would encode
+# Vec<u8> as a JSON array of numbers (~4x the bytes of base64 and unusable from
+# a phone client). base64 has zero transitive dependencies and is already in
+# the workspace lockfile via another crate, so this costs no new tree.
+base64 = { workspace = true }
