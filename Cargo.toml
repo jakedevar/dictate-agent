@@ -16,6 +16,9 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Base64 — inline audio payloads in dictate-proto (see that crate's Cargo.toml)
+base64 = "0.22"
+
 # Duration parsing / regex
 regex = "1"
 
@@ -61,6 +64,7 @@ dictate-core = { path = "crates/dictate-core" }
 dictate-fmt = { path = "crates/dictate-fmt" }
 dictate-history = { path = "crates/dictate-history" }
 dictate-inject = { path = "crates/dictate-inject" }
+dictate-proto = { path = "crates/dictate-proto" }
 dictate-stt = { path = "crates/dictate-stt" }
 
 [profile.release]
