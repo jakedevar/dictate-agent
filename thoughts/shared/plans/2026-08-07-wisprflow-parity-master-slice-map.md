@@ -8,8 +8,8 @@ topic: "Wispr Flow parity — master orchestration slice map (Rust rebuild)"
 tags: [plan, orchestration, slice-map, rust, wispr-flow, whisper, tauri, api-server, parity]
 status: active
 last_updated: 2026-08-07
-last_updated_by: Claude (RSI master orchestration session)
-last_updated_note: "Recorded Jake's Q1–Q5 decisions; S33 phone-client note; Epic-lead kickoff prompt added"
+last_updated_by: Claude (RSI Epic-lead session bba123fa)
+last_updated_note: "Wave 0 dispatched (S00 + R1–R4). Ground truth corrected: 78-test baseline verified, src_rust_archive discrepancy resolved, Python daemon deletion by 5e16667 found and folded into S00 Task 1."
 type: master_slice_map
 ---
 
@@ -32,8 +32,8 @@ routes (systemd timers, local LLM executor) that Wispr doesn't offer.
 
 | Asset | State | Where |
 |---|---|---|
-| Python daemon (reference impl) | Working, in daily use | `dictate/` (2,304 LOC, 13 modules) |
-| **Rust port, Phases 1–7** | Code-complete vs Python daemon; builds; **74 tests pass**; clippy/deploy artifacts outstanding | `Cargo.toml` + `src/` (2,783 LOC, 12 modules) |
+| Python daemon (reference impl) | **DELETED on local `master` by commit `5e16667`**; intact on `origin/master`; S00 restores it | `dictate/` (2,304 LOC, 13 modules) |
+| **Rust port, Phases 1–7** | Code-complete vs Python daemon; builds; **78 tests pass (verified 2026-08-07, exit 0)**; clippy/deploy artifacts outstanding | `Cargo.toml` + `src/` (2,783 LOC, 13 modules) |
 | Rewrite feasibility research + real benchmarks | Final: Rust + whisper-rs decision locked | `thoughts/shared/research/2026-04-10-rust-go-rewrite-feasibility.md` |
 | 7-phase rewrite plan | Executed | `thoughts/shared/plans/2026-04-10-rust-rewrite.md` |
 | Implementation handoff (open items list) | Phases done, cleanup tasks listed | `thoughts/shared/handoffs/general/2026-04-10_17-51-32_rust-rewrite-implementation.md` |
@@ -41,11 +41,22 @@ routes (systemd timers, local LLM executor) that Wispr doesn't offer.
 | Real perf data (3,595 interactions) | avg transcription 0.183s (HF/5080), avg total pipeline 0.87s; whisper.cpp projected 0.4–0.6s | feasibility doc §Whisper Performance |
 | whisper-rs build traps | Documented: `WHISPER_DONT_GENERATE_BINDINGS=1`, `PATH="/opt/cuda/bin:$PATH"`, API deltas from 0.14→0.16 | handoff §Learnings |
 
-**Repo-state discrepancy to reconcile in S00:** `CLAUDE.md` claims the Rust
-port lives archived in `src_rust_archive/` with Python active; on this branch
-the Rust port is live at `src/`. Whichever is true on `master`, S00 promotes
-the Rust code to a workspace and keeps Python running side-by-side until
-cutover (do not delete `dictate/` until v1.0 parity gate passes).
+**Repo-state discrepancy — RESOLVED by direct inspection 2026-08-07 (Epic-lead):**
+`src_rust_archive/` does not exist. The Rust port is live at `src/` and is the
+single source of truth. The stale `CLAUDE.md` that claimed otherwise was itself
+deleted by `5e16667`, so the contradiction is moot; S00 writes a fresh one.
+
+**Destructive-commit finding (Epic-lead, 2026-08-07) — drives S00 Task 1:**
+Commit `5e16667` ("saving agent created work") deleted the entire Python
+reference daemon `dictate/` (13 modules, 2,304 LOC) and `CLAUDE.md` alongside
+legitimate Rust improvements. This contradicts locked decision #8 (side-by-side
+migration) and the v1.0 cutover gate, both of which require the Python daemon
+to stay runnable. Nothing is lost: `dictate/` is intact on `origin/master`, and
+local `master` is 5 commits ahead / 0 behind, all unpushed. S00 restores
+`dictate/` from `origin/master` as its first, standalone commit.
+Note `pyproject.toml` still declares `packages = ["dictate"]` and the
+`dictate.main:main` entry point, so the tree is currently inconsistent with its
+own packaging manifest until that restore lands.
 
 ## Parity target — Wispr Flow feature matrix
 
@@ -155,13 +166,25 @@ worker session produces its own detailed plan + verification manifest
 
 ### Wave 0 — Foundation (sequential)
 
-**S00 — Repo reconciliation & workspace scaffold** · implementer · M
+**S00 — Repo reconciliation & workspace scaffold** · implementer · M · **DISPATCHED 2026-08-07**
 Goal: single source of truth for the Rust code; workspace layout above.
-Scope: resolve `src/` vs `src_rust_archive/` vs `master`; split the existing
-12 modules into workspace crates (mechanical moves, keep all 74 tests green);
-finish handoff leftovers (clippy clean, `cargo build --release`, systemd unit,
-`config.example.toml`, `scripts/run.sh`, CLAUDE.md rewrite); commit `Cargo.lock`.
-Verify: `cargo test` ≥74 green in workspace; `--check` binary runs; clippy clean.
+Scope, as actually dispatched (three tasks, in order):
+1. **Restore `dictate/` from `origin/master`** as a standalone commit — undoes
+   `5e16667`'s collateral deletion; HARD constraint (Jake's daily driver).
+2. **Workspace split** of the 13 modules into *only* the crates populatable
+   with existing code today: `dictate-audio`, `dictate-stt`, `dictate-fmt`,
+   `dictate-history`, `dictate-inject`, `dictate-core`, `dictated`. Explicitly
+   **no placeholder crates** for `dictate-proto`/`-vad`/`-dict`/`-context`/
+   `-hotkey`/`-cli`/`-server` — those are owned by S01/S11/S22/S23/S31/S02/S33
+   and empty shells would create merge churn and false structure. Mechanical
+   moves only; a module that resists a clean boundary stays in `dictate-core`
+   with a `// TODO(S0x)` rather than an invented design.
+3. **Handoff leftovers**: clippy clean, `cargo build --release`, systemd unit,
+   `config.example.toml`, `scripts/run.sh`/`Makefile`, fresh `CLAUDE.md`
+   (complementing the existing `AGENTS.md`), CUDA build env vars encoded in a
+   durable target; commit `Cargo.lock`.
+Verify: `cargo test --workspace` **≥78 green** (verified baseline, not the
+stale 74); clippy clean; release build ok; binary still honors SIGUSR1/2.
 
 **S01 — Protocol crate (`dictate-proto`)** · **architect** · M · ← keystone
 Goal: the one message contract for IPC + network API + UI.
@@ -213,6 +236,13 @@ CPU/tiny fallback feature flag for CI. Known build env vars documented in
 handoff §Learnings — bake into `build.rs` docs + `justfile`.
 Verify: fixture WAVs → expected transcripts (tiny model, CPU, in CI); CUDA
 smoke test target for the 5080 box; cold-load ≤5s (daemon check).
+**R1 inputs (adopt):** chunked sha256 verify-then-delete-on-mismatch so a
+corrupt/partial GGUF forces a clean retry; hf-hub revision-pinned commit SHAs
+for reproducible, CDN-immutable pulls. **Adapt:** static catalog manifest
+(stripped to our single whisper family); resumable Range-header download for
+the non-hf-hub fallback path. **Avoid:** Handy's "no forced first-run
+download" — we are CLI-first, so default-pull `large-v3-turbo` (or CPU
+fallback) on first invocation rather than deferring to a UI wizard.
 
 **S13 — Injection v2 (`dictate-inject`)** · implementer · M
 Scope: `Injector` trait; X11 backend hardening (arboard+enigo paste w/
@@ -223,6 +253,11 @@ on inject failure, text goes to clipboard + notification). Wayland backend
 stub behind trait (real impl gated on R3).
 Verify: unit tests on policy resolution + chunking; Xvfb + xterm read-back
 smoke test (automated); manual TUI items only for focus-dependent cases.
+**R1 inputs (adapt):** runtime tool-availability probing with an X11/Wayland
+split (xdotool for X11; wtype→kwtype→dotool→ydotool chain for Wayland), plus
+KDE-Wayland detection that gates `wtype` off (no `zwp_virtual_keyboard` there).
+**Note:** Handy's paste-transaction engine is macOS/Windows-only — there is
+nothing to crib for X11 clipboard paste-with-save/restore; we build it ourselves.
 
 ### Wave 2 — The Wispr magic layer (parallel; this is where parity is won)
 
@@ -295,6 +330,12 @@ permission docs + graceful degradation to WM-keybind/signal path (today's
 flow keeps working); double-tap-to-lock hands-free (pairs with S11 auto-stop).
 Verify: uinput-driven automated tests (inject synthetic key events, assert
 daemon state transitions); permission-missing degradation test.
+**R1 inputs (adopt):** single-owner-thread `HotkeyManager` + mpsc command
+channel (avoids evdev cross-thread races); **release-grace debounce window** —
+defer key-up briefly and cancel it if a matching key-down arrives, which is how
+Handy absorbs X11 auto-repeat bursts that otherwise flap hold-to-talk. **Avoid:**
+dynamic register/unregister of the cancel shortcut (unstable on Linux) — make
+the cancel chord a statically-grabbed key.
 
 **S32 — Tauri UI v1** · implementer · L (deps: S01, S02, S30, S22)
 Scope: tray + settings editor (config.toml round-trip), history browser w/
@@ -304,6 +345,15 @@ onboarding checklist (deps, permissions, model download). X11 overlay
 first; Wayland layer-shell noted as best-effort. TS per Jake's allowance.
 Verify: UI talks only `dictate-proto` (contract tests); daemon runs headless
 without it (CI job proves).
+**R1 inputs (adopt):** overlay as a separate always-on-top, transparent,
+undecorated, non-focusable `WebviewWindow` reused across states; throttled
+(~30 FPS) `mic-level` event bridge for the audio-level meter; monitor-under-
+cursor + DPI-scaled position math kept separate from the layering mechanism.
+**Open design work — do not assume solved:** Handy never calls
+`set_ignore_cursor_events`; it has NO true click-through, only
+`focusable(false)`/`skip_taskbar`/always-on-top. S32 must design and verify
+click-through itself. Adapt gtk-layer-shell only as the Wayland best-effort
+fallback behind an X11-native primary path.
 
 **S33 — Network API server (`dictate-server`) — the stretch goal** · **architect** (security) + implementer · M (cheap because S01 paid the cost)
 Scope: axum: WS endpoint speaking `dictate-proto` (control + events + binary
@@ -365,15 +415,26 @@ release artifacts (cargo-dist or hand-rolled); AUR PKGBUILD; first-run model
 download; `justfile` encoding the CUDA env-var build incantations; docs:
 INSTALL.md per platform, migration-from-Python guide, LAN-API setup guide.
 Verify: clean-VM install script smoke; CI green matrix.
+**R1 inputs (adopt):** `build.rs` `$ORIGIN`-relative rpath so the binary finds
+a co-located whisper.cpp shared lib without ldconfig; a CI staging script that
+hard-fails when the CPU-fallback backend is missing (enforces locked decision
+#1's fallback). **Adapt:** per-platform feature-flag shape and the GH Actions
+release matrix — but substitute a CUDA toolkit step for Handy's Vulkan SDK.
+**Avoid:** Handy has no CUDA path at all; its Vulkan/glslc env-vars do not
+transfer. Our own documented CUDA incantations remain authoritative.
 
 ### Research spikes (cheap, early, parallelizable — run during Wave 0)
 
-**R1 — Cannibalization audit: Handy (+ Whispering)** · implementer · S
-[Handy](https://github.com/cjpais/Handy) is MIT, Rust+Tauri, whisper-rs,
-Linux/mac/win — the closest existing thing to this plan. Audit for: hotkey
-handling per-platform, overlay/HUD approach, model manager UX, Wayland/mac
-workarounds, packaging. Use `/cannibalize_research` against a clone. Output:
-adopt/adapt/avoid list feeding S12/S13/S31/S32/S40.
+**R1 — Cannibalization audit: Handy (+ Whispering)** · **✅ COMPLETE 2026-08-07**
+Artifact: `thoughts/shared/research/2026-08-07-r1-handy-cannibalization-audit.md`
+(branch `rsi/76789b78`, commit `61661cf`). Handy audited at pinned commit
+`b428ae4c`. **25 findings: 12 ADOPT / 6 ADAPT / 7 AVOID** across the five axes.
+**No AVOID invalidates a locked decision** — the CUDA finding reinforces #1.
+License: Handy is MIT; verbatim reuse of code/constants/scripts requires an
+attribution NOTICE. Patterns/ideas carry no obligation. Per-slice actions are
+propagated inline into S12/S31/S32/S13/S42 below.
+Follow-ups (not blocking): Whispering + VoiceInk secondary passes were skipped
+(time-boxed); true click-through is unsolved in Handy — open design work for S32.
 
 **R2 — Streaming partials feasibility** · implementer · S
 whisper.cpp stream-mode quality on turbo GGUF; verdict gates a future S1x
