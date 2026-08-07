@@ -6,9 +6,10 @@ branch: rsi/bb349467
 repository: dictate_agent
 topic: "Wispr Flow parity — master orchestration slice map (Rust rebuild)"
 tags: [plan, orchestration, slice-map, rust, wispr-flow, whisper, tauri, api-server, parity]
-status: draft_for_review
+status: active
 last_updated: 2026-08-07
 last_updated_by: Claude (RSI master orchestration session)
+last_updated_note: "Recorded Jake's Q1–Q5 decisions; S33 phone-client note; Epic-lead kickoff prompt added"
 type: master_slice_map
 ---
 
@@ -316,6 +317,10 @@ dict/snippet **sync surface** (feature #18) for any future second machine.
 Verify: automated: auth-rejection, WAV-upload→text integration test, WS
 session lifecycle; security review checklist (bind default, token entropy,
 no PII in logs when privacy mode).
+Decision note (2026-08-07): phone client ambition confirmed (personal) —
+protocol must stay thin-client-friendly (single-request transcribe endpoint,
+chunked-audio WS, bearer auth); recommend Tailscale/WireGuard for off-LAN
+rather than raw TLS exposure. Server only; clients out of scope.
 
 **S34 — Wake word ("Hey Flow" parity)** · implementer · S · optional, after R4
 Scope: always-on low-power listener (openWakeWord/rustpotter per R4 verdict)
@@ -442,18 +447,25 @@ gate.
 | Scope creep vs parity | schedule | P0 column is the contract; P2/P3 need explicit go |
 | whisper-rs maintenance (Codeberg migration) | supply chain | Provider trait; vendored fallback acceptable |
 
-## Open questions for Jake (answers reshape priorities, not architecture)
+## Decisions recorded 2026-08-07 (Jake)
 
-1. **Display server**: confirm X11 today (xdotool implies yes). Is Wayland
-   migration on your horizon? → sets R3/S13-Wayland priority.
-2. **Mac hardware**: Apple Silicon available for S40 testing? Mac needed
-   early, or after Linux parity? (Current map: after.)
-3. **Cloud STT fallback**: acceptable as opt-in provider (Deepgram/OpenAI) or
-   hard-local-only forever? (Map assumes local-only; trait keeps door open.)
-4. **LAN API**: plain bearer-token over LAN OK, or want TLS from day one?
-   Any future phone-client ambition (shapes S33 session design)?
-5. **Hotkeys**: keep current WM-keybind+signal flow as primary, or move to
-   evdev true hold-to-talk (S31) as primary? Both stay supported.
+1. **X11 confirmed**; no Wayland migration planned. R3 stays a cheap
+   future-proofing spike; Wayland backends in S13/S23 remain trait stubs.
+2. **macOS after Linux parity** — Wave 4 ordering confirmed.
+3. **Phone client ambition is real** (personal app, not a business). S33 must
+   keep the wire protocol thin-client-friendly: single-request
+   `POST /v1/transcribe`, chunked-audio WS session, simple bearer auth. For
+   off-LAN use prefer Tailscale/WireGuard over raw TLS exposure; TLS stays
+   optional in-scope. Client apps remain out of scope for this epic.
+4. **STT stays hard-local-only.** (Clarified: "cloud STT fallback" = optionally
+   shipping audio to a paid transcription API when local inference is
+   unavailable. Rejected as default posture; the `SttProvider` trait keeps that
+   door open at near-zero cost if ever wanted.)
+5. **Both hotkey modes are first-class** in S31: evdev true hold-to-talk AND
+   the current WM-keybind/signal toggle path. Neither is a "fallback".
+
+## Still open (defaults in force until Jake overrides)
+
 6. **History default**: keep storing everything (current behavior) with
    privacy-mode opt-in, or flip default?
 7. **Windows**: confirm "deferred until asked" (S41).
@@ -472,6 +484,39 @@ after; select paragraph → command-mode "make this more formal" → replaced;
 `dictate history search <word>` finds it; WPM stat visible; privacy mode
 leaves no row; `curl -F audio=@clip.wav :7845/v1/transcribe` (LAN box) returns
 the formatted text. Every item maps to a P0/P1 slice's verification bucket.
+
+## Successor kickoff prompt (Epic-lead session)
+
+Recommended spawn: **opus @ xhigh effort**, lead permissions. Paste verbatim:
+
+> You are the Epic-lead orchestration agent for the dictate-agent → Wispr Flow
+> parity build, running with lead permissions inside the RSI harness. The plan
+> already exists — do not re-derive it. Sources of truth, in order:
+> (1) `thoughts/shared/plans/2026-08-07-wisprflow-parity-master-slice-map.md`
+> — architecture, 25 slices, dependency DAG, dispatch table, locked decisions,
+> parity gate; (2) `thoughts/shared/handoffs/general/2026-08-07_20-17-23_wisprflow-parity-epic-lead-handoff.md`
+> — prior-session state and action items; (3) `thoughts/shared/handoffs/general/2026-04-10_17-51-32_rust-rewrite-implementation.md`
+> — whisper-rs/CUDA build traps.
+>
+> Your job is dispatch and supervision, not implementation: spawn one child
+> worker session per slice via RSI control surfaces (`rsi-rpc AgentSpawnChild`;
+> directive fallback if unavailable) using the slice map's dispatch table
+> (kind/model/effort per slice). Sequence: Wave 0 serial — S00 (Refactor,
+> sonnet/high) → S01 (Feature, opus/xhigh) → S02 (Feature, opus/xhigh) — with
+> research spikes R1–R4 (Research, sonnet/medium) fanned out in parallel with
+> S00. Personally review S01's protocol output before S02 starts: it is the
+> keystone contract shared by local IPC, the network API, and the UI. After
+> S02, open the Wave 1 fan-out per the DAG.
+>
+> Constraints (HARD): workers follow the RPI worker contract (research→plan→
+> implement, verification buckets, thoughts commits); NEVER `git push` — Jake
+> pushes after his verification gates; keep the Python daemon (`dictate/`)
+> untouched and runnable until the v1.0 cutover gate; the new daemon uses
+> distinct socket/PID/DB paths. Escalate to Jake only at: S01 protocol
+> approval, wave completions, Q6–Q10 decisions when a slice forces one, any
+> LAN-exposure/security decision, and the v0.9/v1.0 parity gates. Track child
+> progress via `AgentGetProgress`; file durable follow-ups via
+> `AgentCreateIssue`.
 
 ## References
 
