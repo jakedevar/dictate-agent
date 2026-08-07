@@ -1,7 +1,7 @@
 ---
 date: 2026-08-07T16:15:48-07:00
 researcher: Claude (RSI Epic-lead session bba123fa)
-git_commit: d82591d1434b55974c7c0d2134b6e2a1b47f28bd
+git_commit: 943b556d566c3bf0096e0b30e45ef1ed1b9e656e
 branch: rsi/bba123fa
 repository: dictate_agent
 topic: "Wispr Flow parity — Wave 0 execution (S00 + R1–R4 complete, S01 in flight)"
@@ -16,20 +16,54 @@ type: orchestration_handoff
 
 ## Immediate Next Action
 
-Review S01's `dictate-proto` design when child session `c25bc78e` completes
-(it was still running at handoff time, working correctly in its own sandbox).
-The Epic-lead must personally approve the protocol before S02 consumes it —
-it is the shared contract for S02 (UDS IPC), S33 (network API), and S32 (UI).
-Then dispatch S02 (Feature, opus/xhigh), then open the Wave 1 fan-out.
+Review S02's daemon control plane when child session `c0ce10fb` completes
+(dispatched and running at handoff time). Check especially: cancellation from
+every non-terminal state, session-ownership enforcement on Stop/Cancel, the
+concurrent-command tests, and that the signal path genuinely shares the
+command code path rather than duplicating it. Then open the **Wave 1 fan-out**
+— S10, S11, S12, S13, S30, S31 can all go in parallel per the DAG.
 
 ## Task(s)
 
 - Execute the Epic-lead kickoff prompt in the master slice map — **in progress**
 - Wave 0 research spikes R1–R4 — **complete** (all four returned verdicts)
-- S00 repo reconciliation & workspace scaffold — **complete, independently verified**
-- S01 protocol crate — **dispatched, in flight** (`c25bc78e`)
-- S02 daemon skeleton — **not started** (gated on S01 review)
-- Wave 1 fan-out — **not started**
+- S00 repo reconciliation & workspace scaffold — **complete, verified (78 tests)**
+- S01 protocol crate — **complete, reviewed, APPROVED with one overrule (225 tests)**
+- S01-FIX deny-by-default route gating — **complete, verified (225 tests)**
+- S02 daemon skeleton — **dispatched, in flight** (`c0ce10fb`)
+- Wave 1 fan-out — **not started** (gated on S02)
+
+## S01 review — approved, with one security overrule
+
+S01 delivered `dictate-proto` (225 workspace tests green, clippy clean,
+`docs/protocol.md` for S32/S33 implementers) and — good behavior worth
+repeating — flagged five of its own decisions for the lead to overrule rather
+than burying them. Four were accepted; one was a real defect.
+
+**Overruled: `Capabilities::allows_route` was fail-open.** An empty `routes`
+list read as "allow everything", and *both* `Capabilities::default()` and any
+JSON omitting the field produce exactly that state — while `Features` sitting
+beside it in the same struct is deliberately deny-by-default. The exposed path
+is not theoretical: `Route::Timer` runs `systemd-run` on the host and S33 will
+serve this protocol over the LAN, so a config bug or a hand-rolled client
+could have obtained host command execution. Fixed in `5f15051`
+(`routes.contains(route)`), wire format unchanged, 23/23 golden tests
+unaffected, verified by the lead.
+
+Accepted as-is: the added `Event::InjectionResolved` (a non-terminal
+`AwaitingConsent` needs one, and adding it post-S33 would be breaking); no
+session id on Stop/Cancel (S02 enforces ownership daemon-side; an optional
+field is additive later); `raw_text` gated only by docs (deferred to S33's
+security review — a capability flag is additive); `docs/protocol.md` living
+outside `thoughts/` (it is implementer documentation, not a thoughts artifact).
+
+Notable design choices now locked: additive-only compatibility within
+`PROTOCOL_VERSION`, deliberately asymmetric on unknowns (unknown event/result
+degrades to `Unknown`; unknown *command* fails so the server answers
+`unsupported_command` rather than stranding a caller); four-state per-stage
+timings (`Ran`/`Skipped`/`Failed`/`NotReported`) so a skip-rule skip stays
+distinguishable from a 0ms run — which is what makes S12's latency obligation
+and the ≤1.0s budget measurable rather than aspirational.
 
 ## Findings that changed the plan
 
