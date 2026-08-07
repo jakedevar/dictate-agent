@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-use crate::text_cleanup::scrub_returned_text;
+use dictate_fmt::text_cleanup::scrub_returned_text;
 
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
@@ -20,7 +20,7 @@ pub struct LocalExecutor {
 
 impl LocalExecutor {
     pub fn new(config: &crate::config::LocalConfig) -> Self {
-        let (host, port) = crate::grammar::parse_host_port(&config.host);
+        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.host);
         Self {
             host,
             port,

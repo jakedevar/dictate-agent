@@ -1,6 +1,11 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+pub use dictate_fmt::GrammarConfig;
+pub use dictate_history::HistoryConfig;
+pub use dictate_inject::OutputConfig;
+pub use dictate_stt::WhisperConfig;
+
 // XDG paths
 const CONFIG_DIR: &str = "dictate-agent";
 const CONFIG_FILE: &str = "config.toml";
@@ -21,27 +26,6 @@ pub struct Config {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
-pub struct WhisperConfig {
-    /// Path to GGUF model file, e.g. ~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin
-    pub model_path: String,
-    /// "cuda" or "cpu"
-    pub device: String,
-    /// Threshold for filtering non-speech (0.0-1.0, higher = stricter)
-    pub no_speech_threshold: f32,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct GrammarConfig {
-    pub enabled: bool,
-    pub host: String,
-    pub model: String,
-    pub timeout_s: f64,
-    pub min_words: usize,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
 pub struct LocalConfig {
     pub host: String,
     pub model: String,
@@ -50,24 +34,9 @@ pub struct LocalConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
-pub struct OutputConfig {
-    pub auto_type: bool,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
 pub struct NotificationConfig {
     pub enabled: bool,
     pub timeout_ms: u32,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct HistoryConfig {
-    pub enabled: bool,
-    /// Empty string means default: ~/.local/share/dictate-agent/history.db
-    pub db_path: String,
-    pub max_response_length: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,29 +49,9 @@ pub struct TimerConfig {
 // --- Default implementations ---
 
 // Config derives Default since all fields implement Default
-// (the #[derive(Default)] would call each field's Default impl)
-
-impl Default for WhisperConfig {
-    fn default() -> Self {
-        Self {
-            model_path: "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin".into(),
-            device: "cuda".into(),
-            no_speech_threshold: 0.6,
-        }
-    }
-}
-
-impl Default for GrammarConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            host: "http://localhost:11434".into(),
-            model: "qwen3:0.6b".into(),
-            timeout_s: 10.0,
-            min_words: 3,
-        }
-    }
-}
+// (the #[derive(Default)] would call each field's Default impl; WhisperConfig,
+// GrammarConfig, OutputConfig, HistoryConfig now derive Default in their
+// owning crates — dictate-stt, dictate-fmt, dictate-inject, dictate-history)
 
 impl Default for LocalConfig {
     fn default() -> Self {
@@ -114,27 +63,11 @@ impl Default for LocalConfig {
     }
 }
 
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self { auto_type: true }
-    }
-}
-
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             timeout_ms: 1250,
-        }
-    }
-}
-
-impl Default for HistoryConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            db_path: String::new(),
-            max_response_length: 10000,
         }
     }
 }

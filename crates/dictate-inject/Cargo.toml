@@ -1,0 +1,11 @@
+[package]
+name = "dictate-inject"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+arboard = { workspace = true }
+enigo = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }

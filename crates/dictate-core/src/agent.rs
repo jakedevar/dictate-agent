@@ -1,14 +1,14 @@
-use crate::audio::AudioCapture;
 use crate::config::Config;
-use crate::grammar::GrammarCorrector;
-use crate::history::HistoryStore;
 use crate::local_executor::LocalExecutor;
 use crate::notify::Notifier;
-use crate::output::OutputHandler;
 use crate::router::{self, RouteType};
 use crate::timer::TimerExecutor;
-use crate::transcribe::Transcriber;
 use anyhow::Result;
+use dictate_audio::AudioCapture;
+use dictate_fmt::GrammarCorrector;
+use dictate_history::HistoryStore;
+use dictate_inject::OutputHandler;
+use dictate_stt::Transcriber;
 use signal_hook::consts::signal::{SIGINT, SIGTERM, SIGUSR1, SIGUSR2};
 use signal_hook_tokio::Signals;
 use std::process::Command;
@@ -53,7 +53,7 @@ impl DictateAgent {
 
         // Try to ensure Ollama is running (non-blocking best-effort)
         {
-            let (host, port) = crate::grammar::parse_host_port(&config.grammar.host);
+            let (host, port) = dictate_fmt::grammar::parse_host_port(&config.grammar.host);
             tokio::spawn(async move {
                 crate::local_executor::ensure_ollama_running(&host, port, 10).await;
             });

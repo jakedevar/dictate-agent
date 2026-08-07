@@ -8,7 +8,7 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use crate::text_cleanup::scrub_returned_text;
+use dictate_fmt::text_cleanup::scrub_returned_text;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

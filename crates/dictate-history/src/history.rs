@@ -86,7 +86,7 @@ impl HistoryStore {
         conn.execute_batch("PRAGMA journal_mode=WAL")?;
 
         // Create tables — same schema as Python history.py:18-66
-        conn.execute_batch(include_str!("../sql/schema.sql"))?;
+        conn.execute_batch(include_str!("../../../sql/schema.sql"))?;
 
         // Insert schema version if absent
         let count: i32 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;

@@ -559,30 +559,93 @@ dependencies = [
 ]
 
 [[package]]
-name = "dictate-agent"
+name = "dictate-audio"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dictate-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
- "chrono",
- "cpal",
- "enigo",
+ "dictate-audio",
+ "dictate-fmt",
+ "dictate-history",
+ "dictate-inject",
+ "dictate-stt",
  "notify-rust",
  "ollama-rs",
  "regex",
- "rusqlite",
  "serde",
- "serde_json",
  "signal-hook",
  "signal-hook-tokio",
- "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "toml",
  "tracing",
- "tracing-subscriber",
+]
+
+[[package]]
+name = "dictate-fmt"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "ollama-rs",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dictate-history"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "tracing",
  "uuid",
+]
+
+[[package]]
+name = "dictate-inject"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "enigo",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "dictate-stt"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dictate-fmt",
+ "serde",
+ "tokio",
+ "tracing",
  "whisper-rs",
+]
+
+[[package]]
+name = "dictated"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dictate-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

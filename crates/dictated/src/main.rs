@@ -1,25 +1,29 @@
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 
-mod agent;
-mod audio;
-mod config;
-mod grammar;
-mod history;
-mod local_executor;
-mod notify;
-mod output;
-mod router;
-mod text_cleanup;
-mod timer;
-mod transcribe;
+use dictate_core::{agent, config};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing (replaces Python's print statements)
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("dictate_agent=info".parse()?))
-        .init();
+    // Initialize tracing (replaces Python's print statements).
+    //
+    // Pre-workspace-split this was a single crate ("dictate_agent"), so one
+    // `dictate_agent=info` directive covered every module. The split spread
+    // that code across several crates, so the default floor now has to name
+    // each of them individually to keep the same log verbosity as before.
+    let mut filter = EnvFilter::from_default_env();
+    for target in [
+        "dictate_core",
+        "dictate_audio",
+        "dictate_stt",
+        "dictate_fmt",
+        "dictate_history",
+        "dictate_inject",
+        "dictated",
+    ] {
+        filter = filter.add_directive(format!("{target}=info").parse()?);
+    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     // Parse args: --check flag for dependency verification
     let args: Vec<String> = std::env::args().collect();

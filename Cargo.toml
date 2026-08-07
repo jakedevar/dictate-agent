@@ -1,17 +1,22 @@
-[package]
-name = "dictate-agent"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2021"
 
-[dependencies]
+[workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 
 # Config
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-# Duration parsing
+# Duration parsing / regex
 regex = "1"
 
 # Logging
@@ -22,35 +27,41 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
 
-# Signal handling (Phase 2)
+# Signal handling
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
-tokio-stream = "0.1"
 
-# Audio capture (Phase 3)
+# Audio capture
 cpal = "0.15"
 
-# Whisper transcription (Phase 4)
+# Whisper transcription
 # Build with WHISPER_DONT_GENERATE_BINDINGS=1 to use pre-generated bindings
 whisper-rs = { version = "0.16", features = ["cuda"] }
 
-# Ollama client (Phase 6)
+# Ollama client
 ollama-rs = { version = "0.3", features = ["stream"] }
-serde_json = "1"
 
-# Clipboard + keyboard (Phase 5)
+# Clipboard + keyboard
 arboard = "3"
 enigo = { version = "0.3", features = ["x11rb"] }
 
-# Desktop notifications (Phase 5)
+# Desktop notifications
 notify-rust = "4"
 
-# SQLite (Phase 7)
+# SQLite
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-# Misc (Phase 7)
+# Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# Workspace crates
+dictate-audio = { path = "crates/dictate-audio" }
+dictate-core = { path = "crates/dictate-core" }
+dictate-fmt = { path = "crates/dictate-fmt" }
+dictate-history = { path = "crates/dictate-history" }
+dictate-inject = { path = "crates/dictate-inject" }
+dictate-stt = { path = "crates/dictate-stt" }
 
 [profile.release]
 opt-level = 3

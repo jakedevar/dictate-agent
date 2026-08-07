@@ -1,0 +1,12 @@
+[package]
+name = "dictate-stt"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+dictate-fmt = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+whisper-rs = { workspace = true }

@@ -1,0 +1,23 @@
+[package]
+name = "dictate-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+arboard = { workspace = true }
+dictate-audio = { workspace = true }
+dictate-fmt = { workspace = true }
+dictate-history = { workspace = true }
+dictate-inject = { workspace = true }
+dictate-stt = { workspace = true }
+notify-rust = { workspace = true }
+ollama-rs = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
