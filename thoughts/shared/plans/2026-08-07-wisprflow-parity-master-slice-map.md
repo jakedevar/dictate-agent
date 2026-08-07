@@ -243,6 +243,9 @@ for reproducible, CDN-immutable pulls. **Adapt:** static catalog manifest
 the non-hf-hub fallback path. **Avoid:** Handy's "no forced first-run
 download" — we are CLI-first, so default-pull `large-v3-turbo` (or CPU
 fallback) on first invocation rather than deferring to a UI wizard.
+**R2 hook:** S12 MUST record real turbo-CUDA p50/p95 decode latency into the
+timings table — that measurement is the gate that converts R2's streaming
+DEFER into a GO/NO-GO. Do not skip it.
 
 **S13 — Injection v2 (`dictate-inject`)** · implementer · M
 Scope: `Injector` trait; X11 backend hardening (arboard+enigo paste w/
@@ -258,6 +261,14 @@ split (xdotool for X11; wtype→kwtype→dotool→ydotool chain for Wayland), pl
 KDE-Wayland detection that gates `wtype` off (no `zwp_virtual_keyboard` there).
 **Note:** Handy's paste-transaction engine is macOS/Windows-only — there is
 nothing to crib for X11 clipboard paste-with-save/restore; we build it ourselves.
+**R3 trait constraint (design the trait for this NOW, even though X11 ships
+first):** `Injector::inject()` must be **async** and must return a distinct
+**"pending user consent"** outcome alongside success/failure — on GNOME/KDE
+Wayland, injection goes through a consent-gated portal, so a synchronous
+success/failure signature cannot represent reality and would force a painful
+refactor later. Also: clipboard save/restore is *unsupported* on GNOME Wayland,
+so the per-app `paste|type|off` policy must be able to resolve to `type` from a
+backend capability probe, not only from user config.
 
 ### Wave 2 — The Wispr magic layer (parallel; this is where parity is won)
 
@@ -298,6 +309,11 @@ inject policy, dictionary scope, snippet scope}; app-category defaults
 Wayland provider stub (compositor IPC adapters listed in R3).
 Verify: unit tests on matching/precedence; live X11 smoke (daemon check:
 context events in stream).
+**R3 trait constraint:** `ContextProvider` must treat **"no window context" as
+a normal first-class value, not an error** — on GNOME Wayland, absent context
+is the *baseline* state (it needs a user-installed Shell extension), not a
+failure. Every consumer (per-app tone, inject policy, dictionary/snippet scope)
+must therefore have a defined no-context default path.
 
 **S24 — Snippets** · implementer · S
 Scope: spoken-trigger → expansion post-STT ("insert work email"), variables
@@ -372,11 +388,18 @@ protocol must stay thin-client-friendly (single-request transcribe endpoint,
 chunked-audio WS, bearer auth); recommend Tailscale/WireGuard for off-LAN
 rather than raw TLS exposure. Server only; clients out of scope.
 
-**S34 — Wake word ("Hey Flow" parity)** · implementer · S · optional, after R4
-Scope: always-on low-power listener (openWakeWord/rustpotter per R4 verdict)
-→ triggers hands-free session; strict opt-in (always-on mic is a privacy
-posture change); config keyword.
-Verify: fixture-audio detection tests; false-positive rate logged.
+**S34 — Wake word ("Hey Flow" parity)** · implementer · S · optional · **R4 verdict: BUILD, conditional**
+Scope: always-on low-power listener → triggers hands-free session; strict
+opt-in (always-on mic is a privacy posture change); config keyword.
+**Engine: openWakeWord via `oww_rs` (Apache-2.0).** Porcupine is DROPPED —
+it phones home for license validation, which is disqualifying here.
+**Gate (do this FIRST, half-day):** benchmark openWakeWord vs livekit-wakeword
+idle CPU on Jake's actual machine, gated behind the S11 Silero VAD.
+**If measured idle cost > ~2–3% of one core, STOP and defer S34** — no
+independent idle-CPU figure exists for any engine, so this must be measured,
+not assumed.
+Verify: fixture-audio detection tests; false-positive rate logged; idle-CPU
+measurement recorded as a daemon-level check.
 
 **S35 — Scratchpad / voice notes** · implementer · S
 Scope: route "note …" → append to notes store (no injection); retrieve via
@@ -436,18 +459,56 @@ propagated inline into S12/S31/S32/S13/S42 below.
 Follow-ups (not blocking): Whispering + VoiceInk secondary passes were skipped
 (time-boxed); true click-through is unsolved in Handy — open design work for S32.
 
-**R2 — Streaming partials feasibility** · implementer · S
-whisper.cpp stream-mode quality on turbo GGUF; verdict gates a future S1x
-"live partials in HUD" slice (inject-at-end stays regardless — matches Wispr).
+**R2 — Streaming partials feasibility** · **✅ COMPLETE 2026-08-07 — verdict: DEFER**
+Artifact: `thoughts/shared/research/2026-08-07-r2-streaming-partials-feasibility.md`
+(commit `8ed09b8`). **Do not build live partials now.** If it ever graduates:
+a single `large-v3-turbo` instance driven by a LocalAgreement-2-style
+chunk-commit loop over whisper-rs `full()` (VAD-gated windows, prompt-token
+continuity, no re-decode past the confirmed prefix) — NOT the naive
+`stream.cpp` sliding window, NOT a two-model split.
+**Killer risk:** whisper-rs exposes no state-reuse/incremental-decode API, so
+every partial tick is a full mel→encoder→decoder pass contending with the
+authoritative decode inside the same ≤1.0s budget. Secondary (reasoned, not
+benchmarked): turbo's pruned 4-layer decoder likely flickers on short
+repeatedly-reprompted windows, making the HUD actively distracting.
+**Revisit trigger: after S12 lands real turbo-CUDA numbers** — that sizes the
+remaining GPU headroom and converts this DEFER into a real GO/NO-GO.
+Unaffected either way: inject-at-end stays (matches Wispr); partials would be
+a HUD affordance only, never injected text.
 
-**R3 — Wayland injection & window-context, 2026 state** · implementer · S
-wlr virtual-keyboard, `wtype`, xdg-desktop-portal RemoteDesktop, **libei**
-maturity; compositor IPC (Hyprland/sway) for active-window; verdict shapes
-S13/S23 Wayland backends. (Jake is on X11 today — this is future-proofing.)
+**R3 — Wayland injection & window-context, 2026 state** · **✅ COMPLETE 2026-08-07**
+Artifact: `thoughts/shared/research/2026-08-07-r3-wayland-injection-context.md`
+(branch `rsi/f24927f5`, commit `d8d1478`).
+**Inject:** wlroots (Hyprland/sway/river) gets native no-prompt injection via
+`wtype`/virtual-keyboard-v1; GNOME/KDE only get async, **consent-gated**
+portal+libei (GNOME default since v45; KDE portal-only, less mature).
+**Clipboard:** save/paste/restore workable on wlroots (`ext-data-control-v1`);
+**unreliable/unsupported on GNOME** (no in-compositor API; portal Clipboard
+still unshipped) — this directly threatens our locked decision #5
+(clipboard-paste as primary injection) *on GNOME/Wayland only*. X11 unaffected.
+**Context:** Hyprland/sway first-class IPC; KDE needs a scripted DBus service;
+GNOME requires a user-installed unofficial Shell extension.
+**Load-bearing trait constraint (see S13/S23):** GNOME's baseline for both
+injection and context is *absent or consent-gated*, not merely degraded.
 
-**R4 — Wake-word engine bake-off** · lookup_fast→implementer · S
-openWakeWord (ONNX) vs rustpotter vs Porcupine (license!); CPU cost while
-idle; verdict gates S34.
+**R4 — Wake-word engine bake-off** · **✅ COMPLETE 2026-08-07 — verdict: BUILD-S34 (conditional)**
+Artifact: `thoughts/shared/research/2026-08-07-r4-wake-word-bakeoff.md`
+(commit `51bdd11`). Ranked: **1) openWakeWord** via `oww_rs` Rust wrapper
+(Apache-2.0, mature, proven at Home Assistant scale) · 2) livekit-wakeword
+(new, pure-Rust — worth a parallel spike) · 3) rustpotter (fallback only;
+dormant since Oct 2023) · 4) **Porcupine — DROP**.
+**License blocker (Porcupine):** requires a Picovoice AccessKey validated
+against their servers (confirmed phone-home; `create()` hangs when firewalled)
+and the free tier ended 2026-06-30 with no non-commercial path. Disqualifying
+on principle for a fully-local product.
+**Idle CPU: NOT measured on target hardware** — no engine has an independent
+figure. Best anchor: openWakeWord runs 15–20 models concurrently in real time
+on one Raspberry Pi 3 core, so cost on Jake's workstation is very likely
+negligible, especially gated behind Silero VAD (<1ms/chunk).
+**Condition:** S34 opens with a half-day local benchmark of openWakeWord vs
+livekit-wakeword on Jake's machine; **fall back to DEFER-S34 if measured idle
+cost exceeds ~2–3% of one core** — a P2/optional feature is not worth real
+standing resource cost.
 
 ---
 
