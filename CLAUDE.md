@@ -28,6 +28,9 @@ inverse of reality on this branch and was reconciled in S00. There is no
 
 ```
 crates/
+  dictate-proto    wire protocol: commands, events, errors, versioned
+                    envelope, binary audio-frame codec. Types + serde only —
+                    no transport, no tokio, no I/O. See docs/protocol.md
   dictate-audio    cpal capture (AudioCapture)
   dictate-stt      whisper-rs transcription (Transcriber) + WhisperConfig
   dictate-fmt      grammar correction + text cleanup (GrammarCorrector) + GrammarConfig
@@ -51,10 +54,15 @@ pulling it from `dictate-core::config` — `dictate-core` already depends on
 every leaf crate, so the reverse would be a circular crate dependency.
 `dictate-core::config::Config` re-exports and aggregates all of them.
 
+`dictate-proto` deliberately depends on nothing in the workspace, and
+nothing yet depends on it — S02 (daemon), S32 (UI), and S33 (network API)
+are its consumers. It is pinned by golden-JSON tests; read the
+compatibility rule in its crate docs before changing any wire type.
+
 Crates NOT yet created (owned by later slices in the master plan, do not
-add empty shells for these): `dictate-proto` (S01), `dictate-vad` (S11),
-`dictate-dict` (S22), `dictate-context` (S23), `dictate-hotkey` (S31),
-`dictate-cli` (S02), `dictate-server` (S33).
+add empty shells for these): `dictate-vad` (S11), `dictate-dict` (S22),
+`dictate-context` (S23), `dictate-hotkey` (S31), `dictate-cli` (S02),
+`dictate-server` (S33).
 
 ## Build & test
 
