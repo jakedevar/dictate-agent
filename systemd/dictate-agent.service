@@ -9,7 +9,7 @@ ExecStart=%h/.local/bin/dictate-agent
 Restart=on-failure
 RestartSec=5
 Environment=DISPLAY=:0
-Environment=RUST_LOG=dictate_agent=info
+Environment=RUST_LOG=dictated=info,dictate_core=info,dictate_audio=info,dictate_stt=info,dictate_fmt=info,dictate_history=info,dictate_inject=info
 
 # Resource limits — whisper.cpp GGUF model + VRAM management
 MemoryMax=4G
