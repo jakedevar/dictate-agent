@@ -162,12 +162,17 @@ pub struct Capabilities {
 impl Capabilities {
     /// Whether this connection may invoke the given route.
     ///
-    /// An empty `routes` list means "unspecified", which is read permissively
-    /// for backward compatibility with a peer predating route gating; S33 must
-    /// populate it explicitly.
+    /// Deny-by-default: an empty `routes` list permits *no* route. This is
+    /// the fail-safe direction and matches [`Features`], where every flag
+    /// defaults to `false` rather than to "on". A capability set that wants a
+    /// route must name it explicitly — there is no implicit "unspecified
+    /// means everything", because `Route::Timer` runs `systemd-run` on the
+    /// host and `Route::Local` invokes the local LLM, and a peer that omits
+    /// `routes` (an older client, a config bug, or a hand-rolled client) must
+    /// not be silently granted either.
     #[must_use]
     pub fn allows_route(&self, route: &Route) -> bool {
-        self.routes.is_empty() || self.routes.contains(route)
+        self.routes.contains(route)
     }
 
     /// The capability set for a trusted local connection: everything on.
@@ -421,9 +426,21 @@ mod tests {
     }
 
     #[test]
-    fn empty_route_list_is_permissive_for_older_peers() {
+    fn default_capabilities_permit_no_route() {
         let caps = Capabilities::default();
-        assert!(caps.allows_route(&Route::Timer));
+        for r in Route::known() {
+            assert!(!caps.allows_route(r), "default must not allow {r}");
+        }
+    }
+
+    #[test]
+    fn capabilities_with_omitted_routes_field_permit_no_route() {
+        // The v1-peer / hand-rolled-client case: `routes` is absent from the
+        // wire payload entirely, not just empty.
+        let caps: Capabilities = serde_json::from_str("{}").unwrap();
+        for r in Route::known() {
+            assert!(!caps.allows_route(r), "omitted routes must not allow {r}");
+        }
     }
 
     #[test]
