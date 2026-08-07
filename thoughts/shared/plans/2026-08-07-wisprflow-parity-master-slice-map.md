@@ -8,8 +8,8 @@ topic: "Wispr Flow parity — master orchestration slice map (Rust rebuild)"
 tags: [plan, orchestration, slice-map, rust, wispr-flow, whisper, tauri, api-server, parity]
 status: active
 last_updated: 2026-08-07
-last_updated_by: Claude (RSI master orchestration session)
-last_updated_note: "Recorded Jake's Q1–Q5 decisions; S33 phone-client note; Epic-lead kickoff prompt added"
+last_updated_by: Claude (RSI Epic-lead session bba123fa)
+last_updated_note: "Wave 0 dispatched (S00 + R1–R4). Ground truth corrected: 78-test baseline verified, src_rust_archive discrepancy resolved, Python daemon deletion by 5e16667 found and folded into S00 Task 1."
 type: master_slice_map
 ---
 
@@ -32,8 +32,8 @@ routes (systemd timers, local LLM executor) that Wispr doesn't offer.
 
 | Asset | State | Where |
 |---|---|---|
-| Python daemon (reference impl) | Working, in daily use | `dictate/` (2,304 LOC, 13 modules) |
-| **Rust port, Phases 1–7** | Code-complete vs Python daemon; builds; **74 tests pass**; clippy/deploy artifacts outstanding | `Cargo.toml` + `src/` (2,783 LOC, 12 modules) |
+| Python daemon (reference impl) | **DELETED on local `master` by commit `5e16667`**; intact on `origin/master`; S00 restores it | `dictate/` (2,304 LOC, 13 modules) |
+| **Rust port, Phases 1–7** | Code-complete vs Python daemon; builds; **78 tests pass (verified 2026-08-07, exit 0)**; clippy/deploy artifacts outstanding | `Cargo.toml` + `src/` (2,783 LOC, 13 modules) |
 | Rewrite feasibility research + real benchmarks | Final: Rust + whisper-rs decision locked | `thoughts/shared/research/2026-04-10-rust-go-rewrite-feasibility.md` |
 | 7-phase rewrite plan | Executed | `thoughts/shared/plans/2026-04-10-rust-rewrite.md` |
 | Implementation handoff (open items list) | Phases done, cleanup tasks listed | `thoughts/shared/handoffs/general/2026-04-10_17-51-32_rust-rewrite-implementation.md` |
@@ -41,11 +41,22 @@ routes (systemd timers, local LLM executor) that Wispr doesn't offer.
 | Real perf data (3,595 interactions) | avg transcription 0.183s (HF/5080), avg total pipeline 0.87s; whisper.cpp projected 0.4–0.6s | feasibility doc §Whisper Performance |
 | whisper-rs build traps | Documented: `WHISPER_DONT_GENERATE_BINDINGS=1`, `PATH="/opt/cuda/bin:$PATH"`, API deltas from 0.14→0.16 | handoff §Learnings |
 
-**Repo-state discrepancy to reconcile in S00:** `CLAUDE.md` claims the Rust
-port lives archived in `src_rust_archive/` with Python active; on this branch
-the Rust port is live at `src/`. Whichever is true on `master`, S00 promotes
-the Rust code to a workspace and keeps Python running side-by-side until
-cutover (do not delete `dictate/` until v1.0 parity gate passes).
+**Repo-state discrepancy — RESOLVED by direct inspection 2026-08-07 (Epic-lead):**
+`src_rust_archive/` does not exist. The Rust port is live at `src/` and is the
+single source of truth. The stale `CLAUDE.md` that claimed otherwise was itself
+deleted by `5e16667`, so the contradiction is moot; S00 writes a fresh one.
+
+**Destructive-commit finding (Epic-lead, 2026-08-07) — drives S00 Task 1:**
+Commit `5e16667` ("saving agent created work") deleted the entire Python
+reference daemon `dictate/` (13 modules, 2,304 LOC) and `CLAUDE.md` alongside
+legitimate Rust improvements. This contradicts locked decision #8 (side-by-side
+migration) and the v1.0 cutover gate, both of which require the Python daemon
+to stay runnable. Nothing is lost: `dictate/` is intact on `origin/master`, and
+local `master` is 5 commits ahead / 0 behind, all unpushed. S00 restores
+`dictate/` from `origin/master` as its first, standalone commit.
+Note `pyproject.toml` still declares `packages = ["dictate"]` and the
+`dictate.main:main` entry point, so the tree is currently inconsistent with its
+own packaging manifest until that restore lands.
 
 ## Parity target — Wispr Flow feature matrix
 
@@ -155,13 +166,25 @@ worker session produces its own detailed plan + verification manifest
 
 ### Wave 0 — Foundation (sequential)
 
-**S00 — Repo reconciliation & workspace scaffold** · implementer · M
+**S00 — Repo reconciliation & workspace scaffold** · implementer · M · **DISPATCHED 2026-08-07**
 Goal: single source of truth for the Rust code; workspace layout above.
-Scope: resolve `src/` vs `src_rust_archive/` vs `master`; split the existing
-12 modules into workspace crates (mechanical moves, keep all 74 tests green);
-finish handoff leftovers (clippy clean, `cargo build --release`, systemd unit,
-`config.example.toml`, `scripts/run.sh`, CLAUDE.md rewrite); commit `Cargo.lock`.
-Verify: `cargo test` ≥74 green in workspace; `--check` binary runs; clippy clean.
+Scope, as actually dispatched (three tasks, in order):
+1. **Restore `dictate/` from `origin/master`** as a standalone commit — undoes
+   `5e16667`'s collateral deletion; HARD constraint (Jake's daily driver).
+2. **Workspace split** of the 13 modules into *only* the crates populatable
+   with existing code today: `dictate-audio`, `dictate-stt`, `dictate-fmt`,
+   `dictate-history`, `dictate-inject`, `dictate-core`, `dictated`. Explicitly
+   **no placeholder crates** for `dictate-proto`/`-vad`/`-dict`/`-context`/
+   `-hotkey`/`-cli`/`-server` — those are owned by S01/S11/S22/S23/S31/S02/S33
+   and empty shells would create merge churn and false structure. Mechanical
+   moves only; a module that resists a clean boundary stays in `dictate-core`
+   with a `// TODO(S0x)` rather than an invented design.
+3. **Handoff leftovers**: clippy clean, `cargo build --release`, systemd unit,
+   `config.example.toml`, `scripts/run.sh`/`Makefile`, fresh `CLAUDE.md`
+   (complementing the existing `AGENTS.md`), CUDA build env vars encoded in a
+   durable target; commit `Cargo.lock`.
+Verify: `cargo test --workspace` **≥78 green** (verified baseline, not the
+stale 74); clippy clean; release build ok; binary still honors SIGUSR1/2.
 
 **S01 — Protocol crate (`dictate-proto`)** · **architect** · M · ← keystone
 Goal: the one message contract for IPC + network API + UI.
@@ -213,6 +236,16 @@ CPU/tiny fallback feature flag for CI. Known build env vars documented in
 handoff §Learnings — bake into `build.rs` docs + `justfile`.
 Verify: fixture WAVs → expected transcripts (tiny model, CPU, in CI); CUDA
 smoke test target for the 5080 box; cold-load ≤5s (daemon check).
+**R1 inputs (adopt):** chunked sha256 verify-then-delete-on-mismatch so a
+corrupt/partial GGUF forces a clean retry; hf-hub revision-pinned commit SHAs
+for reproducible, CDN-immutable pulls. **Adapt:** static catalog manifest
+(stripped to our single whisper family); resumable Range-header download for
+the non-hf-hub fallback path. **Avoid:** Handy's "no forced first-run
+download" — we are CLI-first, so default-pull `large-v3-turbo` (or CPU
+fallback) on first invocation rather than deferring to a UI wizard.
+**R2 hook:** S12 MUST record real turbo-CUDA p50/p95 decode latency into the
+timings table — that measurement is the gate that converts R2's streaming
+DEFER into a GO/NO-GO. Do not skip it.
 
 **S13 — Injection v2 (`dictate-inject`)** · implementer · M
 Scope: `Injector` trait; X11 backend hardening (arboard+enigo paste w/
@@ -223,6 +256,19 @@ on inject failure, text goes to clipboard + notification). Wayland backend
 stub behind trait (real impl gated on R3).
 Verify: unit tests on policy resolution + chunking; Xvfb + xterm read-back
 smoke test (automated); manual TUI items only for focus-dependent cases.
+**R1 inputs (adapt):** runtime tool-availability probing with an X11/Wayland
+split (xdotool for X11; wtype→kwtype→dotool→ydotool chain for Wayland), plus
+KDE-Wayland detection that gates `wtype` off (no `zwp_virtual_keyboard` there).
+**Note:** Handy's paste-transaction engine is macOS/Windows-only — there is
+nothing to crib for X11 clipboard paste-with-save/restore; we build it ourselves.
+**R3 trait constraint (design the trait for this NOW, even though X11 ships
+first):** `Injector::inject()` must be **async** and must return a distinct
+**"pending user consent"** outcome alongside success/failure — on GNOME/KDE
+Wayland, injection goes through a consent-gated portal, so a synchronous
+success/failure signature cannot represent reality and would force a painful
+refactor later. Also: clipboard save/restore is *unsupported* on GNOME Wayland,
+so the per-app `paste|type|off` policy must be able to resolve to `type` from a
+backend capability probe, not only from user config.
 
 ### Wave 2 — The Wispr magic layer (parallel; this is where parity is won)
 
@@ -263,6 +309,11 @@ inject policy, dictionary scope, snippet scope}; app-category defaults
 Wayland provider stub (compositor IPC adapters listed in R3).
 Verify: unit tests on matching/precedence; live X11 smoke (daemon check:
 context events in stream).
+**R3 trait constraint:** `ContextProvider` must treat **"no window context" as
+a normal first-class value, not an error** — on GNOME Wayland, absent context
+is the *baseline* state (it needs a user-installed Shell extension), not a
+failure. Every consumer (per-app tone, inject policy, dictionary/snippet scope)
+must therefore have a defined no-context default path.
 
 **S24 — Snippets** · implementer · S
 Scope: spoken-trigger → expansion post-STT ("insert work email"), variables
@@ -295,6 +346,12 @@ permission docs + graceful degradation to WM-keybind/signal path (today's
 flow keeps working); double-tap-to-lock hands-free (pairs with S11 auto-stop).
 Verify: uinput-driven automated tests (inject synthetic key events, assert
 daemon state transitions); permission-missing degradation test.
+**R1 inputs (adopt):** single-owner-thread `HotkeyManager` + mpsc command
+channel (avoids evdev cross-thread races); **release-grace debounce window** —
+defer key-up briefly and cancel it if a matching key-down arrives, which is how
+Handy absorbs X11 auto-repeat bursts that otherwise flap hold-to-talk. **Avoid:**
+dynamic register/unregister of the cancel shortcut (unstable on Linux) — make
+the cancel chord a statically-grabbed key.
 
 **S32 — Tauri UI v1** · implementer · L (deps: S01, S02, S30, S22)
 Scope: tray + settings editor (config.toml round-trip), history browser w/
@@ -304,6 +361,15 @@ onboarding checklist (deps, permissions, model download). X11 overlay
 first; Wayland layer-shell noted as best-effort. TS per Jake's allowance.
 Verify: UI talks only `dictate-proto` (contract tests); daemon runs headless
 without it (CI job proves).
+**R1 inputs (adopt):** overlay as a separate always-on-top, transparent,
+undecorated, non-focusable `WebviewWindow` reused across states; throttled
+(~30 FPS) `mic-level` event bridge for the audio-level meter; monitor-under-
+cursor + DPI-scaled position math kept separate from the layering mechanism.
+**Open design work — do not assume solved:** Handy never calls
+`set_ignore_cursor_events`; it has NO true click-through, only
+`focusable(false)`/`skip_taskbar`/always-on-top. S32 must design and verify
+click-through itself. Adapt gtk-layer-shell only as the Wayland best-effort
+fallback behind an X11-native primary path.
 
 **S33 — Network API server (`dictate-server`) — the stretch goal** · **architect** (security) + implementer · M (cheap because S01 paid the cost)
 Scope: axum: WS endpoint speaking `dictate-proto` (control + events + binary
@@ -322,11 +388,18 @@ protocol must stay thin-client-friendly (single-request transcribe endpoint,
 chunked-audio WS, bearer auth); recommend Tailscale/WireGuard for off-LAN
 rather than raw TLS exposure. Server only; clients out of scope.
 
-**S34 — Wake word ("Hey Flow" parity)** · implementer · S · optional, after R4
-Scope: always-on low-power listener (openWakeWord/rustpotter per R4 verdict)
-→ triggers hands-free session; strict opt-in (always-on mic is a privacy
-posture change); config keyword.
-Verify: fixture-audio detection tests; false-positive rate logged.
+**S34 — Wake word ("Hey Flow" parity)** · implementer · S · optional · **R4 verdict: BUILD, conditional**
+Scope: always-on low-power listener → triggers hands-free session; strict
+opt-in (always-on mic is a privacy posture change); config keyword.
+**Engine: openWakeWord via `oww_rs` (Apache-2.0).** Porcupine is DROPPED —
+it phones home for license validation, which is disqualifying here.
+**Gate (do this FIRST, half-day):** benchmark openWakeWord vs livekit-wakeword
+idle CPU on Jake's actual machine, gated behind the S11 Silero VAD.
+**If measured idle cost > ~2–3% of one core, STOP and defer S34** — no
+independent idle-CPU figure exists for any engine, so this must be measured,
+not assumed.
+Verify: fixture-audio detection tests; false-positive rate logged; idle-CPU
+measurement recorded as a daemon-level check.
 
 **S35 — Scratchpad / voice notes** · implementer · S
 Scope: route "note …" → append to notes store (no injection); retrieve via
@@ -365,28 +438,77 @@ release artifacts (cargo-dist or hand-rolled); AUR PKGBUILD; first-run model
 download; `justfile` encoding the CUDA env-var build incantations; docs:
 INSTALL.md per platform, migration-from-Python guide, LAN-API setup guide.
 Verify: clean-VM install script smoke; CI green matrix.
+**R1 inputs (adopt):** `build.rs` `$ORIGIN`-relative rpath so the binary finds
+a co-located whisper.cpp shared lib without ldconfig; a CI staging script that
+hard-fails when the CPU-fallback backend is missing (enforces locked decision
+#1's fallback). **Adapt:** per-platform feature-flag shape and the GH Actions
+release matrix — but substitute a CUDA toolkit step for Handy's Vulkan SDK.
+**Avoid:** Handy has no CUDA path at all; its Vulkan/glslc env-vars do not
+transfer. Our own documented CUDA incantations remain authoritative.
 
 ### Research spikes (cheap, early, parallelizable — run during Wave 0)
 
-**R1 — Cannibalization audit: Handy (+ Whispering)** · implementer · S
-[Handy](https://github.com/cjpais/Handy) is MIT, Rust+Tauri, whisper-rs,
-Linux/mac/win — the closest existing thing to this plan. Audit for: hotkey
-handling per-platform, overlay/HUD approach, model manager UX, Wayland/mac
-workarounds, packaging. Use `/cannibalize_research` against a clone. Output:
-adopt/adapt/avoid list feeding S12/S13/S31/S32/S40.
+**R1 — Cannibalization audit: Handy (+ Whispering)** · **✅ COMPLETE 2026-08-07**
+Artifact: `thoughts/shared/research/2026-08-07-r1-handy-cannibalization-audit.md`
+(branch `rsi/76789b78`, commit `61661cf`). Handy audited at pinned commit
+`b428ae4c`. **25 findings: 12 ADOPT / 6 ADAPT / 7 AVOID** across the five axes.
+**No AVOID invalidates a locked decision** — the CUDA finding reinforces #1.
+License: Handy is MIT; verbatim reuse of code/constants/scripts requires an
+attribution NOTICE. Patterns/ideas carry no obligation. Per-slice actions are
+propagated inline into S12/S31/S32/S13/S42 below.
+Follow-ups (not blocking): Whispering + VoiceInk secondary passes were skipped
+(time-boxed); true click-through is unsolved in Handy — open design work for S32.
 
-**R2 — Streaming partials feasibility** · implementer · S
-whisper.cpp stream-mode quality on turbo GGUF; verdict gates a future S1x
-"live partials in HUD" slice (inject-at-end stays regardless — matches Wispr).
+**R2 — Streaming partials feasibility** · **✅ COMPLETE 2026-08-07 — verdict: DEFER**
+Artifact: `thoughts/shared/research/2026-08-07-r2-streaming-partials-feasibility.md`
+(commit `8ed09b8`). **Do not build live partials now.** If it ever graduates:
+a single `large-v3-turbo` instance driven by a LocalAgreement-2-style
+chunk-commit loop over whisper-rs `full()` (VAD-gated windows, prompt-token
+continuity, no re-decode past the confirmed prefix) — NOT the naive
+`stream.cpp` sliding window, NOT a two-model split.
+**Killer risk:** whisper-rs exposes no state-reuse/incremental-decode API, so
+every partial tick is a full mel→encoder→decoder pass contending with the
+authoritative decode inside the same ≤1.0s budget. Secondary (reasoned, not
+benchmarked): turbo's pruned 4-layer decoder likely flickers on short
+repeatedly-reprompted windows, making the HUD actively distracting.
+**Revisit trigger: after S12 lands real turbo-CUDA numbers** — that sizes the
+remaining GPU headroom and converts this DEFER into a real GO/NO-GO.
+Unaffected either way: inject-at-end stays (matches Wispr); partials would be
+a HUD affordance only, never injected text.
 
-**R3 — Wayland injection & window-context, 2026 state** · implementer · S
-wlr virtual-keyboard, `wtype`, xdg-desktop-portal RemoteDesktop, **libei**
-maturity; compositor IPC (Hyprland/sway) for active-window; verdict shapes
-S13/S23 Wayland backends. (Jake is on X11 today — this is future-proofing.)
+**R3 — Wayland injection & window-context, 2026 state** · **✅ COMPLETE 2026-08-07**
+Artifact: `thoughts/shared/research/2026-08-07-r3-wayland-injection-context.md`
+(branch `rsi/f24927f5`, commit `d8d1478`).
+**Inject:** wlroots (Hyprland/sway/river) gets native no-prompt injection via
+`wtype`/virtual-keyboard-v1; GNOME/KDE only get async, **consent-gated**
+portal+libei (GNOME default since v45; KDE portal-only, less mature).
+**Clipboard:** save/paste/restore workable on wlroots (`ext-data-control-v1`);
+**unreliable/unsupported on GNOME** (no in-compositor API; portal Clipboard
+still unshipped) — this directly threatens our locked decision #5
+(clipboard-paste as primary injection) *on GNOME/Wayland only*. X11 unaffected.
+**Context:** Hyprland/sway first-class IPC; KDE needs a scripted DBus service;
+GNOME requires a user-installed unofficial Shell extension.
+**Load-bearing trait constraint (see S13/S23):** GNOME's baseline for both
+injection and context is *absent or consent-gated*, not merely degraded.
 
-**R4 — Wake-word engine bake-off** · lookup_fast→implementer · S
-openWakeWord (ONNX) vs rustpotter vs Porcupine (license!); CPU cost while
-idle; verdict gates S34.
+**R4 — Wake-word engine bake-off** · **✅ COMPLETE 2026-08-07 — verdict: BUILD-S34 (conditional)**
+Artifact: `thoughts/shared/research/2026-08-07-r4-wake-word-bakeoff.md`
+(commit `51bdd11`). Ranked: **1) openWakeWord** via `oww_rs` Rust wrapper
+(Apache-2.0, mature, proven at Home Assistant scale) · 2) livekit-wakeword
+(new, pure-Rust — worth a parallel spike) · 3) rustpotter (fallback only;
+dormant since Oct 2023) · 4) **Porcupine — DROP**.
+**License blocker (Porcupine):** requires a Picovoice AccessKey validated
+against their servers (confirmed phone-home; `create()` hangs when firewalled)
+and the free tier ended 2026-06-30 with no non-commercial path. Disqualifying
+on principle for a fully-local product.
+**Idle CPU: NOT measured on target hardware** — no engine has an independent
+figure. Best anchor: openWakeWord runs 15–20 models concurrently in real time
+on one Raspberry Pi 3 core, so cost on Jake's workstation is very likely
+negligible, especially gated behind Silero VAD (<1ms/chunk).
+**Condition:** S34 opens with a half-day local benchmark of openWakeWord vs
+livekit-wakeword on Jake's machine; **fall back to DEFER-S34 if measured idle
+cost exceeds ~2–3% of one core** — a P2/optional feature is not worth real
+standing resource cost.
 
 ---
 
