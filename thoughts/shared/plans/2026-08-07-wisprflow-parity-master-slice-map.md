@@ -196,6 +196,44 @@ frame convention for audio chunks (defined now, used by S33).
 Verify: round-trip serde tests for every type; schema doc generated; no
 breaking-change without version bump (test pins golden JSON).
 
+**✅ COMPLETE 2026-08-07 — reviewed and APPROVED by the Epic-lead** (commits
+`b60e340` crate, `f3890e9` docs, `5f15051` lead-ordered fix). 225 workspace
+tests green, clippy clean. Schema doc: `docs/protocol.md` (explicitly
+subordinate to `crates/dictate-proto/tests/golden.rs`).
+- **Envelope:** `{kind,v,id,command|result|error|event}` on streaming
+  transports; `Command`/`CommandResult`/`Event` also usable bare so
+  `POST /v1/transcribe` need not carry a correlation id. NDJSON framing on UDS.
+- **Compatibility rule:** additive-only within `PROTOCOL_VERSION` — may add
+  optional fields/variants/commands/events/capability flags; may never
+  rename/remove/retype/re-nest. Deliberately asymmetric on unknowns: an
+  unknown event/result degrades to `Unknown`, but an unknown **command fails**
+  so the server answers `unsupported_command` instead of stranding a caller.
+- **Timings** are four-state per stage — `Ran{ms}` / `Skipped{reason}` /
+  `Failed{ms,error}` / `NotReported` — so a skip-rule skip, a fail-open Ollama
+  burning 3s, a sub-ms rules pass, and no-data all stay distinguishable.
+  `total_ms` is reported, not derived; the gap over the stage sum is signal.
+- **`InjectionOutcome` is 8 variants, not a bool**, per R3. `AwaitingConsent`
+  is non-terminal, which required adding `Event::InjectionResolved`.
+
+**Epic-lead decisions on S01's five flagged items:**
+1. `InjectionResolved` event — **APPROVED.** A non-terminal `AwaitingConsent`
+   needs a resolution event; adding it after S33 would have been breaking.
+2. `allows_route` empty-list-means-permissive — **OVERRULED, fixed in
+   `5f15051`.** It was fail-open on the exact path that runs `systemd-run`
+   (`Route::Timer`), and both `Capabilities::default()` and any JSON omitting
+   `routes` produced a fully-permissive set — while `Features` next to it is
+   deny-by-default. Now `routes.contains(route)`: empty permits nothing.
+   Wire format unchanged; 23/23 golden tests unaffected.
+3. `Stop`/`Cancel` carry no session ownership — **ACCEPTED as-is.** S02 must
+   verify ownership daemon-side. Safe to defer: an optional session-id field
+   is an additive change under the stated compatibility rule, so S33 can add
+   it when multi-client actually exists.
+4. `raw_text` gated only by docs — **ACCEPTED, deferred to S33's security
+   review.** A dedicated capability flag is additive, so it costs nothing to
+   add later; flag it during the LAN-exposure review.
+5. `docs/protocol.md` in a new top-level `docs/` — **ACCEPTED.** It is
+   product documentation for S32/S33 implementers, not a thoughts artifact.
+
 **S02 — Daemon skeleton: `dictated` + UDS server + CLI + state machine** · **architect** · L
 Goal: replace signal-only control with a real control plane (signals kept).
 Scope: tokio daemon hosting engine; state machine Idle→Recording→Transcribing
