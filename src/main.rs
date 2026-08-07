@@ -10,6 +10,7 @@ mod local_executor;
 mod notify;
 mod output;
 mod router;
+mod text_cleanup;
 mod timer;
 mod transcribe;
 
@@ -17,10 +18,7 @@ mod transcribe;
 async fn main() -> Result<()> {
     // Initialize tracing (replaces Python's print statements)
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("dictate_agent=info".parse()?),
-        )
+        .with_env_filter(EnvFilter::from_default_env().add_directive("dictate_agent=info".parse()?))
         .init();
 
     // Parse args: --check flag for dependency verification
@@ -45,7 +43,11 @@ fn check_all_dependencies() -> Result<()> {
 
     let deps = [
         ("playerctl", "Media control", "sudo apt install playerctl"),
-        ("systemd-run", "Timer creation", "Part of systemd (should be installed)"),
+        (
+            "systemd-run",
+            "Timer creation",
+            "Part of systemd (should be installed)",
+        ),
         ("dunstify", "Timer notifications", "sudo apt install dunst"),
         ("play", "Timer alarm sound (sox)", "sudo apt install sox"),
         ("ollama", "Local LLM inference", "See https://ollama.ai"),

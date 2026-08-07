@@ -124,7 +124,7 @@ impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            timeout_ms: 3000,
+            timeout_ms: 1250,
         }
     }
 }
@@ -154,9 +154,7 @@ impl Default for TimerConfig {
 pub fn config_dir() -> PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_path_home().join(".config")
-        });
+        .unwrap_or_else(|_| dirs_path_home().join(".config"));
     base.join(CONFIG_DIR)
 }
 
@@ -198,7 +196,10 @@ pub fn load_config(path: Option<&Path>) -> anyhow::Result<Config> {
     };
 
     if !config_path.exists() {
-        tracing::info!("No config file at {}, using defaults", config_path.display());
+        tracing::info!(
+            "No config file at {}, using defaults",
+            config_path.display()
+        );
         return Ok(Config::default());
     }
 
@@ -239,7 +240,7 @@ mod tests {
         assert_eq!(config.local.model, "qwen3:14b");
         assert!(config.output.auto_type);
         assert!(config.notifications.enabled);
-        assert_eq!(config.notifications.timeout_ms, 3000);
+        assert_eq!(config.notifications.timeout_ms, 1250);
         assert!(config.history.enabled);
         assert!(config.history.db_path.is_empty());
         assert_eq!(config.history.max_response_length, 10000);
@@ -307,7 +308,10 @@ device = "cpu"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.whisper.device, "cpu");
         // model_path should be the default since it wasn't specified
-        assert!(config.whisper.model_path.contains("ggml-large-v3-turbo.bin"));
+        assert!(config
+            .whisper
+            .model_path
+            .contains("ggml-large-v3-turbo.bin"));
         // All other sections should be defaults
         assert!(config.grammar.enabled);
         assert_eq!(config.grammar.model, "qwen3:0.6b");

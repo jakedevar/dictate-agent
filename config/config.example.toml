@@ -1,81 +1,51 @@
-# Dictate Agent Configuration
+# Dictate Agent Configuration (Rust version)
 # Copy to ~/.config/dictate-agent/config.toml
 
 [whisper]
-# Model for transcription (HuggingFace model ID)
-# Options:
-#   - openai/whisper-large-v3        # Best accuracy, slowest
-#   - openai/whisper-large-v3-turbo  # 6-8x faster, ~large-v2 accuracy (RECOMMENDED)
-#   - distil-whisper/distil-large-v3 # 6x faster, English only
-model = "openai/whisper-large-v3-turbo"
+# Path to GGUF model file
+# Download: wget -O ~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin \
+#   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+model_path = "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
 
-# Assistant model for speculative decoding (2x additional speedup)
-assistant_model = "distil-whisper/distil-large-v3"
-
-# Device: cuda or cpu
+# Device: "cuda" for GPU (RTX), "cpu" for CPU-only
 device = "cuda"
-
-# Compute type: float16 (GPU), int8 (CPU), float32 (fallback)
-compute_type = "float16"
-
-# Enable speculative decoding (recommended for batch_size=1)
-use_speculative_decoding = true
-
-# Chunk length for long audio (seconds)
-chunk_length_s = 30
-
-# Batch size (1 is optimal for speculative decoding)
-batch_size = 1
 
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
 no_speech_threshold = 0.6
 
-[router]
-# Ollama configuration for local inference
-ollama_host = "http://localhost:11434"
-ollama_model = "qwen3:14b"
-ollama_timeout_s = 120.0
+[grammar]
+# Auto grammar correction (runs between transcription and routing)
+enabled = false
+host = "http://localhost:11434"
+model = "qwen3:0.6b"
+timeout_s = 10.0
+# Skip correction for short inputs (preserves trigger words like "timer")
+min_words = 3
 
-[editor]
-# Text editing mode (e.g., "edit: make this more concise")
-enabled = true
-triggers = ["edit:", "fix:", "change:", "rewrite:", "transform:"]
-
-[commands]
-# Keyboard/system command mode (e.g., "close window", "volume up")
-enabled = true
-fuzzy_threshold = 0.8
-confirm_destructive = true
-destructive_patterns = ["kill", "close", "exit", "shutdown", "restart"]
+[local]
+# Ollama configuration for local inference (triggered by "easy/simple/medium/hard" prefix)
+host = "http://localhost:11434"
+model = "qwen3:14b"
+timeout_s = 120.0
 
 [output]
-# Typing configuration
-typing_delay_ms = 10
-use_clipboard = false  # Use clipboard for faster long-text typing
-auto_type = true       # Automatically type transcribed/response text
+# Automatically type transcribed/response text via clipboard paste
+auto_type = true
 
 [notifications]
+# Desktop notifications via notify-rust (D-Bus, no subprocess)
 enabled = true
-timeout_ms = 3000
+timeout_ms = 1250
 
 [history]
-# Enable interaction history logging for analytics
+# Interaction history logging to SQLite
 enabled = true
 # Database location (empty = ~/.local/share/dictate-agent/history.db)
 db_path = ""
 # Truncate stored responses beyond this length (characters)
 max_response_length = 10000
 
-[grammar]
-# Auto grammar correction (runs between transcription and routing)
-enabled = true
-model = "qwen3:0.6b"         # Small, fast model already used for routing
-timeout_s = 10.0              # Max seconds to wait for correction
-min_words = 3                 # Skip correction for very short inputs
-
-[status_window]
-# Persistent floating overlay while recording/transcribing
-enabled = true
-position = "center"         # top-right/top-left/bottom-right/bottom-left/center
-margin = 20                  # Used for non-center positions
-center_offset_y = 20         # Pixels to nudge downward when centered
+[timer]
+# Timer alarm configuration
+sound_enabled = true
+sound_file = "~/.config/dictate-agent/sounds/timer_alarm.wav"

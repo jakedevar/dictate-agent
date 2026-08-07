@@ -2,12 +2,16 @@ use anyhow::Result;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+use crate::text_cleanup::scrub_returned_text;
+
 /// Grammar correction prompt — port of grammar.py:13-18.
-const GRAMMAR_PROMPT: &str = "Fix only grammar, spelling, and punctuation errors in the following text. \
+const GRAMMAR_PROMPT: &str =
+    "Fix only grammar, spelling, and punctuation errors in the following text. \
 Do not change meaning, add words, remove words, or rephrase. \
 Output ONLY the corrected text with no explanation.\n\nText: {text}";
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GrammarResult {
     pub success: bool,
     pub corrected: String,
@@ -58,7 +62,7 @@ impl GrammarCorrector {
             Ok(corrected) => {
                 // Length ratio guard — matches grammar.py:85-92
                 let ratio = corrected.len() as f64 / text.len() as f64;
-                if ratio < 0.5 || ratio > 1.5 {
+                if !(0.5..=1.5).contains(&ratio) {
                     warn!("Grammar correction rejected: length ratio {:.2}", ratio);
                     GrammarResult::fail(
                         original,
@@ -66,10 +70,7 @@ impl GrammarCorrector {
                         &format!("Length ratio {:.2} outside 0.5-1.5 range", ratio),
                     )
                 } else {
-                    info!(
-                        "Grammar corrected in {:.3}s",
-                        start.elapsed().as_secs_f64()
-                    );
+                    info!("Grammar corrected in {:.3}s", start.elapsed().as_secs_f64());
                     GrammarResult {
                         success: true,
                         corrected,
@@ -109,7 +110,7 @@ impl GrammarCorrector {
         // Strip any <think>...</think> wrapper if present (fallback safety)
         let text = strip_think_tags(&text);
 
-        Ok(text)
+        Ok(scrub_returned_text(&text))
     }
 }
 

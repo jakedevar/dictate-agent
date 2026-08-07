@@ -1,7 +1,7 @@
 use crate::audio::AudioCapture;
 use crate::config::Config;
 use crate::grammar::GrammarCorrector;
-use crate::history::{HistoryStore, Interaction};
+use crate::history::HistoryStore;
 use crate::local_executor::LocalExecutor;
 use crate::notify::Notifier;
 use crate::output::OutputHandler;
@@ -110,6 +110,7 @@ impl DictateAgent {
                 }
                 Err(e) => {
                     error!("Failed to start recording: {}", e);
+                    self.notifier.clear_status();
                     self.notifier.error(&format!("Recording failed: {}", e));
                     self.resume_media_if_needed();
                 }
@@ -148,6 +149,7 @@ impl DictateAgent {
             }
             Err(e) => {
                 error!("Transcription failed: {}", e);
+                self.notifier.clear_status();
                 self.notifier.error(&format!("Transcription failed: {}", e));
                 interaction.error_summary = Some(format!("Transcription failed: {}", e));
                 self.history.commit(&interaction);
@@ -155,8 +157,7 @@ impl DictateAgent {
                 return;
             }
         };
-        interaction.transcription_duration_s =
-            Some(transcription_start.elapsed().as_secs_f64());
+        interaction.transcription_duration_s = Some(transcription_start.elapsed().as_secs_f64());
         interaction.raw_transcription = Some(result.text.clone());
         interaction.corrected_transcription = Some(result.text.clone());
 
@@ -203,8 +204,7 @@ impl DictateAgent {
 
                 let exec_start = std::time::Instant::now();
                 let exec_result = self.local_executor.execute(&route.text, None).await;
-                interaction.execution_duration_s =
-                    Some(exec_start.elapsed().as_secs_f64());
+                interaction.execution_duration_s = Some(exec_start.elapsed().as_secs_f64());
                 interaction.execution_success = Some(exec_result.success);
 
                 if exec_result.success {
@@ -216,8 +216,7 @@ impl DictateAgent {
                     }
                 } else {
                     interaction.execution_error = exec_result.error.clone();
-                    self.notifier
-                        .error(&exec_result.error.unwrap_or_default());
+                    self.notifier.error(&exec_result.error.unwrap_or_default());
                 }
             }
             RouteType::Timer => {
@@ -229,25 +228,21 @@ impl DictateAgent {
                     self.notifier.timer_set(&timer_result.response);
                 } else {
                     interaction.execution_error = timer_result.error.clone();
-                    self.notifier
-                        .error(&timer_result.error.unwrap_or_default());
+                    self.notifier.error(&timer_result.error.unwrap_or_default());
                 }
             }
             RouteType::Edit => {
                 self.notifier.error("Edit route not implemented");
-                interaction.error_summary =
-                    Some("Edit route not implemented".into());
+                interaction.error_summary = Some("Edit route not implemented".into());
             }
             RouteType::Command => {
                 self.notifier.error("Command route not implemented");
-                interaction.error_summary =
-                    Some("Command route not implemented".into());
+                interaction.error_summary = Some("Command route not implemented".into());
             }
         }
 
-        self.notifier.done(&result.text);
-
-        // 6. Resume media
+        // 6. Clear status notification and resume media
+        self.notifier.clear_status();
         self.resume_media_if_needed();
 
         // 7. Commit history

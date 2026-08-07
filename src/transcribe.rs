@@ -1,10 +1,17 @@
-use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::OnceCell;
-use tracing::{error, info, warn};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use anyhow::{anyhow, Result};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
+use tracing::{error, info};
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+};
+
+use crate::text_cleanup::scrub_returned_text;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TranscriptionResult {
     pub text: String,
     pub language: String,
@@ -12,25 +19,24 @@ pub struct TranscriptionResult {
 }
 
 pub struct Transcriber {
-    context: Arc<OnceCell<SendWhisperCtx>>,
-    model_path: String,
-    use_gpu: bool,
+    worker_tx: mpsc::Sender<WorkerMessage>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    model_loaded: Arc<AtomicBool>,
     no_speech_threshold: f32,
 }
 
-/// Thread-safe wrapper around WhisperContext.
-/// WhisperContext is !Send because it holds FFI pointers, but whisper.cpp
-/// is thread-safe for separate state objects created from the same context.
-/// We ensure single-threaded access via the signal-serialized pipeline.
-struct SendWhisperCtx(WhisperContext);
-unsafe impl Send for SendWhisperCtx {}
-unsafe impl Sync for SendWhisperCtx {}
+enum WorkerMessage {
+    Preload,
+    Transcribe {
+        samples: Vec<f32>,
+        no_speech_threshold: f32,
+        reply: tokio::sync::oneshot::Sender<Result<Option<String>>>,
+    },
+    Shutdown,
+}
 
-impl std::ops::Deref for SendWhisperCtx {
-    type Target = WhisperContext;
-    fn deref(&self) -> &WhisperContext {
-        &self.0
-    }
+struct WorkerModel {
+    state: WhisperState,
 }
 
 impl Transcriber {
@@ -40,123 +46,58 @@ impl Transcriber {
             .to_string_lossy()
             .into_owned();
 
+        let use_gpu = config.device == "cuda";
+        let no_speech_threshold = config.no_speech_threshold;
+        let (worker_tx, worker_rx) = mpsc::channel();
+        let model_loaded = Arc::new(AtomicBool::new(false));
+        let worker_model_loaded = Arc::clone(&model_loaded);
+        let worker_path = model_path.clone();
+
+        let worker = std::thread::Builder::new()
+            .name("dictate-whisper".into())
+            .spawn(move || whisper_worker(worker_rx, worker_path, use_gpu, worker_model_loaded))
+            .expect("failed to start Whisper worker thread");
+
         Self {
-            context: Arc::new(OnceCell::new()),
-            model_path,
-            use_gpu: config.device == "cuda",
-            no_speech_threshold: config.no_speech_threshold,
+            worker_tx,
+            worker: Some(worker),
+            model_loaded,
+            no_speech_threshold,
         }
     }
 
     /// Start loading the model in the background.
-    /// Call this during DictateAgent::new() — first transcribe() will await completion.
+    /// Call this during DictateAgent::new() — first transcribe() will queue behind it.
     pub fn load_model_async(&self) {
-        let ctx = self.context.clone();
-        let path = self.model_path.clone();
-        let use_gpu = self.use_gpu;
-
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            info!("Loading Whisper model from {}...", path);
-
-            let result = tokio::task::spawn_blocking(move || {
-                let mut params = WhisperContextParameters::default();
-                params.use_gpu(use_gpu);
-                WhisperContext::new_with_params(&path, params)
-            })
-            .await;
-
-            match result {
-                Ok(Ok(context)) => {
-                    let elapsed = start.elapsed();
-                    info!("Whisper model loaded in {:.1}s", elapsed.as_secs_f64());
-                    let _ = ctx.set(SendWhisperCtx(context));
-                }
-                Ok(Err(e)) => error!("Failed to load Whisper model: {}", e),
-                Err(e) => error!("Model loading task panicked: {}", e),
-            }
-        });
+        if let Err(e) = self.worker_tx.send(WorkerMessage::Preload) {
+            error!("Failed to queue Whisper preload: {}", e);
+        }
     }
 
     /// Check if model is loaded (for status reporting)
     #[allow(dead_code)]
     pub fn is_model_loaded(&self) -> bool {
-        self.context.initialized()
+        self.model_loaded.load(Ordering::Acquire)
     }
 
     /// Transcribe audio samples (f32, 16kHz mono).
     /// Blocks until model is loaded if still loading.
     pub async fn transcribe(&self, samples: &[f32]) -> Result<Option<TranscriptionResult>> {
-        // Wait for model to be available
-        let ctx = self
-            .context
-            .get_or_init(|| async {
-                // Fallback: load synchronously if load_model_async wasn't called
-                warn!("Model not pre-loaded, loading synchronously...");
-                let path = self.model_path.clone();
-                let use_gpu = self.use_gpu;
-                tokio::task::spawn_blocking(move || {
-                    let mut params = WhisperContextParameters::default();
-                    params.use_gpu(use_gpu);
-                    SendWhisperCtx(
-                        WhisperContext::new_with_params(&path, params)
-                            .expect("Failed to load Whisper model"),
-                    )
-                })
-                .await
-                .expect("Model loading task panicked")
-            })
-            .await;
-
         let audio_duration = samples.len() as f64 / 16000.0;
-        let samples = samples.to_vec(); // Clone for spawn_blocking move
-        let no_speech_thresh = self.no_speech_threshold;
-
         let start = std::time::Instant::now();
 
-        // whisper-rs is synchronous FFI — run in blocking thread.
-        // SendWhisperCtx wraps WhisperContext with Send+Sync since whisper.cpp
-        // state objects are safe to use from different threads.
-        // We clone the Arc to share the context into the blocking task.
-        let ctx_ref = self.context.clone();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.worker_tx
+            .send(WorkerMessage::Transcribe {
+                samples: samples.to_vec(),
+                no_speech_threshold: self.no_speech_threshold,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("Whisper worker is not running"))?;
 
-        let result = tokio::task::spawn_blocking(move || -> Result<Option<String>> {
-            let ctx = ctx_ref.get().expect("Model must be loaded by this point");
-            let mut state = ctx.create_state().map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_language(Some("en"));
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-            params.set_no_speech_thold(no_speech_thresh);
-
-            state
-                .full(params, &samples)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let n_segments = state.full_n_segments();
-            if n_segments == 0 {
-                return Ok(None);
-            }
-
-            let mut text = String::new();
-            for i in 0..n_segments {
-                if let Some(segment) = state.get_segment(i) {
-                    if let Ok(segment_text) = segment.to_str_lossy() {
-                        text.push_str(&segment_text);
-                    }
-                }
-            }
-
-            let text = text.trim().to_string();
-            if text.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(text))
-            }
-        })
-        .await??;
+        let result = reply_rx
+            .await
+            .map_err(|_| anyhow!("Whisper worker stopped before returning a transcription"))??;
 
         let transcription_time = start.elapsed().as_secs_f64();
         info!(
@@ -179,6 +120,127 @@ impl Transcriber {
                 Ok(None)
             }
         }
+    }
+}
+
+impl Drop for Transcriber {
+    fn drop(&mut self) {
+        let _ = self.worker_tx.send(WorkerMessage::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn whisper_worker(
+    rx: mpsc::Receiver<WorkerMessage>,
+    model_path: String,
+    use_gpu: bool,
+    model_loaded: Arc<AtomicBool>,
+) {
+    let mut model: Option<WorkerModel> = None;
+
+    while let Ok(message) = rx.recv() {
+        match message {
+            WorkerMessage::Preload => {
+                let _ = ensure_model_loaded(&mut model, &model_path, use_gpu, &model_loaded);
+            }
+            WorkerMessage::Transcribe {
+                samples,
+                no_speech_threshold,
+                reply,
+            } => {
+                let result = ensure_model_loaded(&mut model, &model_path, use_gpu, &model_loaded)
+                    .and_then(|model| transcribe_with_model(model, &samples, no_speech_threshold));
+                let _ = reply.send(result);
+            }
+            WorkerMessage::Shutdown => break,
+        }
+    }
+}
+
+fn ensure_model_loaded<'a>(
+    model: &'a mut Option<WorkerModel>,
+    model_path: &str,
+    use_gpu: bool,
+    model_loaded: &AtomicBool,
+) -> Result<&'a mut WorkerModel> {
+    if model.is_none() {
+        let start = std::time::Instant::now();
+        info!("Loading Whisper model from {}...", model_path);
+
+        match load_worker_model(model_path, use_gpu) {
+            Ok(loaded) => {
+                info!(
+                    "Whisper model loaded in {:.1}s",
+                    start.elapsed().as_secs_f64()
+                );
+                model_loaded.store(true, Ordering::Release);
+                *model = Some(loaded);
+            }
+            Err(e) => {
+                model_loaded.store(false, Ordering::Release);
+                error!("Failed to load Whisper model: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    model
+        .as_mut()
+        .ok_or_else(|| anyhow!("Whisper model is not loaded"))
+}
+
+fn load_worker_model(model_path: &str, use_gpu: bool) -> Result<WorkerModel> {
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(use_gpu);
+
+    let context = WhisperContext::new_with_params(model_path, params)
+        .map_err(|e| anyhow!("failed to load Whisper context: {}", e))?;
+    let state = context
+        .create_state()
+        .map_err(|e| anyhow!("failed to initialize Whisper state: {}", e))?;
+
+    Ok(WorkerModel { state })
+}
+
+fn transcribe_with_model(
+    model: &mut WorkerModel,
+    samples: &[f32],
+    no_speech_threshold: f32,
+) -> Result<Option<String>> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some("en"));
+    params.set_no_context(true);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_no_speech_thold(no_speech_threshold);
+
+    model
+        .state
+        .full(params, samples)
+        .map_err(|e| anyhow!("{}", e))?;
+
+    let n_segments = model.state.full_n_segments();
+    if n_segments == 0 {
+        return Ok(None);
+    }
+
+    let mut text = String::new();
+    for i in 0..n_segments {
+        if let Some(segment) = model.state.get_segment(i) {
+            if let Ok(segment_text) = segment.to_str_lossy() {
+                text.push_str(&segment_text);
+            }
+        }
+    }
+
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text))
     }
 }
 
@@ -221,7 +283,7 @@ fn apply_corrections(text: &str) -> String {
     for (from, to) in corrections {
         result = result.replace(from, to);
     }
-    result
+    scrub_returned_text(&result)
 }
 
 #[cfg(test)]
@@ -263,10 +325,7 @@ mod tests {
 
     #[test]
     fn test_corrections_slash_commands_capitalized() {
-        assert_eq!(
-            apply_corrections("Research codebase"),
-            "/research_codebase"
-        );
+        assert_eq!(apply_corrections("Research codebase"), "/research_codebase");
         assert_eq!(apply_corrections("Create plan"), "/create_plan");
         assert_eq!(apply_corrections("Implement plan"), "/implement_plan");
         assert_eq!(apply_corrections("Validate plan"), "/validate_plan");

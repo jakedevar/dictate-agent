@@ -75,7 +75,7 @@ impl HistoryStore {
         let db_path = if config.db_path.is_empty() {
             default_db_path()
         } else {
-            PathBuf::from(crate::config::expand_tilde(&config.db_path))
+            crate::config::expand_tilde(&config.db_path)
         };
 
         if let Some(parent) = db_path.parent() {
@@ -89,8 +89,7 @@ impl HistoryStore {
         conn.execute_batch(include_str!("../sql/schema.sql"))?;
 
         // Insert schema version if absent
-        let count: i32 =
-            conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))?;
         if count == 0 {
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",

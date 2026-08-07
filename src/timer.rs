@@ -61,7 +61,7 @@ impl TimeUnit {
 
     fn half_seconds(self) -> u64 {
         match self {
-            TimeUnit::Seconds => 30,  // half a second doesn't make sense, but 30 for consistency
+            TimeUnit::Seconds => 30, // half a second doesn't make sense, but 30 for consistency
             TimeUnit::Minutes => 30,
             TimeUnit::Hours => 1800,
         }
@@ -172,9 +172,10 @@ pub fn parse_duration(text: &str) -> (Option<u64>, String) {
             let num_str = &caps[1];
             let unit_str = caps[2].to_lowercase();
 
-            if let (Some(num), Some(unit)) =
-                (parse_word_number(num_str), UNIT_ALIASES.get(unit_str.as_str()))
-            {
+            if let (Some(num), Some(unit)) = (
+                parse_word_number(num_str),
+                UNIT_ALIASES.get(unit_str.as_str()),
+            ) {
                 total_seconds += unit.to_seconds(num);
 
                 // Check for "and a half"
@@ -201,9 +202,10 @@ pub fn parse_duration(text: &str) -> (Option<u64>, String) {
             let num_str = &caps[1];
             let unit_str = caps[2].to_lowercase();
 
-            if let (Some(num), Some(unit)) =
-                (parse_word_number(num_str), UNIT_ALIASES.get(unit_str.as_str()))
-            {
+            if let (Some(num), Some(unit)) = (
+                parse_word_number(num_str),
+                UNIT_ALIASES.get(unit_str.as_str()),
+            ) {
                 total_seconds += unit.to_seconds(num);
 
                 let match_text = m.as_str().to_lowercase();

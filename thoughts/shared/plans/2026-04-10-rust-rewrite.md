@@ -599,10 +599,10 @@ Key architecture difference from Python: the Python uses `signal.pause()` and ru
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build --release` produces a binary at `target/release/dictate-agent`
-- [ ] Binary size is under 50MB (release, stripped, LTO)
-- [ ] `cargo test` passes (existing Phase 1 tests still pass)
-- [ ] `cargo clippy` clean
+- [x] `cargo build --release` produces a binary at `target/release/dictate-agent`
+- [x] Binary size is under 50MB (release, stripped, LTO) — 42MB
+- [x] `cargo test` passes (existing Phase 1 tests still pass)
+- [x] `cargo clippy` clean
 
 #### Manual Verification:
 - [ ] `./target/release/dictate-agent` starts and prints "Waiting for signals..."
@@ -742,9 +742,9 @@ Add `audio: AudioCapture` field to `DictateAgent`. In `toggle()`:
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build` compiles with cpal PipeWire feature
-- [ ] `cargo test` passes (unit test: `AudioCapture::duration_secs` correctness)
-- [ ] `cargo clippy` clean
+- [x] `cargo build` compiles with cpal PipeWire feature
+- [x] `cargo test` passes (unit test: `AudioCapture::duration_secs` correctness)
+- [x] `cargo clippy` clean
 
 #### Manual Verification:
 - [ ] Start daemon, send SIGUSR1, speak, send SIGUSR1 again
@@ -939,9 +939,9 @@ Add `transcriber: Transcriber` field. In `DictateAgent::new()`, call `transcribe
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build --release` compiles with whisper-rs CUDA feature
-- [ ] `cargo test` passes (unit test: `apply_corrections` table)
-- [ ] `cargo clippy` clean
+- [x] `cargo build --release` compiles with whisper-rs CUDA feature
+- [x] `cargo test` passes (unit test: `apply_corrections` table — 7 tests)
+- [x] `cargo clippy` clean
 
 #### Manual Verification:
 - [ ] Daemon starts, log shows "Loading Whisper model..." then "loaded in X.Xs"
@@ -1173,17 +1173,17 @@ async fn stop_recording_and_process(&mut self) {
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build --release` compiles with arboard, enigo, notify-rust
-- [ ] `cargo test` passes
-- [ ] `cargo clippy` clean
+- [x] `cargo build --release` compiles with arboard, enigo, notify-rust
+- [x] `cargo test` passes
+- [x] `cargo clippy` clean
 
 #### Manual Verification:
 - [ ] **End-to-end test**: Start daemon → SIGUSR1 → speak "hello world" → SIGUSR1 → text appears in focused text field
 - [ ] Desktop notification appears for recording/transcribing/done states
 - [ ] Clipboard content is preserved after typing (save/restore works)
 - [ ] Ctrl+V paste works correctly in various applications (terminal, browser, text editor)
-- [ ] "timer five minutes" logs "Route Timer not yet implemented" (correct routing, just not dispatched yet)
-- [ ] "easy what is the weather" logs "Route Local not yet implemented"
+- [ ] "timer five minutes" → routes to Timer (fully wired in Phase 7)
+- [ ] "easy what is the weather" → routes to Local (fully wired in Phase 6)
 
 **Implementation Note**: This is the first end-to-end milestone. After verifying the minimal pipeline works, pause for confirmation before adding Ollama integration.
 
@@ -1524,12 +1524,12 @@ match route.route {
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build --release` compiles
-- [ ] `cargo test` passes:
+- [x] `cargo build --release` compiles
+- [x] `cargo test` passes:
   - Grammar: pass-through on disabled, pass-through on short text, length ratio rejection
   - `strip_think_tags`: correctly strips `<think>` wrapper, passes through clean text
   - Error classification: connection refused, model not found, generic error
-- [ ] `cargo clippy` clean
+- [x] `cargo clippy` clean
 
 #### Manual Verification:
 - [ ] Grammar correction works: speak a sentence with bad grammar → corrected text is typed
@@ -1926,12 +1926,12 @@ exec ~/dictate_agent/target/release/dictate-agent
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `cargo build --release` compiles
-- [ ] `cargo test` passes all tests (Phases 1-7)
-- [ ] `cargo clippy` clean
-- [ ] `./target/release/dictate-agent --check` reports all dependencies
-- [ ] Binary size is under 50MB (expected ~15-25MB with LTO + strip)
-- [ ] `sql/schema.sql` matches Python `history.py` schema exactly (diff-able)
+- [x] `cargo build --release` compiles
+- [x] `cargo test` passes all tests (Phases 1-7) — 74 tests
+- [x] `cargo clippy` clean (only dead-code warnings for future features)
+- [x] `./target/release/dictate-agent --check` reports all dependencies
+- [x] Binary size is under 50MB (expected ~15-25MB with LTO + strip) — 42MB
+- [x] `sql/schema.sql` matches Python `history.py` schema exactly (diff-able)
 
 #### Manual Verification:
 - [ ] **Full pipeline**: signal → record → transcribe → grammar → route → type

@@ -1,20 +1,19 @@
 [Unit]
-Description=Dictate Agent - Voice-activated AI assistant
-Documentation=https://github.com/jakedevar/dictate_agent
-After=network.target graphical-session.target
+Description=Dictate Agent - Voice Dictation Daemon
+After=graphical-session.target
 Wants=pulseaudio.service
 
 [Service]
 Type=simple
-ExecStart=%h/dictate_agent/target/release/dictate-agent
+ExecStart=%h/.local/bin/dictate-agent
 Restart=on-failure
 RestartSec=5
 Environment=DISPLAY=:0
 Environment=RUST_LOG=dictate_agent=info
 
-# Resource limits
-MemoryMax=2G
-CPUQuota=50%
+# Resource limits — whisper.cpp GGUF model + VRAM management
+MemoryMax=4G
+CPUQuota=80%
 
 [Install]
 WantedBy=default.target

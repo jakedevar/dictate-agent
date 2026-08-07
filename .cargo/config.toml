@@ -1,0 +1,12 @@
+[build]
+target-dir = "target"
+
+[env]
+# whisper-rs builds whisper.cpp through CMake. CUDA 13.2 does not parse the
+# system GCC 16 libstdc++ headers correctly during CMake's compiler probe, so
+# keep nvcc on the installed GCC 15 host compiler.
+CUDACXX = "/opt/cuda/bin/nvcc"
+CUDAHOSTCXX = "/usr/bin/g++-15"
+WHISPER_DONT_GENERATE_BINDINGS = "1"
+# Disable compiler caching (ccache/sccache) which conflicts with nvcc compiling cubins
+GGML_CCACHE = "OFF"

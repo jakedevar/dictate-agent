@@ -48,7 +48,9 @@ impl AudioCapture {
             .unwrap_or_default();
 
         // Prefer f32, fall back to i16
-        let uses_f32 = supported_configs.iter().any(|c| c.sample_format() == SampleFormat::F32);
+        let uses_f32 = supported_configs
+            .iter()
+            .any(|c| c.sample_format() == SampleFormat::F32);
 
         let stream = if uses_f32 {
             let buf = buffer.clone();
@@ -118,6 +120,7 @@ impl AudioCapture {
         self.buffer.lock().unwrap().clear();
     }
 
+    #[allow(dead_code)]
     pub fn is_recording(&self) -> bool {
         self.is_recording
     }

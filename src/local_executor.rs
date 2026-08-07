@@ -2,6 +2,8 @@ use anyhow::Result;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+use crate::text_cleanup::scrub_returned_text;
+
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub success: bool,
@@ -70,7 +72,7 @@ impl LocalExecutor {
 
         let response = tokio::time::timeout(self.timeout, ollama.generate(request)).await??;
 
-        Ok(response.response.trim().to_string())
+        Ok(scrub_returned_text(&response.response))
     }
 }
 
@@ -78,10 +80,10 @@ impl LocalExecutor {
 /// Port of local_executor.py:114-122
 pub async fn is_ollama_running(host: &str, port: u16) -> bool {
     let ollama = ollama_rs::Ollama::new(host, port);
-    match tokio::time::timeout(Duration::from_secs(2), ollama.list_local_models()).await {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), ollama.list_local_models()).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Start Ollama if not running. Poll until ready or timeout.

@@ -4,6 +4,7 @@ pub enum RouteType {
     Local,
     Timer,
     Edit,
+    #[allow(dead_code)]
     Command,
 }
 
@@ -111,7 +112,12 @@ mod tests {
         for trigger in &["edit:", "fix:", "change:", "rewrite:", "transform:"] {
             let input = format!("{} make this better", trigger);
             let result = route(&input);
-            assert_eq!(result.route, RouteType::Edit, "Failed for trigger: {}", trigger);
+            assert_eq!(
+                result.route,
+                RouteType::Edit,
+                "Failed for trigger: {}",
+                trigger
+            );
             assert_eq!(result.text, "make this better");
             assert_eq!(result.model, "local");
         }
@@ -150,7 +156,12 @@ mod tests {
         for trigger in &["simple", "easy", "medium", "hard"] {
             let input = format!("{} what is the weather", trigger);
             let result = route(&input);
-            assert_eq!(result.route, RouteType::Local, "Failed for trigger: {}", trigger);
+            assert_eq!(
+                result.route,
+                RouteType::Local,
+                "Failed for trigger: {}",
+                trigger
+            );
             assert_eq!(result.text, "what is the weather");
             assert_eq!(result.model, "local");
         }
