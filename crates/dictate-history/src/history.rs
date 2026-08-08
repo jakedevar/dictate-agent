@@ -111,6 +111,36 @@ impl HistoryStore {
         })
     }
 
+    /// The underlying connection, for the read path in [`crate::query`].
+    ///
+    /// Read-only by convention: writes go through [`HistoryStore::commit`] so
+    /// the insert statement and the schema stay in one place.
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Whether this store is persisting anything.
+    ///
+    /// A disabled store is backed by an in-memory database, so queries against
+    /// it succeed and return nothing — which is the correct answer for a user
+    /// who has turned history off, and better than an error the UI would have
+    /// to special-case.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Run a [`dictate_proto::HistoryQuery`] against the log.
+    ///
+    /// # Errors
+    ///
+    /// Propagates SQLite failures.
+    pub fn query(
+        &self,
+        q: &dictate_proto::HistoryQuery,
+    ) -> Result<dictate_proto::HistoryPage> {
+        crate::query::query(&self.conn, q)
+    }
+
     pub fn begin(&self) -> Interaction {
         Interaction {
             session_id: self.session_id.clone(),
