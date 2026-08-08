@@ -25,6 +25,13 @@ clippy:
 release:
     cargo build --release --workspace
 
-# Install the release binary as ~/.local/bin/dictate-agent (see Makefile)
+# Install `dictated` and `dictate` into ~/.local/bin (see Makefile)
 install: release
     make install
+
+# Install the systemd user unit for the new daemon
+install-unit:
+    make install-unit
+
+# Everything CI checks, in one go
+check: test clippy

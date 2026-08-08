@@ -5,14 +5,15 @@ pipeline diagram, and per-component design notes, read `AGENTS.md` first —
 this file does not duplicate that; it only covers what AGENTS.md doesn't:
 current repo state, how to build/test, and where things live.
 
-## Current state (as of the S00 workspace-scaffold slice, 2026-08-07)
+## Current state (as of the S02 daemon-skeleton slice, 2026-08-07)
 
 Two implementations live side by side on purpose:
 
 - **Rust workspace — live, primary.** `Cargo.toml` (workspace root) +
   `crates/*`. Code-complete against the Python daemon's behavior
-  (Phases 1–7 of the rewrite), 78 tests passing, clippy-clean,
-  `cargo build --release` producing a working binary.
+  (Phases 1–7 of the rewrite) and now driven by a real control plane
+  (S02): 379 tests passing, clippy-clean, `cargo build --release`
+  producing `dictated` (daemon) and `dictate` (CLI).
 - **Python reference daemon — retained, Jake's daily driver.** `dictate/`
   (13 modules). This is **not** legacy cruft to delete — it stays present
   and runnable until the v1.0 parity cutover gate defined in
@@ -36,12 +37,18 @@ crates/
   dictate-fmt      grammar correction + text cleanup (GrammarCorrector) + GrammarConfig
   dictate-history  SQLite interaction log (HistoryStore) + HistoryConfig
   dictate-inject   clipboard-paste output (OutputHandler) + OutputConfig
-  dictate-core     agent orchestration, router, timer, local LLM executor,
-                    notifications, and the aggregate Config (+ LocalConfig,
-                    NotificationConfig, TimerConfig)
-  dictated         daemon binary (crates/dictated/src/main.rs) — installed
-                    as `dictate-agent` (see Makefile) to keep scripts/ and
-                    the systemd unit unchanged
+  dictate-core     the engine: session state machine (session.rs), cancellable
+                    pipeline (pipeline.rs), the command-serializing actor
+                    (engine.rs), cancellation with a commit point (cancel.rs),
+                    event fan-out (event_bus.rs), and the hardware seams with
+                    their test doubles (ports.rs). Also router, timer, local
+                    LLM executor, notifications, aggregate Config
+  dictated         daemon: UDS JSON-RPC server (server.rs), SIGUSR1/2 shim
+                    (signals.rs), runtime paths (paths.rs). lib + bin, so
+                    tests/control_plane.rs drives a real daemon
+  dictate-cli      the `dictate` control client. Depends on dictate-proto and
+                    nothing else — a keybinding runs it on every dictation,
+                    so it must not link whisper/CUDA (1.4MB vs the daemon's 45MB)
 dictate/           Python reference daemon (retained until cutover)
 ```
 
@@ -61,8 +68,12 @@ compatibility rule in its crate docs before changing any wire type.
 
 Crates NOT yet created (owned by later slices in the master plan, do not
 add empty shells for these): `dictate-vad` (S11), `dictate-dict` (S22),
-`dictate-context` (S23), `dictate-hotkey` (S31), `dictate-cli` (S02),
-`dictate-server` (S33).
+`dictate-context` (S23), `dictate-hotkey` (S31), `dictate-server` (S33).
+
+`dictate-core` gained a dependency on `dictate-proto` in S02 (the engine
+speaks the wire types directly). The direction is still one-way — nothing
+depends back on `dictate-core`, and `dictate-proto` still depends on
+nothing.
 
 ## Build & test
 
@@ -80,16 +91,19 @@ Preferred: use `just` or `make`, both of which set `PATH` for you.
 
 ```bash
 just build      # cargo build --workspace
-just test       # cargo test --workspace   (>= 78 tests must pass)
+just test       # cargo test --workspace   (>= 379 tests must pass)
 just clippy     # cargo clippy --all-targets --workspace  (must be clean)
+just check      # test + clippy
 just release    # cargo build --release --workspace
-just install    # release + install to ~/.local/bin/dictate-agent
+just install    # release + install `dictated` and `dictate` to ~/.local/bin
+just install-unit  # install systemd/dictated.service
 
 # or, without just:
 make release
 make test
 make clippy
 make install
+make install-unit
 ```
 
 If you're running `cargo` directly outside `just`/`make`, export PATH
@@ -100,15 +114,40 @@ export PATH="/opt/cuda/bin:$PATH"
 cargo test --workspace
 ```
 
-## Runtime control (unchanged by the S00 split)
+## Runtime control (S02)
 
-The daemon is still controlled by POSIX signals, not a control-plane RPC
-(that's S02's job — see the master slice map):
+Two surfaces, one code path underneath — the signal shim calls the same
+engine handlers the protocol commands do (`crates/dictated/src/signals.rs`).
 
-- `scripts/dictate-toggle` sends `SIGUSR1` to toggle recording.
-- `scripts/dictate-cancel` sends `SIGUSR2` to cancel and discard.
-- PID file: `${XDG_CONFIG_HOME:-$HOME/.config}/dictate-agent/dictate.pid`.
-- systemd user unit: `systemd/dictate-agent.service`.
+```bash
+dictate status          # daemon + session state, capabilities, model backend
+dictate toggle          # start, or stop-and-transcribe if recording
+dictate cancel          # abandon the session; injects nothing
+dictate tail            # stream events (state_changed, final, error, level)
+dictate history         # past dictations from the interaction log
+```
+
+- Socket: `$XDG_RUNTIME_DIR/dictate-agent/dictated.sock`
+  (override with `DICTATE_SOCKET`).
+- PID file: `$XDG_RUNTIME_DIR/dictate-agent/dictated.pid`.
+- History DB: `$XDG_DATA_HOME/dictated/history.db`.
+- systemd user unit: `systemd/dictated.service` (`make install-unit`).
+
+`scripts/dictate-toggle` / `scripts/dictate-cancel` are **unchanged** and
+still work: they signal whatever holds the legacy PID file at
+`${XDG_CONFIG_HOME:-$HOME/.config}/dictate-agent/dictate.pid`, and
+`dictated` claims that file **only when nothing live already holds it**
+(`crates/dictated/src/paths.rs`). So with the Python daemon running the
+scripts drive Python; with only `dictated` running they drive `dictated`.
+Neither ever overwrites a PID file a living process owns — which is the
+whole reason the two can stay installed side by side.
+
+### Paths must never collide with the Python daemon
+
+The Python reference daemon owns `~/.config/dictate-agent/dictate.pid` and
+`~/.local/share/dictate-agent/history.db`. `dictated` deliberately uses
+different paths for all of socket, PID, and DB. If you add runtime state,
+keep it out of the Python daemon's namespace until the v1.0 cutover gate.
 
 ## Where to look next
 

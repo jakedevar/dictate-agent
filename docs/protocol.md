@@ -122,8 +122,14 @@ unrecognized flag means "not permitted", which is the fail-safe direction.
 
 `routes` restricts which routes the connection may invoke — a subset decision
 rather than an on/off one. A remote client may be allowed `type` (returned as
-text) while being denied `timer`, which would run `systemd-run` on the host. An
-**empty list means unspecified** and is read permissively; S33 must populate it.
+text) while being denied `timer`, which would run `systemd-run` on the host.
+
+`routes` is **deny-by-default**: an empty list permits *nothing*, and every
+server must populate it explicitly. This matches `features` beside it, where an
+omitted flag reads as "not permitted". The alternative — reading an empty list
+as "unspecified, therefore everything" — was fail-*open* on precisely the paths
+that execute code on the host (`timer` runs `systemd-run`, `local` invokes the
+LLM), and it meant any peer that simply omitted the field was granted both.
 
 `limits` — `max_message_bytes` (default 1048576), `max_audio_frame_bytes`
 (default 1048576), `max_audio_ms` (optional), `max_concurrent_sessions`
@@ -456,7 +462,31 @@ said nothing). Do not conflate them.
 
 ## 12. Reference flows
 
-### Local dictation (S02)
+### Local dictation (S02) — implemented
+
+Served by `dictated` over `$XDG_RUNTIME_DIR/dictate-agent/dictated.sock`.
+Connections there are granted `Capabilities::local_trusted`, minus anything the
+host cannot actually do (no display server withdraws `text_injection` and sets
+`headless`) and minus features this build does not have (dictionary, snippets,
+config). Those last are answered `unsupported_command` rather than `forbidden`
+— "this build cannot" is a different fact from "you may not", and only one of
+them is worth showing the user a setting for.
+
+Two rules the daemon enforces that the wire format does not carry:
+
+- **Session ownership.** `stop` and `cancel` carry no session id, so the daemon
+  decides: a connection may control the session it started, a trusted-local
+  connection may also control an unowned host session (which is what lets one
+  `dictate` invocation start a session and the next one stop it), and a signal
+  outranks both. A connection without `host_capture` can never touch another
+  peer's session — the property S33 needs before a phone is on the LAN.
+- **The injection commit point.** Cancellation is reachable from every
+  non-terminal state, including `injecting`, right up to the moment text is
+  handed to the injector. Past that the injection cannot be undone, so a
+  late `cancel` is answered `conflict` rather than reported as a success over
+  text that has already been typed.
+
+
 
 ```
 → {"kind":"request","v":1,"id":1,"command":{"type":"handshake",...}}
