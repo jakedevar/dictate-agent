@@ -1,0 +1,18 @@
+[package]
+name = "dictate-cli"
+version.workspace = true
+edition.workspace = true
+
+# Installed as `dictate`: the verb Jake types, and short enough to keybind.
+[[bin]]
+name = "dictate"
+path = "src/main.rs"
+
+# Deliberately minimal. This binary runs on every dictation, so it depends on
+# the protocol types and a socket — never on dictate-core, which would pull
+# whisper.cpp and CUDA into a process that only writes JSON to a unix socket.
+[dependencies]
+anyhow = { workspace = true }
+dictate-proto = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
