@@ -266,17 +266,20 @@ The first seven launch attempts used the plan's legacy `sonnet` alias; this
 Codex-backed harness rejected that unavailable model before any agent turn or
 repository work. They were replaced with the Codex implementer mapping
 `gpt-5.6-terra` at high effort. RSI admitted six concurrent workers and
-rate-limited S31; the Epic-lead will dispatch S31 when a slot opens.
+rate-limited S31 initially; it was admitted when the first slot opened. The
+first S02-FIX replacement stopped cleanly before edits because its concurrent
+baseline run hung in one pre-existing control-plane test; the Epic-lead's
+earlier isolated 379-test run passed, so S02-FIX awaits a serialized retry.
 
 | Slice | Active RSI child session | State at dispatch checkpoint |
 |---|---|---|
-| S02-FIX | `cf3339fe-672a-47d2-9558-f6c971fe4564` | running |
+| S02-FIX | pending retry (`cf3339fe-672a-47d2-9558-f6c971fe4564` made no changes) | baseline contention |
 | S10 | `ecb398d3-f8be-48ee-b0a9-b1db061f3c03` | running |
 | S11 | `4427665a-7bca-4856-b294-00acf34015a1` | running |
 | S12 | `4292d913-971d-4719-b695-1bf5d01aeae0` | running |
 | S13 | `3b5f6bfe-035d-4f31-bdcc-1c17ab8753dd` | running |
 | S30 | `39af03b6-430d-4487-8bcf-3252af348399` | running |
-| S31 | pending | waiting for RSI capacity |
+| S31 | `3fa6014f-3f1b-4a34-82b3-58d9eba39a8b` | running |
 
 **S10 — Audio subsystem v2** · implementer · M
 Scope: ring buffer + pre-roll (capture ~300ms before hotkey to stop
