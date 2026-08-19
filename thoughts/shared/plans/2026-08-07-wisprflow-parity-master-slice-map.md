@@ -7,9 +7,9 @@ repository: dictate_agent
 topic: "Wispr Flow parity — master orchestration slice map (Rust rebuild)"
 tags: [plan, orchestration, slice-map, rust, wispr-flow, whisper, tauri, api-server, parity]
 status: active
-last_updated: 2026-08-07
-last_updated_by: Claude (RSI Epic-lead session bba123fa)
-last_updated_note: "Wave 0 dispatched (S00 + R1–R4). Ground truth corrected: 78-test baseline verified, src_rust_archive discrepancy resolved, Python daemon deletion by 5e16667 found and folded into S00 Task 1."
+last_updated: 2026-08-19
+last_updated_by: Codex (RSI Epic-lead session 4ba1578b)
+last_updated_note: "Wave 0 complete. S02 merged to master as ed992e8 and independently re-verified: 379 tests pass, clippy clean. Additive protocol toggle command approved for S02-FIX; Wave 1 ready to dispatch."
 type: master_slice_map
 ---
 
@@ -234,7 +234,7 @@ subordinate to `crates/dictate-proto/tests/golden.rs`).
 5. `docs/protocol.md` in a new top-level `docs/` — **ACCEPTED.** It is
    product documentation for S32/S33 implementers, not a thoughts artifact.
 
-**S02 — Daemon skeleton: `dictated` + UDS server + CLI + state machine** · **architect** · L
+**S02 — Daemon skeleton: `dictated` + UDS server + CLI + state machine** · **architect** · L · **✅ COMPLETE 2026-08-19**
 Goal: replace signal-only control with a real control plane (signals kept).
 Scope: tokio daemon hosting engine; state machine Idle→Recording→Transcribing
 →Formatting→Injecting→(Error|Done) with cancel at any point; UDS JSON-RPC
@@ -244,6 +244,18 @@ systemd user unit; distinct runtime paths (`dictated.sock`, new PID file).
 Verify: automated integration test drives full pipeline via UDS with mock STT;
 `dictate-toggle` script still works (daemon-level check: state transitions in
 event log); concurrent-command safety tests.
+
+Merged to `master` as `ed992e8` from worker HEAD `8d15b28`. Successor
+Epic-lead independently re-ran the required CUDA-env verification on
+2026-08-19: **379 passed / 0 failed** and
+`cargo clippy --all-targets --workspace` clean. The protocol documentation now
+correctly states that an empty `routes` capability permits no routes.
+
+**S02-FIX decision (2026-08-19): APPROVED.** Add a protocol-level `toggle`
+command and resolve it atomically inside the engine's single-writer actor. This
+is additive within protocol v1 and removes the CLI's `get_status` then
+`start`/`stop` TOCTOU window. Dispatch as a standalone Bug slice so the Wave 1
+workers can remain isolated from the control-plane contract change.
 
 ### Wave 1 — Core pipeline hardening (parallel after S02)
 
