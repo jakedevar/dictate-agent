@@ -259,19 +259,24 @@ workers can remain isolated from the control-plane contract change.
 
 ### Wave 1 — Core pipeline hardening (parallel after S02)
 
-**DISPATCHED 2026-08-19** from clean `master` base `a5d750c` (which contains
+**DISPATCHED 2026-08-19** from clean `master` base `e85bb56` (which contains
 S02 merge `ed992e8`). All workers were required to verify their sandbox branch,
 clean worktree, both base commits, and the 379-test floor before implementation.
+The first seven launch attempts used the plan's legacy `sonnet` alias; this
+Codex-backed harness rejected that unavailable model before any agent turn or
+repository work. They were replaced with the Codex implementer mapping
+`gpt-5.6-terra` at high effort. RSI admitted six concurrent workers and
+rate-limited S31; the Epic-lead will dispatch S31 when a slot opens.
 
-| Slice | RSI child session | Initial state |
+| Slice | Active RSI child session | State at dispatch checkpoint |
 |---|---|---|
-| S02-FIX | `8e382f04-2d12-4a43-a47e-47783e3154e8` | queued |
-| S10 | `73856423-63f7-467d-8ca7-62d8dd2091da` | queued |
-| S11 | `c4d6bd5d-9cf6-4f96-b354-e3516671b8a4` | queued |
-| S12 | `18fb0e8b-ee87-4835-b895-31594ad27c6b` | queued |
-| S13 | `97ce8a53-1b72-4607-bbcb-21eb89276ae7` | queued |
-| S30 | `1b41f0f9-2894-43a7-abdf-b1c4fd08d97c` | queued |
-| S31 | `d5e61ea7-2f59-4e52-81ef-0984e788950d` | queued |
+| S02-FIX | `cf3339fe-672a-47d2-9558-f6c971fe4564` | running |
+| S10 | `ecb398d3-f8be-48ee-b0a9-b1db061f3c03` | running |
+| S11 | `4427665a-7bca-4856-b294-00acf34015a1` | running |
+| S12 | `4292d913-971d-4719-b695-1bf5d01aeae0` | running |
+| S13 | `3b5f6bfe-035d-4f31-bdcc-1c17ab8753dd` | running |
+| S30 | `39af03b6-430d-4487-8bcf-3252af348399` | running |
+| S31 | pending | waiting for RSI capacity |
 
 **S10 — Audio subsystem v2** · implementer · M
 Scope: ring buffer + pre-roll (capture ~300ms before hotkey to stop
