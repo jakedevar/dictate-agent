@@ -569,6 +569,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dictate-proto",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "dictate-core"
 version = "0.2.0"
 dependencies = [
@@ -578,6 +588,7 @@ dependencies = [
  "dictate-fmt",
  "dictate-history",
  "dictate-inject",
+ "dictate-proto",
  "dictate-stt",
  "notify-rust",
  "ollama-rs",
@@ -589,6 +600,7 @@ dependencies = [
  "tokio-stream",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -608,6 +620,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dictate-proto",
  "rusqlite",
  "serde",
  "tracing",
@@ -652,7 +665,15 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "dictate-core",
+ "dictate-fmt",
+ "dictate-history",
+ "dictate-proto",
+ "libc",
+ "serde_json",
+ "signal-hook",
+ "signal-hook-tokio",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
 ]

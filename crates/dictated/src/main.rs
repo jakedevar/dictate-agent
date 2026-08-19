@@ -1,16 +1,45 @@
+//! The `dictated` binary.
+//!
+//! Thin on purpose: everything worth testing lives in the library beside it,
+//! so `tests/control_plane.rs` drives the same daemon this starts.
+
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 
-use dictate_core::{agent, config};
+use dictate_core::config;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize tracing (replaces Python's print statements).
-    //
-    // Pre-workspace-split this was a single crate ("dictate_agent"), so one
-    // `dictate_agent=info` directive covered every module. The split spread
-    // that code across several crates, so the default floor now has to name
-    // each of them individually to keep the same log verbosity as before.
+fn main() -> Result<()> {
+    init_tracing()?;
+
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--check") {
+        return check_all_dependencies();
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("dictated {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
+    let config = config::load_config(None)?;
+
+    // Built here rather than via `#[tokio::main]` so the worker count is a
+    // deliberate choice: the daemon is almost entirely idle, and its blocking
+    // work (clipboard paste, SQLite, whisper) goes to the blocking pool
+    // regardless.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(dictated::run(config))
+}
+
+fn init_tracing() -> Result<()> {
+    // The pre-S00 crate was a single `dictate_agent` target, so one directive
+    // covered every module. The workspace split spread that across crates, so
+    // the default floor names each one.
     let mut filter = EnvFilter::from_default_env();
     for target in [
         "dictate_core",
@@ -24,23 +53,31 @@ async fn main() -> Result<()> {
         filter = filter.add_directive(format!("{target}=info").parse()?);
     }
     tracing_subscriber::fmt().with_env_filter(filter).init();
-
-    // Parse args: --check flag for dependency verification
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--check") {
-        return check_all_dependencies();
-    }
-
-    // Load config
-    let config = config::load_config(None)?;
-
-    // Create and run agent
-    let mut agent = agent::DictateAgent::new(config).await?;
-    agent.run().await
+    Ok(())
 }
 
-/// Check each external program that's still used as a subprocess.
-/// Port of main.py check_all_dependencies pattern.
+fn print_help() {
+    println!(
+        "dictated {} — dictation daemon
+
+USAGE:
+    dictated [OPTIONS]
+
+OPTIONS:
+    --check      Verify external tools this daemon shells out to
+    --version    Print the version
+    --help       Print this help
+
+CONTROL:
+    dictate toggle | cancel | status | tail     (unix socket)
+    kill -USR1 <pid>                            (toggle, same code path)
+    kill -USR2 <pid>                            (cancel, same code path)
+",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Check each external program still used as a subprocess.
 fn check_all_dependencies() -> Result<()> {
     println!("Dictate Agent — Dependency Check");
     println!("================================");
@@ -68,9 +105,9 @@ fn check_all_dependencies() -> Result<()> {
             .unwrap_or(false);
 
         if found {
-            println!("  [OK]      {:<15} {}", cmd, description);
+            println!("  [OK]      {cmd:<15} {description}");
         } else {
-            println!("  [MISSING] {:<15} {} — {}", cmd, description, install_hint);
+            println!("  [MISSING] {cmd:<15} {description} — {install_hint}");
             all_ok = false;
         }
     }

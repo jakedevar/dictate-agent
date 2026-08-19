@@ -3,6 +3,12 @@ name = "dictate-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Compiles the deterministic port doubles in `ports::mock` into the library so
+# integration tests in *other* crates (notably `dictated`) can drive the real
+# engine and the real socket without a microphone, a GPU, or a desktop.
+test-support = []
+
 [dependencies]
 anyhow = { workspace = true }
 arboard = { workspace = true }
@@ -10,7 +16,9 @@ dictate-audio = { workspace = true }
 dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
 dictate-inject = { workspace = true }
+dictate-proto = { workspace = true }
 dictate-stt = { workspace = true }
+uuid = { workspace = true }
 notify-rust = { workspace = true }
 ollama-rs = { workspace = true }
 regex = { workspace = true }

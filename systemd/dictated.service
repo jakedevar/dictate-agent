@@ -1,0 +1,37 @@
+[Unit]
+Description=dictated — dictation daemon (Rust)
+Documentation=file:///%h/.local/share/dictate-agent/docs/protocol.md
+After=graphical-session.target
+Wants=pipewire.service
+
+# Deliberately NOT Conflicts=dictate-agent.service. The Python reference daemon
+# stays runnable alongside this one until the v1.0 parity cutover, and they no
+# longer share a socket, a PID file, or a database — see crates/dictated/src/paths.rs.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dictated
+Restart=on-failure
+RestartSec=5
+
+# X11 is the first-class injection backend today (locked decision 4).
+Environment=DISPLAY=:0
+Environment=RUST_LOG=dictated=info,dictate_core=info,dictate_audio=info,dictate_stt=info,dictate_fmt=info,dictate_history=info,dictate_inject=info
+
+# The control socket and PID file live in the runtime directory, which systemd
+# creates for us and clears on logout — so a PID file left by a crash cannot
+# outlive the boot that made it meaningless.
+RuntimeDirectory=dictate-agent
+RuntimeDirectoryMode=0700
+
+# SIGTERM triggers the daemon's own shutdown: it cancels any in-flight session,
+# which is what releases the microphone. Give it room to do that.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# whisper.cpp GGUF model + VRAM management
+MemoryMax=4G
+CPUQuota=80%
+
+[Install]
+WantedBy=default.target

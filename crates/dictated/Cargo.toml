@@ -3,6 +3,10 @@ name = "dictated"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "dictated"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dictated"
 path = "src/main.rs"
@@ -10,6 +14,19 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 dictate-core = { workspace = true }
+dictate-fmt = { workspace = true }
+dictate-history = { workspace = true }
+dictate-proto = { workspace = true }
+libc = { workspace = true }
+serde_json = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-tokio = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# `test-support` compiles the port doubles into dictate-core so the integration
+# tests can start a real daemon with no microphone, GPU, or desktop.
+dictate-core = { workspace = true, features = ["test-support"] }
