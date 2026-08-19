@@ -259,6 +259,20 @@ workers can remain isolated from the control-plane contract change.
 
 ### Wave 1 — Core pipeline hardening (parallel after S02)
 
+**DISPATCHED 2026-08-19** from clean `master` base `a5d750c` (which contains
+S02 merge `ed992e8`). All workers were required to verify their sandbox branch,
+clean worktree, both base commits, and the 379-test floor before implementation.
+
+| Slice | RSI child session | Initial state |
+|---|---|---|
+| S02-FIX | `8e382f04-2d12-4a43-a47e-47783e3154e8` | queued |
+| S10 | `73856423-63f7-467d-8ca7-62d8dd2091da` | queued |
+| S11 | `c4d6bd5d-9cf6-4f96-b354-e3516671b8a4` | queued |
+| S12 | `18fb0e8b-ee87-4835-b895-31594ad27c6b` | queued |
+| S13 | `97ce8a53-1b72-4607-bbcb-21eb89276ae7` | queued |
+| S30 | `1b41f0f9-2894-43a7-abdf-b1c4fd08d97c` | queued |
+| S31 | `d5e61ea7-2f59-4e52-81ef-0984e788950d` | queued |
+
 **S10 — Audio subsystem v2** · implementer · M
 Scope: ring buffer + pre-roll (capture ~300ms before hotkey to stop
 first-syllable clipping — Wispr-feel detail); input device selection +
