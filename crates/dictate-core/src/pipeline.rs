@@ -32,8 +32,8 @@ use std::time::Instant;
 use dictate_history::history::Interaction;
 use dictate_history::HistoryStore;
 use dictate_proto::{
-    ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route, SkipReason, StageTiming,
-    StageTimings, State, Transcript,
+    DictationMode, ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route, SkipReason,
+    StageTiming, StageTimings, State, Transcript,
 };
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
@@ -41,8 +41,8 @@ use tracing::{error, info, warn};
 use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
 use crate::ports::{
-    audio_ms, AudioSource, FormatPlan, Formatter, MediaController, Notice, SttProvider,
-    StatusNotifier, TextInjector,
+    audio_ms, AudioSource, FormatPlan, Formatter, GateDecision, MediaController, Notice,
+    StatusNotifier, SttProvider, TextInjector, VoiceActivityGate,
 };
 use crate::router::{self, RouteType};
 use crate::session::SessionHandle;
@@ -189,6 +189,8 @@ pub struct Pipeline {
     pub audio: Arc<dyn AudioSource>,
     /// Recognizer.
     pub stt: Arc<dyn SttProvider>,
+    /// Silero gate/trim and hands-free trailing-silence tracker.
+    pub vad: Arc<dyn VoiceActivityGate>,
     /// LLM formatting pass.
     pub formatter: Arc<dyn Formatter>,
     /// Text injection.
@@ -247,6 +249,7 @@ impl Pipeline {
                 return self.finish(&handle, stages, None, Outcome::cancelled()).await;
             }
             () = stop.notified() => {}
+            () = self.auto_stop(&handle, &token), if matches!(handle.mode(), DictationMode::OneShot | DictationMode::WakeWord) => {}
         }
 
         let mut interaction = {
@@ -288,13 +291,97 @@ impl Pipeline {
         let audio_len_ms = audio_ms(&samples);
         interaction.audio_duration_s = Some(audio_len_ms / 1000.0);
 
+        // --- Voice activity gate and silence trim -------------------------
+        // This timing deliberately starts *after* recording has stopped. The
+        // one-shot monitor below spans user speaking time and is not latency.
+        let clock = StageClock::start();
+        let gated = match self
+            .race(&token, {
+                let vad = self.vad.clone();
+                let captured = samples.clone();
+                async move { tokio::task::spawn_blocking(move || vad.gate(&captured)).await }
+            })
+            .await
+        {
+            Step::Cancelled => {
+                stages.timings.vad = clock.failed("cancelled during voice activity detection");
+                return self.finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms)).await;
+            }
+            Step::Continue(Ok(Ok(decision))) => {
+                stages.timings.vad = clock.ran();
+                decision
+            }
+            Step::Continue(Ok(Err(e))) => {
+                stages.timings.vad = clock.failed(e.to_string());
+                let error = ProtoError::new(ErrorCode::Internal, format!("VAD failed: {e}"));
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(error, audio_len_ms),
+                    )
+                    .await;
+            }
+            Step::Continue(Err(e)) => {
+                stages.timings.vad = clock.failed("VAD worker failed");
+                let error = ProtoError::new(ErrorCode::Internal, format!("VAD worker failed: {e}"));
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(error, audio_len_ms),
+                    )
+                    .await;
+            }
+        };
+        let samples = match gated {
+            GateDecision::NoSpeech => {
+                info!(
+                    audio_ms = audio_len_ms,
+                    "VAD gated no-speech capture; skipping STT"
+                );
+                self.notifier.notify(Notice::NoSpeech);
+                stages.timings.stt = StageTiming::skipped(SkipReason::NoSpeechDetected);
+                stages.timings.inject = StageTiming::skipped(SkipReason::NoSpeechDetected);
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::done(empty_transcript(SkipReason::NoSpeechDetected))
+                            .with_audio_ms(audio_len_ms),
+                    )
+                    .await;
+            }
+            GateDecision::Speech {
+                samples,
+                leading_trimmed_ms,
+                trailing_trimmed_ms,
+            } => {
+                info!(
+                    trimmed_leading_ms = leading_trimmed_ms,
+                    trimmed_trailing_ms = trailing_trimmed_ms,
+                    retained_ms = audio_ms(&samples),
+                    "VAD retained speech span"
+                );
+                samples
+            }
+        };
+
         // --- Speech to text -------------------------------------------------
         let clock = StageClock::start();
         let transcribed = match self.race(&token, self.stt.transcribe(&samples)).await {
             Step::Cancelled => {
                 stages.timings.stt = clock.failed("cancelled during transcription");
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(r) => r,
@@ -481,6 +568,41 @@ impl Pipeline {
             biased;
             () = token.cancelled() => Step::Cancelled,
             v = fut => Step::Continue(v),
+        }
+    }
+
+    /// Wait for end-of-speech in a hands-free session. Its work is excluded
+    /// from the final VAD timing because it occurs while the person speaks.
+    async fn auto_stop(&self, handle: &SessionHandle, token: &CancelToken) {
+        let mut tracker = match self.vad.trailing_silence_tracker() {
+            Ok(tracker) => tracker,
+            Err(error) => {
+                warn!(%error, session = %handle.id().as_str(), "one-shot VAD unavailable; explicit stop required");
+                std::future::pending::<()>().await;
+                return;
+            }
+        };
+        let interval = std::time::Duration::from_millis(u64::from(self.vad.poll_interval_ms()));
+        loop {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => return,
+                () = tokio::time::sleep(interval) => {}
+            }
+            let Some(snapshot) = self.audio.snapshot().await else {
+                return;
+            };
+            match tracker.observe_snapshot(&snapshot) {
+                Ok(true) => {
+                    info!(session = %handle.id().as_str(), "one-shot VAD detected trailing silence");
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(%error, session = %handle.id().as_str(), "one-shot VAD tracker failed; explicit stop required");
+                    std::future::pending::<()>().await;
+                }
+            }
         }
     }
 

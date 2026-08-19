@@ -5,6 +5,7 @@ pub use dictate_fmt::GrammarConfig;
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
 pub use dictate_stt::WhisperConfig;
+pub use dictate_vad::VadConfig;
 
 // XDG paths
 const CONFIG_DIR: &str = "dictate-agent";
@@ -16,6 +17,7 @@ const MEDIA_STATE_FILE: &str = "media_was_playing";
 #[serde(default)]
 pub struct Config {
     pub whisper: WhisperConfig,
+    pub vad: VadConfig,
     pub grammar: GrammarConfig,
     pub local: LocalConfig,
     pub output: OutputConfig,
@@ -188,6 +190,10 @@ model_path = "/tmp/test-model.bin"
 device = "cpu"
 no_speech_threshold = 0.8
 
+[vad]
+speech_threshold = 0.7
+trailing_silence_ms = 1200
+
 [grammar]
 enabled = false
 host = "http://example.com:11434"
@@ -220,6 +226,8 @@ sound_file = "/tmp/alarm.wav"
         assert_eq!(config.whisper.model_path, "/tmp/test-model.bin");
         assert_eq!(config.whisper.device, "cpu");
         assert!((config.whisper.no_speech_threshold - 0.8).abs() < f32::EPSILON);
+        assert!((config.vad.speech_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(config.vad.trailing_silence_ms, 1200);
         assert!(!config.grammar.enabled);
         assert_eq!(config.grammar.model, "test-model");
         assert_eq!(config.grammar.min_words, 5);

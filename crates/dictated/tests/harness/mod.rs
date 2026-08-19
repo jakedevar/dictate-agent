@@ -16,6 +16,7 @@ use std::time::Duration;
 use dictate_core::ports::mock::{
     MockAudio, MockFormatter, MockInjector, MockStt, NullMedia, RecordingNotifier,
 };
+use dictate_core::ports::VoiceActivityGate;
 use dictate_core::ports::{Formatter, SttProvider};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};
@@ -47,6 +48,7 @@ pub struct Setup {
     pub injector: Arc<MockInjector>,
     pub audio: Arc<MockAudio>,
     pub formatter: Arc<dyn Formatter>,
+    pub vad: Arc<dyn VoiceActivityGate>,
     pub capabilities: Capabilities,
     pub history_enabled: bool,
 }
@@ -59,6 +61,13 @@ impl Default for Setup {
             audio: Arc::new(MockAudio::with_seconds(1.5)),
             // Appends nothing, but *runs*, so the formatting stage is exercised.
             formatter: Arc::new(MockFormatter::default()),
+            vad: Arc::new(
+                dictate_vad::SileroVad::new(dictate_vad::VadConfig {
+                    enabled: false,
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
             capabilities: dictated::server::local_capabilities(true),
             history_enabled: false,
         }
@@ -80,6 +89,10 @@ impl Setup {
     }
     pub fn with_formatter(mut self, formatter: Arc<dyn Formatter>) -> Self {
         self.formatter = formatter;
+        self
+    }
+    pub fn with_vad(mut self, vad: Arc<dyn VoiceActivityGate>) -> Self {
+        self.vad = vad;
         self
     }
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
@@ -133,6 +146,7 @@ impl Harness {
         let pipeline = Arc::new(Pipeline {
             audio: setup.audio.clone(),
             stt: setup.stt.clone(),
+            vad: setup.vad.clone(),
             formatter: setup.formatter.clone(),
             injector: setup.injector.clone(),
             notifier: notifier.clone(),
@@ -148,9 +162,15 @@ impl Harness {
         });
 
         let runtime = RuntimePaths::under(&dir);
-        let daemon = Daemon::start(pipeline, history.clone(), &runtime, setup.capabilities, None)
-            .await
-            .expect("daemon must start");
+        let daemon = Daemon::start(
+            pipeline,
+            history.clone(),
+            &runtime,
+            setup.capabilities,
+            None,
+        )
+        .await
+        .expect("daemon must start");
 
         Self {
             socket: daemon.socket().to_path_buf(),
@@ -266,7 +286,11 @@ impl Client {
             "test-client",
             dictate_proto::ClientKind::Cli,
         ));
-        match self.request(Command::Handshake(hello)).await.expect("handshake") {
+        match self
+            .request(Command::Handshake(hello))
+            .await
+            .expect("handshake")
+        {
             CommandResult::Handshake(h) => {
                 self.hello = Some(*h.clone());
                 *h

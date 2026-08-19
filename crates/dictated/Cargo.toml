@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 dictate-core = { workspace = true }
+dictate-vad = { workspace = true }
 dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
 dictate-proto = { workspace = true }
