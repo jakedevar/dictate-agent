@@ -32,6 +32,21 @@ status: complete
 
 ## Verification manifest
 
+## Recovery scope audit
+
+Recovered from the read-only interrupted sandbox: the audio crate's bounded
+pre-roll capture, exact-device selection and next-start recovery, AGC/mute
+diagnostics, Rodio earcons, audio configuration, the additive protocol event,
+pipeline media/earcon/mute event publishing, production wiring, and the UDS
+event-stream test.
+
+Deliberately discarded as out of scope: CLI rendering and command changes;
+core cancellation, engine, and session formatting; all history changes;
+unrelated protocol command/envelope/error/frame/record/result and compatibility
+test churn; daemon paths/server/signals churn; and every formatting-only hunk
+outside the retained S10 integration files. The retained integration files
+contain only S10 behavior plus the minimal local formatting needed to carry it.
+
 ### AUTOMATED
 
 - `cargo test -p dictate-audio -p dictate-core -p dictate-proto`: audio ring,
