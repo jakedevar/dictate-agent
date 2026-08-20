@@ -118,6 +118,10 @@ async fn a_session_with_no_audio_finishes_done_with_empty_text() {
             reason: SkipReason::NoSpeechDetected
         }
     ));
+    assert_eq!(
+        transcript.timings.vad,
+        StageTiming::skipped(SkipReason::NoSpeechDetected)
+    );
     assert!(h.injector.injected().is_empty());
     h.stop().await;
 }
@@ -175,6 +179,37 @@ async fn one_shot_session_auto_stops_after_vad_trailing_silence() {
         .unwrap();
     assert_eq!(client.wait_for_terminal().await, State::Done);
     assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_shot_snapshot_failure_falls_back_to_explicit_stop() {
+    let audio = Arc::new(MockAudio::with_seconds(1.5).without_snapshots());
+    let vad = Arc::new(
+        MockVad::returning(GateDecision::Speech {
+            samples: vec![0.2; 512],
+            leading_trimmed_ms: 0.0,
+            trailing_trimmed_ms: 0.0,
+        })
+        .auto_stopping(),
+    );
+    let h = Harness::with(Setup::default().with_audio(audio).with_vad(vad)).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::OneShot,
+            options: None,
+        })
+        .await
+        .unwrap();
+    client.wait_for_state(State::Recording).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    client
+        .request(Command::Stop)
+        .await
+        .expect("explicit stop remains available");
+    assert_eq!(client.wait_for_terminal().await, State::Done);
     h.stop().await;
 }
 
@@ -1208,10 +1243,10 @@ async fn per_stage_timings_distinguish_ran_skipped_and_absent() {
         "inject ran: {:?}",
         t.inject
     );
-    assert_eq!(
-        t.vad,
-        StageTiming::skipped(SkipReason::NotSupported),
-        "VAD does not exist until S11 and must not report a fabricated zero"
+    assert!(
+        matches!(t.vad, StageTiming::Ran { .. }),
+        "the configured VAD pass-through still executes and must report a measured stage: {:?}",
+        t.vad
     );
     assert_eq!(
         t.fmt_llm,

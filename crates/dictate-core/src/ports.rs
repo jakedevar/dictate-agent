@@ -615,6 +615,7 @@ pub mod mock {
         /// torn down rather than left dangling.
         pub cancels: AtomicUsize,
         stop_delay: std::time::Duration,
+        snapshot_available: bool,
     }
 
     impl MockAudio {
@@ -626,6 +627,7 @@ pub mod mock {
                 recording: AtomicBool::new(false),
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
+                snapshot_available: true,
             }
         }
 
@@ -637,6 +639,7 @@ pub mod mock {
                 recording: AtomicBool::new(false),
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
+                snapshot_available: true,
             }
         }
 
@@ -645,6 +648,13 @@ pub mod mock {
         #[must_use]
         pub fn with_stop_delay(mut self, delay: std::time::Duration) -> Self {
             self.stop_delay = delay;
+            self
+        }
+
+        /// Simulate a capture backend that cannot provide live snapshots.
+        #[must_use]
+        pub fn without_snapshots(mut self) -> Self {
+            self.snapshot_available = false;
             self
         }
 
@@ -685,8 +695,7 @@ pub mod mock {
 
         fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
             Box::pin(async move {
-                self.recording
-                    .load(Ordering::Acquire)
+                (self.snapshot_available && self.recording.load(Ordering::Acquire))
                     .then(|| self.samples.clone())
             })
         }

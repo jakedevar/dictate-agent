@@ -89,11 +89,6 @@ impl Stages {
     pub fn new() -> Self {
         Self {
             timings: StageTimings {
-                // VAD does not exist until S11. `not_supported` is the
-                // truthful answer — the stage is absent from this build, as
-                // distinct from being switched off by configuration or from
-                // having no data.
-                vad: StageTiming::skipped(SkipReason::NotSupported),
                 // The pure-Rust corrections pass currently executes *inside*
                 // `dictate-stt::transcribe`, so its cost is already counted
                 // in `stt` and it has no separately measured duration of its
@@ -276,6 +271,7 @@ impl Pipeline {
         let Some(samples) = samples else {
             warn!("No audio captured");
             self.notifier.notify(Notice::NoSpeech);
+            stages.timings.vad = StageTiming::skipped(SkipReason::NoSpeechDetected);
             stages.timings.stt = StageTiming::skipped(SkipReason::NoSpeechDetected);
             stages.timings.inject = StageTiming::skipped(SkipReason::NoSpeechDetected);
             return self
@@ -590,6 +586,8 @@ impl Pipeline {
                 () = tokio::time::sleep(interval) => {}
             }
             let Some(snapshot) = self.audio.snapshot().await else {
+                warn!(session = %handle.id().as_str(), "one-shot audio snapshots unavailable; explicit stop required");
+                std::future::pending::<()>().await;
                 return;
             };
             match tracker.observe_snapshot(&snapshot) {
