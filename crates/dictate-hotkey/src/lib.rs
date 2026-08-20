@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use dictate_core::config::HotkeyConfig;
 use dictate_core::session::Actor;
 use dictate_core::{EngineHandle, ResolvedOptions};
+use dictate_proto::{Event, State};
 use evdev::{Device, EventSummary};
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{debug, info, warn};
@@ -73,6 +74,25 @@ impl HotkeyService {
             return Self { control: None };
         }
 
+        let (control_tx, control_rx) = mpsc::channel();
+        let unlock_tx = control_tx.clone();
+        let mut state_events = engine.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = state_events.recv().await {
+                if matches!(
+                    event,
+                    Event::StateChanged {
+                        to: State::Done | State::Error | State::Cancelled | State::Idle,
+                        ..
+                    }
+                ) {
+                    // The evdev owner alone mutates its state. A completed
+                    // hands-free session must not leave it permanently locked.
+                    let _ = unlock_tx.send(ManagerControl::Unlock);
+                }
+            }
+        });
+
         let (actions_tx, mut actions_rx) = tokio_mpsc::channel::<HotkeyAction>(32);
         tokio::spawn(async move {
             while let Some(action) = actions_rx.recv().await {
@@ -80,7 +100,6 @@ impl HotkeyService {
             }
         });
 
-        let (control_tx, control_rx) = mpsc::channel();
         let manager = Manager::from_config(config, actions_tx);
         let devices = config.devices.clone();
         if let Err(error) = thread::Builder::new()
@@ -105,6 +124,7 @@ impl HotkeyService {
 
 enum ManagerControl {
     Shutdown,
+    Unlock,
 }
 
 /// The pure state machine that the single device-owner thread drives.
@@ -160,6 +180,7 @@ impl Manager {
 
         let cancel = Self::matches(&self.cancel, &self.pressed);
         if cancel && !self.cancel_latched {
+            self.unlock();
             self.emit(HotkeyAction::Cancel);
         }
         self.cancel_latched = cancel;
@@ -208,6 +229,13 @@ impl Manager {
         }
     }
 
+    fn unlock(&mut self) {
+        self.holding = false;
+        self.locked = false;
+        self.release_due = None;
+        self.last_release = None;
+    }
+
     fn run(self, paths: Vec<String>, control: mpsc::Receiver<ManagerControl>) {
         self.run_inner(paths, control, true);
     }
@@ -245,11 +273,10 @@ impl Manager {
         }
         info!(count = devices.len(), "evdev hotkey service active");
         loop {
-            if matches!(
-                control.try_recv(),
-                Ok(ManagerControl::Shutdown) | Err(mpsc::TryRecvError::Disconnected)
-            ) {
-                break;
+            match control.try_recv() {
+                Ok(ManagerControl::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Ok(ManagerControl::Unlock) => self.unlock(),
+                Err(mpsc::TryRecvError::Empty) => {}
             }
             for device in &mut devices {
                 match device.fetch_events() {
@@ -338,6 +365,22 @@ mod tests {
         manager.key(29, 1, now);
         manager.key(56, 1, now);
         assert_eq!(actions.recv().await, Some(HotkeyAction::Cancel));
+    }
+
+    #[test]
+    fn completing_a_locked_session_reenables_hold_to_talk() {
+        let (mut manager, _actions) = manager();
+        manager.holding = true;
+        manager.locked = true;
+        manager.release_due = Some(Instant::now());
+        manager.last_release = Some(Instant::now());
+
+        manager.unlock();
+
+        assert!(!manager.holding);
+        assert!(!manager.locked);
+        assert!(manager.release_due.is_none());
+        assert!(manager.last_release.is_none());
     }
 
     #[test]
