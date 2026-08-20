@@ -443,13 +443,12 @@ impl Formatter for GrammarFormatter {
 
 /// Text injection into the focused application.
 ///
-/// Synchronous and non-interruptible by design: a clipboard save / paste /
-/// restore cycle has no safe midpoint. The pipeline compensates by taking the
-/// cancellation decision immediately *before* calling this — see
-/// [`crate::cancel::CancelToken::enter_commit`].
+/// The call is async because a Wayland portal can return an outstanding
+/// consent request. X11 is currently immediate, but keeping this boundary
+/// async avoids making a future consent flow a breaking redesign.
 pub trait TextInjector: Send + Sync + 'static {
     /// Inject `text`, reporting what actually happened.
-    fn inject(&self, text: &str) -> InjectionOutcome;
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome>;
 
     /// Whether injection is possible here at all. `false` on a headless host,
     /// and the reason the outcome becomes `Unavailable` rather than `Failed`.
@@ -458,7 +457,7 @@ pub trait TextInjector: Send + Sync + 'static {
 
 /// Clipboard-paste injection behind the trait.
 pub struct HostInjector {
-    inner: dictate_inject::OutputHandler,
+    inner: dictate_inject::X11Injector,
     enabled: bool,
 }
 
@@ -467,37 +466,38 @@ impl HostInjector {
     #[must_use]
     pub fn new(config: &dictate_inject::OutputConfig) -> Self {
         Self {
-            inner: dictate_inject::OutputHandler::new(config),
+            inner: dictate_inject::X11Injector::new(config),
             enabled: config.auto_type,
         }
     }
 }
 
 impl TextInjector for HostInjector {
-    fn inject(&self, text: &str) -> InjectionOutcome {
-        if !self.enabled {
-            return InjectionOutcome::Skipped {
-                reason: dictate_proto::SkipReason::Disabled,
-            };
-        }
-        let chars = text.trim().chars().count() as u32;
-        if self.inner.type_text(text) {
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars,
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = self.inner.default_policy();
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            if !self.enabled {
+                return InjectionOutcome::Skipped {
+                    reason: dictate_proto::SkipReason::Disabled,
+                };
             }
-        } else {
-            InjectionOutcome::Failed {
-                error: dictate_proto::ProtoError::new(
-                    dictate_proto::ErrorCode::InjectionFailed,
-                    "clipboard paste failed; see daemon log",
-                ),
-            }
-        }
+            tokio::task::spawn_blocking(move || inner.inject_blocking(&text, policy))
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
+                    error: dictate_proto::ProtoError::new(
+                        dictate_proto::ErrorCode::InjectionFailed,
+                        format!("injection task failed: {e}"),
+                    ),
+                })
+        })
     }
 
     fn is_available(&self) -> bool {
-        self.enabled
+        use dictate_inject::Injector as _;
+        let caps = self.inner.capabilities();
+        self.enabled && (caps.clipboard_save_restore || caps.direct_typing)
     }
 }
 
@@ -1074,7 +1074,7 @@ pub mod mock {
     /// Injector that records what it was asked to type.
     #[derive(Debug)]
     pub struct MockInjector {
-        injected: Mutex<Vec<String>>,
+        injected: Arc<Mutex<Vec<String>>>,
         available: bool,
         availability_gate: Option<Arc<Gate>>,
         gate: Option<Arc<Gate>>,
@@ -1084,7 +1084,7 @@ pub mod mock {
     impl Default for MockInjector {
         fn default() -> Self {
             Self {
-                injected: Mutex::new(Vec::new()),
+                injected: Arc::new(Mutex::new(Vec::new())),
                 available: true,
                 availability_gate: None,
                 gate: None,
@@ -1154,37 +1154,51 @@ pub mod mock {
     }
 
     impl TextInjector for MockInjector {
-        fn inject(&self, text: &str) -> InjectionOutcome {
-            if let Some(gate) = &self.gate {
-                gate.mark_entered();
-                // Deliberately a blocking wait: the real injector is blocking,
-                // and the pipeline calls it via `spawn_blocking`.
-                while !gate.is_open() {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-            if !self.available {
-                return InjectionOutcome::Unavailable {
-                    backend: "none".into(),
-                    reason: "mock injector is unavailable".into(),
-                };
-            }
-            if self.fail {
-                return InjectionOutcome::Failed {
+        fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+            let text = text.to_string();
+            let injected = self.injected.clone();
+            let gate = self.gate.clone();
+            let available = self.available;
+            let fail = self.fail;
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(gate) = &gate {
+                        gate.mark_entered();
+                        while !gate.is_open() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+                    if !available {
+                        return InjectionOutcome::Unavailable {
+                            backend: "none".into(),
+                            reason: "mock injector is unavailable".into(),
+                        };
+                    }
+                    if fail {
+                        return InjectionOutcome::Failed {
+                            error: dictate_proto::ProtoError::new(
+                                dictate_proto::ErrorCode::InjectionFailed,
+                                "mock injection failure",
+                            ),
+                        };
+                    }
+                    injected
+                        .lock()
+                        .expect("mock injector poisoned")
+                        .push(text.to_string());
+                    InjectionOutcome::Injected {
+                        method: InjectMethod::Paste,
+                        chars: text.trim().chars().count() as u32,
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
                     error: dictate_proto::ProtoError::new(
                         dictate_proto::ErrorCode::InjectionFailed,
-                        "mock injection failure",
+                        format!("mock injection task failed: {e}"),
                     ),
-                };
-            }
-            self.injected
-                .lock()
-                .expect("mock injector poisoned")
-                .push(text.to_string());
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars: text.trim().chars().count() as u32,
-            }
+                })
+            })
         }
 
         fn is_available(&self) -> bool {
@@ -1306,12 +1320,12 @@ mod tests {
         assert!(out.duration_s > 0.0, "burned time must still be reported");
     }
 
-    #[test]
-    fn mock_injector_records_what_it_typed() {
+    #[tokio::test]
+    async fn mock_injector_records_what_it_typed() {
         use mock::MockInjector;
         let i = MockInjector::new();
         assert!(i.injected().is_empty());
-        let outcome = i.inject("hello there");
+        let outcome = i.inject("hello there").await;
         assert!(matches!(outcome, InjectionOutcome::Injected { .. }));
         assert_eq!(i.injected(), vec!["hello there".to_string()]);
     }

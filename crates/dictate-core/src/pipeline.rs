@@ -851,19 +851,10 @@ impl Pipeline {
         };
 
         let clock = StageClock::start();
-        let injector = self.injector.clone();
-        let owned = text.to_string();
-        // The real injector blocks for ~50-100ms on clipboard save/paste/
-        // restore; keeping it off the runtime's worker threads is what lets
-        // other connections keep being served during it.
-        let outcome = tokio::task::spawn_blocking(move || injector.inject(&owned))
-            .await
-            .unwrap_or_else(|e| {
-                error!("injection task panicked: {e}");
-                InjectionOutcome::Failed {
-                    error: ProtoError::new(ErrorCode::InjectionFailed, "injection task panicked"),
-                }
-            });
+        // X11 performs its clipboard/key work on the blocking pool inside its
+        // adapter. Portal backends instead await an authorization response;
+        // keeping the port async preserves both contracts.
+                let outcome = self.injector.inject(text).await;
         drop(guard);
 
         stages.timings.inject = match &outcome {

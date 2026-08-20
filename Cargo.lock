@@ -704,8 +704,10 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "dictate-proto",
  "enigo",
  "serde",
+ "tokio",
  "tracing",
 ]
 
