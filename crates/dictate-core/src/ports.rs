@@ -594,12 +594,15 @@ impl MediaController for PlayerctlMedia {
 
         let state_path = crate::config::media_state_path();
         if is_playing {
-            let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl")
+            let paused = std::process::Command::new("playerctl")
                 .arg("pause")
-                .output();
-            tracing::info!("Media paused");
-            true
+                .status()
+                .is_ok_and(|status| status.success());
+            if paused {
+                let _ = std::fs::write(&state_path, "playing");
+                tracing::info!("Media paused");
+            }
+            paused
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
             let _ = std::fs::remove_file(&state_path);
@@ -613,9 +616,14 @@ impl MediaController for PlayerctlMedia {
         let state_path = crate::config::media_state_path();
         if state_path.exists() {
             let _ = std::fs::remove_file(&state_path);
-            let _ = std::process::Command::new("playerctl").arg("play").output();
-            tracing::info!("Media resumed");
-            true
+            let resumed = std::process::Command::new("playerctl")
+                .arg("play")
+                .status()
+                .is_ok_and(|status| status.success());
+            if resumed {
+                tracing::info!("Media resumed");
+            }
+            resumed
         } else {
             false
         }

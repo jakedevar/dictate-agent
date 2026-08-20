@@ -58,6 +58,10 @@ impl SampleRing {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> Vec<f32> {
         self.samples.iter().copied().collect()
@@ -337,15 +341,20 @@ impl AudioCapture {
     fn input_config(device: &cpal::Device) -> Result<(SampleFormat, StreamConfig)> {
         let configs: Vec<_> = device.supported_input_configs()?.collect();
         for format in [SampleFormat::F32, SampleFormat::I16] {
-            if let Some(config) = configs.iter().find(|config| {
-                config.sample_format() == format
-                    && config.min_sample_rate().0 <= SAMPLE_RATE_HZ
-                    && config.max_sample_rate().0 >= SAMPLE_RATE_HZ
-            }) {
-                return Ok((
-                    format,
-                    config.with_sample_rate(SampleRate(SAMPLE_RATE_HZ)).config(),
-                ));
+            // Prefer a real mono stream. If the device exposes only an
+            // interleaved multi-channel format, the callback downmixes it.
+            for mono_only in [true, false] {
+                if let Some(config) = configs.iter().find(|config| {
+                    config.sample_format() == format
+                        && config.min_sample_rate().0 <= SAMPLE_RATE_HZ
+                        && config.max_sample_rate().0 >= SAMPLE_RATE_HZ
+                        && (!mono_only || config.channels() == 1)
+                }) {
+                    return Ok((
+                        format,
+                        config.with_sample_rate(SampleRate(SAMPLE_RATE_HZ)).config(),
+                    ));
+                }
             }
         }
         bail!("input device supports neither 16 kHz f32 nor i16 capture")
@@ -358,6 +367,7 @@ impl AudioCapture {
         let device = self.device(&host)?;
         let name = device.name().unwrap_or_else(|_| "unnamed input".into());
         let (format, stream_config) = Self::input_config(&device)?;
+        let channels = usize::from(stream_config.channels);
         let state = self.state.clone();
         let health = self.health.clone();
         health.failed.store(false, Ordering::Release);
@@ -368,7 +378,7 @@ impl AudioCapture {
         let stream = match format {
             SampleFormat::F32 => device.build_input_stream(
                 &stream_config,
-                move |data: &[f32], _| record_samples(&state, data),
+                move |data: &[f32], _| record_interleaved(&state, data, channels),
                 error_callback,
                 None,
             )?,
@@ -380,7 +390,7 @@ impl AudioCapture {
                     move |data: &[i16], _| {
                         let mut converted = Vec::with_capacity(data.len());
                         converted.extend(data.iter().map(|sample| f32::from(*sample) / 32768.0));
-                        record_samples(&state, &converted);
+                        record_interleaved(&state, &converted, channels);
                     },
                     move |stream_error| {
                         error!(%stream_error, "audio input stream failed; recovery is pending");
@@ -406,7 +416,7 @@ impl AudioCapture {
             self.health.failed.load(Ordering::Acquire),
         );
         if recovered {
-            if !self.config.hotplug_recovery && self.stream.is_none() {
+            if !self.config.hotplug_recovery {
                 bail!("audio input is unavailable and hotplug recovery is disabled");
             }
             self.arm().context("recovering audio input device")?;
@@ -434,7 +444,11 @@ impl AudioCapture {
         let mut samples = {
             let mut state = self.state.lock().expect("audio capture state poisoned");
             state.recording = false;
-            std::mem::take(&mut state.samples)
+            let samples = std::mem::take(&mut state.samples);
+            // A cancelled/completed utterance must not leak back into a rapid
+            // next session through the idle pre-roll ring.
+            state.ring.clear();
+            samples
         };
         let input_rms = rms(&samples);
         let duration_ms = samples.len() as f32 / SAMPLE_RATE_HZ as f32 * 1_000.0;
@@ -452,6 +466,7 @@ impl AudioCapture {
         let mut state = self.state.lock().expect("audio capture state poisoned");
         state.recording = false;
         state.samples.clear();
+        state.ring.clear();
     }
 
     /// Copy samples collected so far without interrupting capture.
@@ -491,6 +506,18 @@ fn record_samples(state: &Arc<Mutex<CaptureState>>, data: &[f32]) {
     }
 }
 
+fn record_interleaved(state: &Arc<Mutex<CaptureState>>, data: &[f32], channels: usize) {
+    if channels <= 1 {
+        record_samples(state, data);
+        return;
+    }
+    let mono: Vec<f32> = data
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect();
+    record_samples(state, &mono);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +540,19 @@ mod tests {
         ring.extend(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
         assert_eq!(ring.len(), 4);
         assert_eq!(ring.snapshot(), vec![2.0, 3.0, 4.0, 5.0]);
+        ring.clear();
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn multichannel_capture_is_downmixed_to_mono() {
+        let state = Arc::new(Mutex::new(CaptureState {
+            ring: SampleRing::with_capacity(8),
+            samples: Vec::new(),
+            recording: true,
+        }));
+        record_interleaved(&state, &[1.0, -1.0, 0.5, 0.25], 2);
+        assert_eq!(state.lock().unwrap().samples, vec![0.0, 0.375]);
     }
 
     #[test]
