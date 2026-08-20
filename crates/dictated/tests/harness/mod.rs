@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dictate_core::ports::mock::{
-    MockAudio, MockFormatter, MockInjector, MockStt, NullMedia, RecordingNotifier,
+    MockAudio, MockFormatter, MockInjector, MockStt, NullEarcons, NullMedia, RecordingNotifier,
 };
 use dictate_core::ports::VoiceActivityGate;
-use dictate_core::ports::{Formatter, SttProvider};
+use dictate_core::ports::{AudioFeedback, Formatter, MediaController, SttProvider};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};
 use dictate_proto::{
@@ -51,6 +51,8 @@ pub struct Setup {
     pub vad: Arc<dyn VoiceActivityGate>,
     pub capabilities: Capabilities,
     pub history_enabled: bool,
+    pub media: Arc<dyn MediaController>,
+    pub earcons: Arc<dyn AudioFeedback>,
 }
 
 impl Default for Setup {
@@ -70,6 +72,8 @@ impl Default for Setup {
             ),
             capabilities: dictated::server::local_capabilities(true),
             history_enabled: false,
+            media: Arc::new(NullMedia),
+            earcons: Arc::new(NullEarcons),
         }
     }
 }
@@ -101,6 +105,16 @@ impl Setup {
     }
     pub fn with_history(mut self) -> Self {
         self.history_enabled = true;
+        self
+    }
+
+    pub fn with_audio_side_effects(
+        mut self,
+        media: Arc<dyn MediaController>,
+        earcons: Arc<dyn AudioFeedback>,
+    ) -> Self {
+        self.media = media;
+        self.earcons = earcons;
         self
     }
 }
@@ -150,7 +164,8 @@ impl Harness {
             formatter: setup.formatter.clone(),
             injector: setup.injector.clone(),
             notifier: notifier.clone(),
-            media: Arc::new(NullMedia),
+            media: setup.media,
+            earcons: setup.earcons,
             history: history.clone(),
             local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
                 &dictate_core::config::LocalConfig::default(),

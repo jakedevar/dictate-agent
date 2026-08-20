@@ -16,7 +16,9 @@ mod harness;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_core::ports::mock::{Gate, MockAudio, MockFormatter, MockInjector, MockStt, MockVad};
+use dictate_core::ports::mock::{
+    ActiveMedia, Gate, MockAudio, MockFormatter, MockInjector, MockStt, MockVad, RecordingEarcons,
+};
 use dictate_core::ports::{AudioSource, GateDecision, Notice};
 use dictate_proto::{
     Command, CommandResult, ErrorCode, InjectionOutcome, SessionOptions, SkipReason, StageTiming,
@@ -86,6 +88,41 @@ async fn a_full_dictation_runs_the_protocols_state_machine_over_the_socket() {
 
     // A terminal state resets to idle, so a HUD can clear itself.
     assert_eq!(client.wait_for_state(State::Idle).await, vec![State::Idle]);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audio_side_effects_are_visible_in_the_daemon_event_stream() {
+    let h = Harness::with(
+        Setup::default().with_audio_side_effects(Arc::new(ActiveMedia), Arc::new(RecordingEarcons)),
+    )
+    .await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::Toggle,
+            options: None,
+        })
+        .await
+        .expect("start");
+    client.wait_for_state(State::Recording).await;
+    client.request(Command::Stop).await.expect("stop");
+
+    let mut activities = Vec::new();
+    loop {
+        match client.next_event().await {
+            dictate_proto::Event::AudioActivity { activity, .. } => activities.push(activity),
+            dictate_proto::Event::StateChanged {
+                to: State::Idle, ..
+            } => break,
+            _ => {}
+        }
+    }
+    assert!(activities.contains(&dictate_proto::AudioActivity::EarconStart));
+    assert!(activities.contains(&dictate_proto::AudioActivity::EarconStop));
+    assert!(activities.contains(&dictate_proto::AudioActivity::MediaPaused));
+    assert!(activities.contains(&dictate_proto::AudioActivity::MediaResumed));
     h.stop().await;
 }
 

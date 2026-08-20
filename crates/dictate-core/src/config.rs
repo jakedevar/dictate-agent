@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+pub use dictate_audio::AudioConfig;
 pub use dictate_fmt::GrammarConfig;
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
@@ -16,6 +17,7 @@ const MEDIA_STATE_FILE: &str = "media_was_playing";
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
+    pub audio: AudioConfig,
     pub whisper: WhisperConfig,
     pub vad: VadConfig,
     pub grammar: GrammarConfig,

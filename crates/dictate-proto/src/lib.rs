@@ -109,7 +109,7 @@ pub use capability::{
 pub use command::{Command, SessionOptions};
 pub use envelope::{EventEnvelope, Message, Outcome, RequestId, Request, Response};
 pub use error::{ErrorCode, ProtoError};
-pub use event::{Event, FinalText, Hypothesis};
+pub use event::{AudioActivity, Event, FinalText, Hypothesis};
 pub use frame::{AudioFrame, FrameError, FrameKind};
 pub use records::{
     ConfigEntry, ConfigSnapshot, DictionaryEntry, EntrySource, HistoryEntry, HistoryPage,
