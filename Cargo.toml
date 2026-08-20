@@ -69,6 +69,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+evdev = "0.13"
 
 # Workspace crates
 dictate-audio = { path = "crates/dictate-audio" }
@@ -80,6 +81,7 @@ dictate-inject = { path = "crates/dictate-inject" }
 dictate-proto = { path = "crates/dictate-proto" }
 dictate-stt = { path = "crates/dictate-stt", default-features = false }
 dictate-vad = { path = "crates/dictate-vad" }
+dictate-hotkey = { path = "crates/dictate-hotkey" }
 dictated = { path = "crates/dictated" }
 
 [profile.release]

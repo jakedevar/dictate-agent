@@ -110,3 +110,26 @@ import_python_db = false
 # Timer alarm configuration
 sound_enabled = true
 sound_file = "~/.config/dictate-agent/sounds/timer_alarm.wav"
+
+# Optional global evdev hotkeys. The existing WM keybinds and
+# scripts/dictate-toggle remain first-class whether this is enabled or not.
+# Enable only after the daemon user can read the selected /dev/input/event*
+# device (normally: `sudo usermod -aG input $USER`, then log out and back in).
+# Each chord is a list of Linux KEY_* numeric values from
+# /usr/include/linux/input-event-codes.h. Devices are observed passively, so
+# ordinary keyboard input continues reaching X11/Wayland applications.
+[hotkey]
+enabled = false
+devices = ["/dev/input/by-id/replace-with-your-keyboard-event-kbd"]
+# KEY_SPACE: hold starts recording; release stops after the double-tap window.
+hold_to_talk = [57]
+# Example independent toggle key (KEY_F12). Empty chords disable a mode.
+toggle = [88]
+# Static cancel chord, available throughout a session (KEY_LEFTCTRL + KEY_LEFTALT).
+cancel = [29, 56]
+# Absorbs hardware/X11 auto-repeat key-up bursts before ending a hold.
+release_grace_ms = 45
+# A second hold-key press inside this window locks hands-free mode. Because the
+# daemon must know whether a second press is coming, a normal release is
+# deferred for this long (or release_grace_ms, whichever is greater).
+double_tap_ms = 320

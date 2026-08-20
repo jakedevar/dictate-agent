@@ -228,8 +228,17 @@ pub async fn run(config: Config) -> Result<()> {
         "dictated ready"
     );
 
+    // Evdev is optional and deliberately degrades to this unchanged signal
+    // path when input-device permissions have not been granted.
+    let hotkey = dictate_hotkey::HotkeyService::start(
+        &config.hotkey,
+        daemon.engine().clone(),
+        signal_options.clone(),
+    );
+
     // The signal shim owns the daemon's lifetime: it returns on SIGINT/SIGTERM.
     signals::listen(daemon.engine().clone(), signal_options).await?;
+    hotkey.shutdown();
     daemon.shutdown().await;
     Ok(())
 }
