@@ -120,6 +120,11 @@ impl AudioCapture {
         self.buffer.lock().unwrap().clear();
     }
 
+    /// Copy samples collected so far without interrupting capture.
+    pub fn snapshot(&self) -> Vec<f32> {
+        self.buffer.lock().unwrap().clone()
+    }
+
     #[allow(dead_code)]
     pub fn is_recording(&self) -> bool {
         self.is_recording

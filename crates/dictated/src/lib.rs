@@ -89,7 +89,9 @@ impl Daemon {
         let shutdown = Arc::new(Notify::new());
         let server_shutdown = shutdown.clone();
         let server = tokio::spawn(async move {
-            server.serve(deps, async move { server_shutdown.notified().await }).await;
+            server
+                .serve(deps, async move { server_shutdown.notified().await })
+                .await;
         });
 
         Ok(Self {
@@ -134,6 +136,9 @@ impl Daemon {
 pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<HistoryStore>>, bool)> {
     let audio = Arc::new(HostAudioSource::new().context("opening the audio capture device")?);
     let stt = Arc::new(WhisperStt::new(&config.whisper));
+    let vad = Arc::new(
+        dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
+    );
     let formatter = Arc::new(GrammarFormatter::new(&config.grammar));
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
@@ -153,12 +158,15 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     let pipeline = Arc::new(Pipeline {
         audio,
         stt,
+        vad,
         formatter,
         injector,
         notifier,
         media,
         history: history.clone(),
-        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&config.local)),
+        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
+            &config.local,
+        )),
         timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
         local_model: config.local.model.clone(),
     });

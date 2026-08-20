@@ -16,8 +16,8 @@ mod harness;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_core::ports::mock::{Gate, MockAudio, MockFormatter, MockInjector, MockStt};
-use dictate_core::ports::{AudioSource, Notice};
+use dictate_core::ports::mock::{Gate, MockAudio, MockFormatter, MockInjector, MockStt, MockVad};
+use dictate_core::ports::{AudioSource, GateDecision, Notice};
 use dictate_proto::{
     Command, CommandResult, ErrorCode, InjectionOutcome, SessionOptions, SkipReason, StageTiming,
     State,
@@ -123,6 +123,62 @@ async fn a_session_with_no_audio_finishes_done_with_empty_text() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vad_no_speech_gate_skips_stt_entirely() {
+    let vad = Arc::new(MockVad::returning(GateDecision::NoSpeech));
+    let h = Harness::with(Setup::default().with_vad(vad.clone()).with_stt(Arc::new(
+        MockStt::failing("STT must not run after VAD gate"),
+    )))
+    .await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::Toggle,
+            options: None,
+        })
+        .await
+        .unwrap();
+    client.wait_for_state(State::Recording).await;
+    client.request(Command::Stop).await.unwrap();
+    let transcript = client.wait_for_final().await;
+    assert_eq!(transcript.text.as_str(), "");
+    assert!(matches!(transcript.timings.vad, StageTiming::Ran { .. }));
+    assert!(matches!(
+        transcript.timings.stt,
+        StageTiming::Skipped {
+            reason: SkipReason::NoSpeechDetected
+        }
+    ));
+    assert_eq!(vad.gate_count(), 1);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_shot_session_auto_stops_after_vad_trailing_silence() {
+    let vad = Arc::new(
+        MockVad::returning(GateDecision::Speech {
+            samples: vec![0.2; 512],
+            leading_trimmed_ms: 0.0,
+            trailing_trimmed_ms: 0.0,
+        })
+        .auto_stopping(),
+    );
+    let h = Harness::with(Setup::default().with_vad(vad)).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::OneShot,
+            options: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(client.wait_for_terminal().await, State::Done);
+    assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transcription_failure_ends_the_session_in_error() {
     let h = Harness::with(
         Setup::default().with_stt(Arc::new(MockStt::failing("CUDA device fell off the bus"))),
@@ -193,9 +249,9 @@ async fn cancel_from_recording() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_from_transcribing() {
     let gate = Gate::closed();
-    let h = Harness::with(
-        Setup::default().with_stt(Arc::new(MockStt::returning("hello there").with_gate(gate.clone()))),
-    )
+    let h = Harness::with(Setup::default().with_stt(Arc::new(
+        MockStt::returning("hello there").with_gate(gate.clone()),
+    )))
     .await;
     let mut client = h.client().await;
     client.subscribe().await;
@@ -222,10 +278,9 @@ async fn cancel_from_transcribing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_from_formatting() {
-    let h = Harness::with(
-        Setup::default()
-            .with_formatter(Arc::new(MockFormatter::default().with_delay(Duration::from_secs(30)))),
-    )
+    let h = Harness::with(Setup::default().with_formatter(Arc::new(
+        MockFormatter::default().with_delay(Duration::from_secs(30)),
+    )))
     .await;
     let mut client = h.client().await;
     client.subscribe().await;
@@ -385,7 +440,10 @@ async fn two_racing_starts_produce_exactly_one_session() {
         .count();
 
     assert_eq!(started, 1, "exactly one racing start may win");
-    assert_eq!(busy, 1, "the loser must be told `busy`, not silently dropped");
+    assert_eq!(
+        busy, 1,
+        "the loser must be told `busy`, not silently dropped"
+    );
 
     let loser = outcomes
         .iter()
@@ -433,7 +491,10 @@ async fn many_concurrent_starts_still_produce_exactly_one_session() {
         started, 1,
         "the engine's single mailbox must serialize all eight into one winner"
     );
-    assert_eq!(busy, 7, "every loser must be told `busy`, not silently dropped");
+    assert_eq!(
+        busy, 7,
+        "every loser must be told `busy`, not silently dropped"
+    );
     h.stop().await;
 }
 
@@ -536,9 +597,9 @@ async fn a_stop_and_a_cancel_racing_resolve_as_cancelled() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_stop_is_invalid_state_rather_than_a_silent_no_op() {
     let gate = Gate::closed();
-    let h = Harness::with(
-        Setup::default().with_stt(Arc::new(MockStt::returning("hello there").with_gate(gate.clone()))),
-    )
+    let h = Harness::with(Setup::default().with_stt(Arc::new(
+        MockStt::returning("hello there").with_gate(gate.clone()),
+    )))
     .await;
     let mut client = h.client().await;
     client.subscribe().await;
@@ -592,9 +653,9 @@ async fn a_disconnect_orphans_the_session_so_the_next_invocation_can_finish_it()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_disconnect_mid_pipeline_does_not_disturb_the_running_session() {
     let gate = Gate::closed();
-    let h = Harness::with(
-        Setup::default().with_stt(Arc::new(MockStt::returning("hello there").with_gate(gate.clone()))),
-    )
+    let h = Harness::with(Setup::default().with_stt(Arc::new(
+        MockStt::returning("hello there").with_gate(gate.clone()),
+    )))
     .await;
 
     let mut watcher = h.client().await;
@@ -654,7 +715,10 @@ async fn a_second_client_cannot_cancel_the_first_clients_session() {
     );
 
     // The owner is unaffected.
-    owner.request(Command::Cancel).await.expect("the owner may cancel");
+    owner
+        .request(Command::Cancel)
+        .await
+        .expect("the owner may cancel");
     h.stop().await;
 }
 
@@ -678,7 +742,10 @@ async fn the_owner_can_stop_its_own_session_while_others_cannot() {
         intruder.request(Command::Stop).await.unwrap_err().code,
         ErrorCode::Forbidden
     );
-    owner.request(Command::Stop).await.expect("the owner may stop");
+    owner
+        .request(Command::Stop)
+        .await
+        .expect("the owner may stop");
     assert_eq!(owner.wait_for_terminal().await, State::Done);
     h.stop().await;
 }
@@ -901,7 +968,10 @@ async fn an_unknown_command_is_answered_rather_than_dropped() {
     let mut reader = BufReader::new(read);
 
     let hello = r#"{"kind":"request","v":1,"id":1,"command":{"type":"handshake","protocol_version":1,"supported_versions":[1],"client":{"name":"raw","kind":"cli"}}}"#;
-    write.write_all(format!("{hello}\n").as_bytes()).await.unwrap();
+    write
+        .write_all(format!("{hello}\n").as_bytes())
+        .await
+        .unwrap();
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
 
@@ -967,13 +1037,13 @@ async fn get_status_tracks_the_session_and_reports_this_connections_capabilities
     assert_eq!(status.state, State::Idle);
     assert!(status.session.is_none());
     assert_eq!(status.daemon.name, "dictated");
-    assert_eq!(status.daemon.protocol_version, dictate_proto::PROTOCOL_VERSION);
+    assert_eq!(
+        status.daemon.protocol_version,
+        dictate_proto::PROTOCOL_VERSION
+    );
     assert_eq!(status.daemon.pid, Some(std::process::id()));
     assert!(status.capabilities.features.host_capture);
-    assert_eq!(
-        status.model.as_ref().map(|m| m.name.as_str()),
-        Some("mock")
-    );
+    assert_eq!(status.model.as_ref().map(|m| m.name.as_str()), Some("mock"));
 
     client
         .request(Command::StartDictation {
@@ -1128,7 +1198,11 @@ async fn per_stage_timings_distinguish_ran_skipped_and_absent() {
         "capture ran: {:?}",
         t.capture
     );
-    assert!(matches!(t.stt, StageTiming::Ran { .. }), "stt ran: {:?}", t.stt);
+    assert!(
+        matches!(t.stt, StageTiming::Ran { .. }),
+        "stt ran: {:?}",
+        t.stt
+    );
     assert!(
         matches!(t.inject, StageTiming::Ran { .. }),
         "inject ran: {:?}",
@@ -1157,17 +1231,18 @@ async fn per_stage_timings_distinguish_ran_skipped_and_absent() {
         "total ({total}) must cover the stage sum ({})",
         t.measured_ms()
     );
-    assert!(
-        t.audio_ms.expect("audio_ms enables a real-time factor") > 0.0
-    );
+    assert!(t.audio_ms.expect("audio_ms enables a real-time factor") > 0.0);
     h.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_formatting_pass_that_burns_time_and_fails_reports_failed_not_ran() {
-    let h = Harness::with(Setup::default().with_formatter(Arc::new(
-        MockFormatter::failing_after(Duration::from_millis(20), "ollama refused the connection"),
-    )))
+    let h = Harness::with(
+        Setup::default().with_formatter(Arc::new(MockFormatter::failing_after(
+            Duration::from_millis(20),
+            "ollama refused the connection",
+        ))),
+    )
     .await;
     let mut client = h.client().await;
     client.subscribe().await;

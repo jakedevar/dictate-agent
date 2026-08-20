@@ -18,6 +18,7 @@ dictate-history = { workspace = true }
 dictate-inject = { workspace = true }
 dictate-proto = { workspace = true }
 dictate-stt = { workspace = true }
+dictate-vad = { workspace = true }
 uuid = { workspace = true }
 notify-rust = { workspace = true }
 ollama-rs = { workspace = true }

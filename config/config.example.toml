@@ -13,6 +13,17 @@ device = "cuda"
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
 no_speech_threshold = 0.6
 
+[vad]
+# CPU Silero VAD: skip STT for silence and trim silence around speech.
+enabled = true
+# Higher values are stricter. Tune against the bundled fixtures and real mic.
+speech_threshold = 0.5
+min_speech_ms = 120
+speech_pad_ms = 100
+# `one_shot` and wake-word sessions end after this post-speech silence.
+trailing_silence_ms = 900
+poll_interval_ms = 32
+
 [grammar]
 # Auto grammar correction (runs between transcription and routing)
 enabled = false

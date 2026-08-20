@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use dictate_proto::{InjectMethod, InjectionOutcome};
+pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
 
 /// A boxed future, the object-safe spelling of an `async fn` in a trait.
 ///
@@ -64,6 +65,10 @@ pub trait AudioSource: Send + Sync + 'static {
 
     /// Whether capture is currently running.
     fn is_recording(&self) -> bool;
+
+    /// Copy audio captured so far without stopping the stream. This is only
+    /// used by hands-free VAD auto-stop; regular recording never snapshots.
+    fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>>;
 }
 
 /// Sample rate the pipeline captures and transcribes at.
@@ -78,6 +83,7 @@ pub fn audio_ms(samples: &[f32]) -> f64 {
 enum AudioCmd {
     Start(std::sync::mpsc::Sender<Result<()>>),
     Stop(std::sync::mpsc::Sender<Option<Vec<f32>>>),
+    Snapshot(std::sync::mpsc::Sender<Option<Vec<f32>>>),
     Cancel,
     Shutdown,
 }
@@ -138,6 +144,10 @@ impl HostAudioSource {
                             flag.store(false, Ordering::Release);
                             let _ = reply.send(samples);
                         }
+                        AudioCmd::Snapshot(reply) => {
+                            let samples = capture.is_recording().then(|| capture.snapshot());
+                            let _ = reply.send(samples);
+                        }
                         AudioCmd::Cancel => {
                             capture.cancel();
                             flag.store(false, Ordering::Release);
@@ -189,8 +199,11 @@ impl Drop for HostAudioSource {
 impl AudioSource for HostAudioSource {
     fn start(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.ask(AudioCmd::Start, Err(anyhow::anyhow!("audio thread is gone")))
-                .await
+            self.ask(
+                AudioCmd::Start,
+                Err(anyhow::anyhow!("audio thread is gone")),
+            )
+            .await
         })
     }
 
@@ -205,6 +218,10 @@ impl AudioSource for HostAudioSource {
 
     fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Acquire)
+    }
+
+    fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+        Box::pin(async move { self.ask(AudioCmd::Snapshot, None).await })
     }
 }
 
@@ -240,7 +257,8 @@ pub struct ModelInfo {
 /// cannot be tested without a seam and S12 has not run yet.
 pub trait SttProvider: Send + Sync + 'static {
     /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>>;
+    fn transcribe<'a>(&'a self, samples: &'a [f32])
+        -> BoxFuture<'a, Result<Option<Transcription>>>;
 
     /// Which model this provider is serving.
     fn model(&self) -> ModelInfo;
@@ -276,7 +294,10 @@ impl WhisperStt {
 }
 
 impl SttProvider for WhisperStt {
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>> {
+    fn transcribe<'a>(
+        &'a self,
+        samples: &'a [f32],
+    ) -> BoxFuture<'a, Result<Option<Transcription>>> {
         Box::pin(async move {
             let out = self.inner.transcribe(samples).await?;
             Ok(out.map(|r| Transcription {
@@ -550,7 +571,9 @@ impl MediaController for PlayerctlMedia {
         let state_path = crate::config::media_state_path();
         if is_playing {
             let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl").arg("pause").output();
+            let _ = std::process::Command::new("playerctl")
+                .arg("pause")
+                .output();
             tracing::info!("Media paused");
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
@@ -658,6 +681,74 @@ pub mod mock {
 
         fn is_recording(&self) -> bool {
             self.recording.load(Ordering::Acquire)
+        }
+
+        fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+            Box::pin(async move {
+                self.recording
+                    .load(Ordering::Acquire)
+                    .then(|| self.samples.clone())
+            })
+        }
+    }
+
+    /// Deterministic VAD double for pipeline tests.
+    pub struct MockVad {
+        decision: GateDecision,
+        auto_stop: bool,
+        gates: AtomicUsize,
+    }
+
+    impl MockVad {
+        #[must_use]
+        pub fn returning(decision: GateDecision) -> Self {
+            Self {
+                decision,
+                auto_stop: false,
+                gates: AtomicUsize::new(0),
+            }
+        }
+
+        #[must_use]
+        pub fn auto_stopping(mut self) -> Self {
+            self.auto_stop = true;
+            self
+        }
+
+        #[must_use]
+        pub fn gate_count(&self) -> usize {
+            self.gates.load(Ordering::Acquire)
+        }
+    }
+
+    impl VoiceActivityGate for MockVad {
+        fn gate(&self, _samples: &[f32]) -> Result<GateDecision> {
+            self.gates.fetch_add(1, Ordering::AcqRel);
+            Ok(self.decision.clone())
+        }
+
+        fn trailing_silence_tracker(&self) -> Result<Box<dyn TrailingSilenceTracker>> {
+            Ok(Box::new(MockTrailingSilence {
+                auto_stop: self.auto_stop,
+            }))
+        }
+
+        fn enabled(&self) -> bool {
+            true
+        }
+
+        fn poll_interval_ms(&self) -> u32 {
+            1
+        }
+    }
+
+    struct MockTrailingSilence {
+        auto_stop: bool,
+    }
+
+    impl TrailingSilenceTracker for MockTrailingSilence {
+        fn observe_snapshot(&mut self, _samples: &[f32]) -> Result<bool> {
+            Ok(self.auto_stop)
         }
     }
 
@@ -979,7 +1070,10 @@ pub mod mock {
         /// The assertion that matters for cancellation: after a cancelled
         /// session this must be empty.
         pub fn injected(&self) -> Vec<String> {
-            self.injected.lock().expect("mock injector poisoned").clone()
+            self.injected
+                .lock()
+                .expect("mock injector poisoned")
+                .clone()
         }
     }
 
