@@ -42,22 +42,24 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
         eprintln!("skipping X11 injection smoke: Xvfb, xterm, xdotool, or xdpyinfo unavailable");
         return;
     }
-    let display = ":97";
-    if std::path::Path::new("/tmp/.X11-unix/X97").exists() {
+    let display_number = 20_000 + std::process::id() % 10_000;
+    let display = format!(":{display_number}");
+    let socket = format!("/tmp/.X11-unix/X{display_number}");
+    if std::path::Path::new(&socket).exists() {
         eprintln!("skipping X11 injection smoke: {display} is already in use");
         return;
     }
     let stamp = format!("dictate-inject-smoke-{}", std::process::id());
     let output = std::env::temp_dir().join(&stamp);
     let xvfb = Command::new("Xvfb")
-        .args([display, "-screen", "0", "800x600x24", "-nolisten", "tcp"])
+        .args([&display, "-screen", "0", "800x600x24", "-nolisten", "tcp"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("start Xvfb");
     let started = Instant::now();
     while !Command::new("xdpyinfo")
-        .env("DISPLAY", display)
+        .env("DISPLAY", &display)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -68,7 +70,7 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
     }
     assert!(
         Command::new("xdpyinfo")
-            .env("DISPLAY", display)
+            .env("DISPLAY", &display)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -78,7 +80,7 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
 
     let script = "IFS= read -r -n 11 line; printf '%s' \"$line\" > \"$1\"";
     let xterm = Command::new("xterm")
-        .env("DISPLAY", display)
+        .env("DISPLAY", &display)
         .args([
             "-title",
             &stamp,
@@ -96,12 +98,12 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
     let _children = ChildCleanup {
         xterm,
         xvfb,
-        socket: "/tmp/.X11-unix/X97".into(),
+        socket: socket.into(),
     };
     let mut window = None;
     for _ in 0..60 {
         let result = Command::new("xdotool")
-            .env("DISPLAY", display)
+            .env("DISPLAY", &display)
             .args(["search", "--name", &stamp])
             .output()
             .ok();
@@ -119,14 +121,14 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
     }
     let window = window.expect("xterm window should appear");
     assert!(Command::new("xdotool")
-        .env("DISPLAY", display)
+            .env("DISPLAY", &display)
         .args(["windowfocus", "--sync", &window])
         .status()
         .expect("focus xterm")
         .success());
 
     let prior_display = std::env::var_os("DISPLAY");
-    std::env::set_var("DISPLAY", display);
+    std::env::set_var("DISPLAY", &display);
     let injector = X11Injector::new(&OutputConfig::default());
     // Direct typing is the universally testable X11 path and is also the
     // fallback selected when clipboard save/restore is unavailable.
