@@ -189,11 +189,8 @@ impl Drop for HostAudioSource {
 impl AudioSource for HostAudioSource {
     fn start(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.ask(
-                AudioCmd::Start,
-                Err(anyhow::anyhow!("audio thread is gone")),
-            )
-            .await
+            self.ask(AudioCmd::Start, Err(anyhow::anyhow!("audio thread is gone")))
+                .await
         })
     }
 
@@ -243,8 +240,7 @@ pub struct ModelInfo {
 /// cannot be tested without a seam and S12 has not run yet.
 pub trait SttProvider: Send + Sync + 'static {
     /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32])
-        -> BoxFuture<'a, Result<Option<Transcription>>>;
+    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>>;
 
     /// Which model this provider is serving.
     fn model(&self) -> ModelInfo;
@@ -280,10 +276,7 @@ impl WhisperStt {
 }
 
 impl SttProvider for WhisperStt {
-    fn transcribe<'a>(
-        &'a self,
-        samples: &'a [f32],
-    ) -> BoxFuture<'a, Result<Option<Transcription>>> {
+    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>> {
         Box::pin(async move {
             let out = self.inner.transcribe(samples).await?;
             Ok(out.map(|r| Transcription {
@@ -557,9 +550,7 @@ impl MediaController for PlayerctlMedia {
         let state_path = crate::config::media_state_path();
         if is_playing {
             let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl")
-                .arg("pause")
-                .output();
+            let _ = std::process::Command::new("playerctl").arg("pause").output();
             tracing::info!("Media paused");
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
@@ -988,10 +979,7 @@ pub mod mock {
         /// The assertion that matters for cancellation: after a cancelled
         /// session this must be empty.
         pub fn injected(&self) -> Vec<String> {
-            self.injected
-                .lock()
-                .expect("mock injector poisoned")
-                .clone()
+            self.injected.lock().expect("mock injector poisoned").clone()
         }
     }
 
@@ -999,37 +987,37 @@ pub mod mock {
         fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
             let text = text.to_string();
             Box::pin(async move {
-                if let Some(gate) = &self.gate {
-                    gate.mark_entered();
-                    // Deliberately a blocking wait: the production X11 adapter
-                    // uses a blocking pool, while this double keeps the same
-                    // observable commit-point behavior.
-                    while !gate.is_open() {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+            if let Some(gate) = &self.gate {
+                gate.mark_entered();
+                // Deliberately a blocking wait: the production X11 adapter
+                // uses a blocking pool, while this double keeps the same
+                // observable commit-point behavior.
+                while !gate.is_open() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                if !self.available {
-                    return InjectionOutcome::Unavailable {
-                        backend: "none".into(),
-                        reason: "mock injector is unavailable".into(),
-                    };
-                }
-                if self.fail {
-                    return InjectionOutcome::Failed {
-                        error: dictate_proto::ProtoError::new(
-                            dictate_proto::ErrorCode::InjectionFailed,
-                            "mock injection failure",
-                        ),
-                    };
-                }
-                self.injected
-                    .lock()
-                    .expect("mock injector poisoned")
-                    .push(text.to_string());
-                InjectionOutcome::Injected {
-                    method: InjectMethod::Paste,
-                    chars: text.trim().chars().count() as u32,
-                }
+            }
+            if !self.available {
+                return InjectionOutcome::Unavailable {
+                    backend: "none".into(),
+                    reason: "mock injector is unavailable".into(),
+                };
+            }
+            if self.fail {
+                return InjectionOutcome::Failed {
+                    error: dictate_proto::ProtoError::new(
+                        dictate_proto::ErrorCode::InjectionFailed,
+                        "mock injection failure",
+                    ),
+                };
+            }
+            self.injected
+                .lock()
+                .expect("mock injector poisoned")
+                .push(text.to_string());
+            InjectionOutcome::Injected {
+                method: InjectMethod::Paste,
+                chars: text.trim().chars().count() as u32,
+            }
             })
         }
 
