@@ -31,8 +31,8 @@ use anyhow::{Context, Result};
 use dictate_core::config::Config;
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    DesktopNotifier, GrammarFormatter, HostAudioSource, HostInjector, PlayerctlMedia, TextInjector,
-    WhisperStt,
+    DesktopNotifier, GrammarFormatter, HostAudioSource, HostEarcons, HostInjector, PlayerctlMedia,
+    TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
 use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
@@ -89,7 +89,9 @@ impl Daemon {
         let shutdown = Arc::new(Notify::new());
         let server_shutdown = shutdown.clone();
         let server = tokio::spawn(async move {
-            server.serve(deps, async move { server_shutdown.notified().await }).await;
+            server
+                .serve(deps, async move { server_shutdown.notified().await })
+                .await;
         });
 
         Ok(Self {
@@ -132,13 +134,16 @@ impl Daemon {
 ///
 /// If the audio device or the history database cannot be opened.
 pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<HistoryStore>>, bool)> {
-    let audio = Arc::new(HostAudioSource::new().context("opening the audio capture device")?);
+    let audio = Arc::new(
+        HostAudioSource::new(config.audio.clone()).context("opening the audio capture device")?,
+    );
     let stt = Arc::new(WhisperStt::new(&config.whisper));
     let formatter = Arc::new(GrammarFormatter::new(&config.grammar));
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
     let notifier = Arc::new(DesktopNotifier::new(&config.notifications));
     let media = Arc::new(PlayerctlMedia);
+    let earcons = Arc::new(HostEarcons::new(config.audio.earcons.clone()));
 
     // Default the history database to this daemon's own path rather than the
     // Python daemon's, unless the user has named one explicitly.
@@ -157,8 +162,11 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         injector,
         notifier,
         media,
+        earcons,
         history: history.clone(),
-        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&config.local)),
+        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
+            &config.local,
+        )),
         timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
         local_model: config.local.model.clone(),
     });

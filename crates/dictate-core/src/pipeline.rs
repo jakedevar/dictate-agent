@@ -32,8 +32,8 @@ use std::time::Instant;
 use dictate_history::history::Interaction;
 use dictate_history::HistoryStore;
 use dictate_proto::{
-    ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route, SkipReason, StageTiming,
-    StageTimings, State, Transcript,
+    AudioActivity, ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route, SkipReason,
+    StageTiming, StageTimings, State, Transcript,
 };
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
@@ -41,12 +41,13 @@ use tracing::{error, info, warn};
 use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
 use crate::ports::{
-    audio_ms, AudioSource, FormatPlan, Formatter, MediaController, Notice, SttProvider,
-    StatusNotifier, TextInjector,
+    audio_ms, AudioFeedback, AudioSource, FormatPlan, Formatter, MediaController, Notice,
+    StatusNotifier, SttProvider, TextInjector,
 };
 use crate::router::{self, RouteType};
 use crate::session::SessionHandle;
 use crate::timer::TimerExecutor;
+use dictate_audio::EarconCue;
 
 /// Map the router's internal enum onto the wire enum.
 ///
@@ -197,6 +198,8 @@ pub struct Pipeline {
     pub notifier: Arc<dyn StatusNotifier>,
     /// Media pause/resume.
     pub media: Arc<dyn MediaController>,
+    /// Optional non-blocking start/stop/cancel/error earcons.
+    pub earcons: Arc<dyn AudioFeedback>,
     /// Interaction log.
     pub history: Arc<Mutex<HistoryStore>>,
     /// Ollama executor for the `local` route.
@@ -230,11 +233,21 @@ impl Pipeline {
         let token = handle.token().clone();
 
         self.notifier.notify(Notice::Recording);
+        self.earcon(&handle, EarconCue::Start, AudioActivity::EarconStart);
         // Best-effort and slow (a `playerctl` subprocess), so it runs off the
         // engine's thread and is not allowed to delay the state machine.
         {
             let media = self.media.clone();
-            let _ = tokio::task::spawn_blocking(move || media.pause_if_playing()).await;
+            let paused = tokio::task::spawn_blocking(move || media.pause_if_playing())
+                .await
+                .unwrap_or(false);
+            if paused {
+                handle.publish(Event::AudioActivity {
+                    session_id: handle.id().clone(),
+                    activity: AudioActivity::MediaPaused,
+                    at_ms: None,
+                });
+            }
         }
 
         // --- Recording: wait for stop, or for a cancel from any actor -------
@@ -257,18 +270,40 @@ impl Pipeline {
         // --- Capture flush --------------------------------------------------
         self.notifier.notify(Notice::Transcribing);
         if handle.advance_checked(State::Transcribing).is_err() {
-            return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+            return self
+                .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                .await;
         }
 
         let clock = StageClock::start();
         let samples = match self.race(&token, self.audio.stop()).await {
             Step::Cancelled => {
                 stages.timings.capture = clock.failed("cancelled during capture flush");
-                return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+                return self
+                    .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                    .await;
             }
             Step::Continue(s) => s,
         };
         stages.timings.capture = clock.ran();
+
+        self.earcon(&handle, EarconCue::Stop, AudioActivity::EarconStop);
+        let diagnostics = self.audio.diagnostics();
+        if diagnostics.recovered_device {
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity: AudioActivity::DeviceRecovered,
+                at_ms: None,
+            });
+        }
+        if diagnostics.mic_mute_suspected {
+            self.notifier.notify(Notice::MicrophoneMuted);
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity: AudioActivity::MicrophoneMuted,
+                at_ms: None,
+            });
+        }
 
         let Some(samples) = samples else {
             warn!("No audio captured");
@@ -294,7 +329,12 @@ impl Pipeline {
             Step::Cancelled => {
                 stages.timings.stt = clock.failed("cancelled during transcription");
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(r) => r,
@@ -309,15 +349,22 @@ impl Pipeline {
                 error!("Transcription failed: {}", e);
                 stages.timings.stt = clock.failed(e.to_string());
                 self.notifier.notify(Notice::Clear);
-                self.notifier.notify(Notice::Error(format!("Transcription failed: {e}")));
+                self.notifier
+                    .notify(Notice::Error(format!("Transcription failed: {e}")));
                 interaction.error_summary = Some(format!("Transcription failed: {e}"));
                 let err = ProtoError::new(ErrorCode::SttFailed, e.to_string());
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(err, audio_len_ms),
+                    )
                     .await;
             }
         };
-        interaction.transcription_duration_s = stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
+        interaction.transcription_duration_s =
+            stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
 
         let Some(transcribed) = transcribed else {
             info!("No speech detected");
@@ -342,7 +389,12 @@ impl Pipeline {
         // --- Formatting -----------------------------------------------------
         if handle.advance_checked(State::Formatting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -379,7 +431,10 @@ impl Pipeline {
                         interaction.grammar_error = formatted.error.clone();
                         interaction.grammar_duration_s = Some(formatted.duration_s);
                         if formatted.changed {
-                            info!("Grammar corrected: \"{}\" → \"{}\"", raw_text, formatted.text);
+                            info!(
+                                "Grammar corrected: \"{}\" → \"{}\"",
+                                raw_text, formatted.text
+                            );
                         }
                         formatted.text
                     }
@@ -414,14 +469,24 @@ impl Pipeline {
             interaction.error_summary = Some(msg.clone());
             let err = ProtoError::new(ErrorCode::Forbidden, msg);
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::error(err, audio_len_ms),
+                )
                 .await;
         }
 
         // --- Dispatch and inject --------------------------------------------
         if handle.advance_checked(State::Injecting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -440,7 +505,12 @@ impl Pipeline {
         let (final_text, injection) = match dispatch {
             Step::Cancelled => {
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(v) => v,
@@ -511,7 +581,8 @@ impl Pipeline {
                 }
             }
             Route::Local => {
-                self.notifier.notify(Notice::Processing(self.local_model.clone()));
+                self.notifier
+                    .notify(Notice::Processing(self.local_model.clone()));
                 interaction.prompt_sent = Some(route_text.to_string());
                 interaction.execution_model = Some(self.local_model.clone());
 
@@ -576,7 +647,8 @@ impl Pipeline {
                 interaction.execution_success = Some(result.success);
                 if result.success {
                     interaction.response_text = Some(result.response.clone());
-                    self.notifier.notify(Notice::TimerSet(result.response.clone()));
+                    self.notifier
+                        .notify(Notice::TimerSet(result.response.clone()));
                 } else {
                     interaction.execution_error = result.error.clone();
                     self.notifier
@@ -674,10 +746,7 @@ impl Pipeline {
             .unwrap_or_else(|e| {
                 error!("injection task panicked: {e}");
                 InjectionOutcome::Failed {
-                    error: ProtoError::new(
-                        ErrorCode::InjectionFailed,
-                        "injection task panicked",
-                    ),
+                    error: ProtoError::new(ErrorCode::InjectionFailed, "injection task panicked"),
                 }
             });
         drop(guard);
@@ -709,6 +778,12 @@ impl Pipeline {
         // stopped it on the happy path.
         self.audio.cancel();
 
+        match &outcome.state {
+            State::Cancelled => self.earcon(handle, EarconCue::Cancel, AudioActivity::EarconCancel),
+            State::Error => self.earcon(handle, EarconCue::Error, AudioActivity::EarconError),
+            _ => {}
+        }
+
         let timings = stages.finish(outcome.audio_ms);
         let mut transcript = outcome.transcript;
         if let Some(t) = transcript.as_mut() {
@@ -723,7 +798,16 @@ impl Pipeline {
 
         {
             let media = self.media.clone();
-            let _ = tokio::task::spawn_blocking(move || media.resume_if_needed()).await;
+            let resumed = tokio::task::spawn_blocking(move || media.resume_if_needed())
+                .await
+                .unwrap_or(false);
+            if resumed {
+                handle.publish(Event::AudioActivity {
+                    session_id: handle.id().clone(),
+                    activity: AudioActivity::MediaResumed,
+                    at_ms: None,
+                });
+            }
         }
 
         // Publish the payload events *before* the terminal state change, so a
@@ -756,7 +840,9 @@ impl Pipeline {
                 }
             }
             if outcome.state == State::Cancelled {
-                interaction.error_summary.get_or_insert_with(|| "cancelled".into());
+                interaction
+                    .error_summary
+                    .get_or_insert_with(|| "cancelled".into());
             }
             match self.history.lock() {
                 Ok(store) => store.commit(&interaction),
@@ -775,6 +861,19 @@ impl Pipeline {
             state: outcome.state,
             transcript,
             error: outcome.error,
+        }
+    }
+
+    /// Queue a cue without giving audio-output failure any authority over the
+    /// session. The paired event makes successful configured feedback visible
+    /// to `dictate tail` and future HUDs.
+    fn earcon(&self, handle: &SessionHandle, cue: EarconCue, activity: AudioActivity) {
+        if self.earcons.play(cue) {
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity,
+                at_ms: None,
+            });
         }
     }
 }

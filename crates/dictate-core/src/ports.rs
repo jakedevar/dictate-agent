@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
 use dictate_proto::{InjectMethod, InjectionOutcome};
 
 /// A boxed future, the object-safe spelling of an `async fn` in a trait.
@@ -64,6 +65,12 @@ pub trait AudioSource: Send + Sync + 'static {
 
     /// Whether capture is currently running.
     fn is_recording(&self) -> bool;
+
+    /// Diagnostics from the most recently stopped capture. Defaulting to an
+    /// empty value preserves every third-party/test `AudioSource` implementation.
+    fn diagnostics(&self) -> CaptureDiagnostics {
+        CaptureDiagnostics::default()
+    }
 }
 
 /// Sample rate the pipeline captures and transcribes at.
@@ -86,6 +93,7 @@ enum AudioCmd {
 pub struct HostAudioSource {
     tx: std::sync::mpsc::Sender<AudioCmd>,
     recording: Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<CaptureDiagnostics>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -95,16 +103,18 @@ impl HostAudioSource {
     /// # Errors
     ///
     /// Propagates a device-open failure from the capture thread.
-    pub fn new() -> Result<Self> {
+    pub fn new(config: crate::config::AudioConfig) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<AudioCmd>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
         let recording = Arc::new(AtomicBool::new(false));
         let flag = recording.clone();
+        let diagnostics = Arc::new(Mutex::new(CaptureDiagnostics::default()));
+        let diagnostics_for_thread = diagnostics.clone();
 
         let thread = std::thread::Builder::new()
             .name("dictate-audio".into())
             .spawn(move || {
-                let mut capture = match dictate_audio::AudioCapture::new() {
+                let mut capture = match AudioCapture::new(config) {
                     Ok(c) => {
                         let _ = ready_tx.send(Ok(()));
                         c
@@ -135,6 +145,9 @@ impl HostAudioSource {
                         }
                         AudioCmd::Stop(reply) => {
                             let samples = rt.block_on(capture.stop());
+                            if let Ok(mut last) = diagnostics_for_thread.lock() {
+                                *last = capture.diagnostics();
+                            }
                             flag.store(false, Ordering::Release);
                             let _ = reply.send(samples);
                         }
@@ -155,6 +168,7 @@ impl HostAudioSource {
         Ok(Self {
             tx,
             recording,
+            diagnostics,
             thread: Mutex::new(Some(thread)),
         })
     }
@@ -189,8 +203,11 @@ impl Drop for HostAudioSource {
 impl AudioSource for HostAudioSource {
     fn start(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.ask(AudioCmd::Start, Err(anyhow::anyhow!("audio thread is gone")))
-                .await
+            self.ask(
+                AudioCmd::Start,
+                Err(anyhow::anyhow!("audio thread is gone")),
+            )
+            .await
         })
     }
 
@@ -205,6 +222,13 @@ impl AudioSource for HostAudioSource {
 
     fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Acquire)
+    }
+
+    fn diagnostics(&self) -> CaptureDiagnostics {
+        self.diagnostics
+            .lock()
+            .map(|last| *last)
+            .unwrap_or_default()
     }
 }
 
@@ -240,7 +264,8 @@ pub struct ModelInfo {
 /// cannot be tested without a seam and S12 has not run yet.
 pub trait SttProvider: Send + Sync + 'static {
     /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>>;
+    fn transcribe<'a>(&'a self, samples: &'a [f32])
+        -> BoxFuture<'a, Result<Option<Transcription>>>;
 
     /// Which model this provider is serving.
     fn model(&self) -> ModelInfo;
@@ -276,7 +301,10 @@ impl WhisperStt {
 }
 
 impl SttProvider for WhisperStt {
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>> {
+    fn transcribe<'a>(
+        &'a self,
+        samples: &'a [f32],
+    ) -> BoxFuture<'a, Result<Option<Transcription>>> {
         Box::pin(async move {
             let out = self.inner.transcribe(samples).await?;
             Ok(out.map(|r| Transcription {
@@ -480,6 +508,8 @@ pub enum Notice {
     TimerSet(String),
     /// Something failed.
     Error(String),
+    /// Capture was silent for long enough to indicate a muted microphone.
+    MicrophoneMuted,
     /// Clear any transient status.
     Clear,
 }
@@ -518,6 +548,7 @@ impl StatusNotifier for DesktopNotifier {
             Notice::Cancelled => n.cancelled(),
             Notice::TimerSet(msg) => n.timer_set(&msg),
             Notice::Error(msg) => n.error(&msg),
+            Notice::MicrophoneMuted => n.microphone_muted(),
             Notice::Clear => n.clear_status(),
         }
     }
@@ -526,9 +557,9 @@ impl StatusNotifier for DesktopNotifier {
 /// Pause and resume whatever the user was listening to.
 pub trait MediaController: Send + Sync + 'static {
     /// Pause if something is playing, remembering that we did.
-    fn pause_if_playing(&self);
+    fn pause_if_playing(&self) -> bool;
     /// Resume only if we were the one who paused.
-    fn resume_if_needed(&self);
+    fn resume_if_needed(&self) -> bool;
 }
 
 /// `playerctl` behind the trait, with the same state file today's daemon uses.
@@ -536,7 +567,7 @@ pub trait MediaController: Send + Sync + 'static {
 pub struct PlayerctlMedia;
 
 impl MediaController for PlayerctlMedia {
-    fn pause_if_playing(&self) {
+    fn pause_if_playing(&self) -> bool {
         let is_playing = std::process::Command::new("playerctl")
             .arg("status")
             .output()
@@ -550,21 +581,58 @@ impl MediaController for PlayerctlMedia {
         let state_path = crate::config::media_state_path();
         if is_playing {
             let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl").arg("pause").output();
+            let _ = std::process::Command::new("playerctl")
+                .arg("pause")
+                .output();
             tracing::info!("Media paused");
+            true
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
             let _ = std::fs::remove_file(&state_path);
+            false
+        } else {
+            false
         }
     }
 
-    fn resume_if_needed(&self) {
+    fn resume_if_needed(&self) -> bool {
         let state_path = crate::config::media_state_path();
         if state_path.exists() {
             let _ = std::fs::remove_file(&state_path);
             let _ = std::process::Command::new("playerctl").arg("play").output();
             tracing::info!("Media resumed");
+            true
+        } else {
+            false
         }
+    }
+}
+
+/// Short auditory feedback is deliberately separate from desktop status
+/// notifications. A missing output device must never make dictation fail.
+pub trait AudioFeedback: Send + Sync + 'static {
+    /// Queue a cue and return whether an earcon was enabled and queued.
+    fn play(&self, cue: EarconCue) -> bool;
+}
+
+/// Rodio-backed production earcons.
+#[derive(Debug, Clone)]
+pub struct HostEarcons {
+    inner: EarconPlayer,
+}
+
+impl HostEarcons {
+    #[must_use]
+    pub fn new(config: dictate_audio::EarconConfig) -> Self {
+        Self {
+            inner: EarconPlayer::new(config),
+        }
+    }
+}
+
+impl AudioFeedback for HostEarcons {
+    fn play(&self, cue: EarconCue) -> bool {
+        self.inner.play(cue)
     }
 }
 
@@ -979,7 +1047,10 @@ pub mod mock {
         /// The assertion that matters for cancellation: after a cancelled
         /// session this must be empty.
         pub fn injected(&self) -> Vec<String> {
-            self.injected.lock().expect("mock injector poisoned").clone()
+            self.injected
+                .lock()
+                .expect("mock injector poisoned")
+                .clone()
         }
     }
 
@@ -1052,8 +1123,44 @@ pub mod mock {
     pub struct NullMedia;
 
     impl MediaController for NullMedia {
-        fn pause_if_playing(&self) {}
-        fn resume_if_needed(&self) {}
+        fn pause_if_playing(&self) -> bool {
+            false
+        }
+        fn resume_if_needed(&self) -> bool {
+            false
+        }
+    }
+
+    /// Earcons disabled for deterministic tests.
+    #[derive(Debug, Default)]
+    pub struct NullEarcons;
+
+    impl AudioFeedback for NullEarcons {
+        fn play(&self, _: EarconCue) -> bool {
+            false
+        }
+    }
+
+    /// Deterministic side effects for daemon event-stream tests.
+    #[derive(Debug, Default)]
+    pub struct ActiveMedia;
+
+    impl MediaController for ActiveMedia {
+        fn pause_if_playing(&self) -> bool {
+            true
+        }
+        fn resume_if_needed(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct RecordingEarcons;
+
+    impl AudioFeedback for RecordingEarcons {
+        fn play(&self, _: EarconCue) -> bool {
+            true
+        }
     }
 }
 
