@@ -400,30 +400,30 @@ async fn two_racing_starts_produce_exactly_one_session() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_racing_protocol_toggles_start_then_stop_one_session() {
+async fn two_racing_protocol_toggles_start_exactly_one_session() {
     // Each request is one atomic mailbox operation. One sees idle and starts;
-    // the other sees recording and stops that same session. A status-then-act
-    // client cannot provide this guarantee.
+    // the other sees that foreign client's recording session and is refused by
+    // session ownership. A status-then-act client could instead race into a
+    // second start attempt after observing stale idle state.
     let h = Harness::start().await;
     let mut a = h.client().await;
     let mut b = h.client().await;
-    a.subscribe().await;
-
     let (ra, rb) = tokio::join!(a.request(Command::Toggle), b.request(Command::Toggle));
-    let outcomes = [ra.expect("first toggle"), rb.expect("second toggle")];
-
-    let started = outcomes.iter().find_map(|result| match result {
-        CommandResult::SessionStarted { session_id } => Some(session_id),
-        _ => None,
-    });
-    let stopped = outcomes.iter().find_map(|result| match result {
-        CommandResult::SessionStopped { session_id } => Some(session_id),
-        _ => None,
-    });
-    assert_eq!(started, stopped, "both toggles must address the same session");
-
-    assert_eq!(a.wait_for_terminal().await, State::Done);
-    assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    let outcomes = [ra, rb];
+    assert_eq!(
+        outcomes.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one racing toggle may create a session"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .filter(|error| error.code == ErrorCode::Forbidden)
+            .count(),
+        1,
+        "the other client's toggle must not stop a session it does not own"
+    );
     h.stop().await;
 }
 
