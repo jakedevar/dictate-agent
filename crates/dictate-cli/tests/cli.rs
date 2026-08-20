@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use dictate_proto::{
-    Capabilities, Command, CommandResult, DaemonInfo, Message, ModelStatus, ServerHello,
-    ServerInfo, State, Status,
+    Capabilities, Command, CommandResult, DaemonInfo, ErrorCode, Message, ModelStatus,
+    ProtoError, ServerHello, ServerInfo, State, Status,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -46,13 +46,13 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
                     let Message::Request(req) = msg else { break };
 
                     let result = match req.command {
-                        Command::Handshake(_) => CommandResult::Handshake(Box::new(ServerHello {
+                        Command::Handshake(_) => Ok(CommandResult::Handshake(Box::new(ServerHello {
                             protocol_version: dictate_proto::PROTOCOL_VERSION,
                             supported_versions: vec![dictate_proto::PROTOCOL_VERSION],
                             server: ServerInfo::new("dictated", "0.2.0"),
                             capabilities: Capabilities::local_trusted(),
-                        })),
-                        Command::GetStatus => CommandResult::Status(Box::new(Status {
+                        }))),
+                        Command::GetStatus => Ok(CommandResult::Status(Box::new(Status {
                             state: state.clone(),
                             session: None,
                             daemon: DaemonInfo {
@@ -68,24 +68,40 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
                                 backend: Some("cuda".into()),
                             }),
                             capabilities: Capabilities::local_trusted(),
-                        })),
-                        Command::StartDictation { .. } => CommandResult::SessionStarted {
-                            session_id: dictate_proto::SessionId("stub-1".into()),
+                        }))),
+                        Command::Toggle => match state {
+                            State::Idle | State::Done | State::Error | State::Cancelled => {
+                                Ok(CommandResult::SessionStarted {
+                                    session_id: dictate_proto::SessionId("stub-1".into()),
+                                })
+                            }
+                            State::Recording => Ok(CommandResult::SessionStopped {
+                                session_id: dictate_proto::SessionId("stub-1".into()),
+                            }),
+                            ref state => Err(ProtoError::new(
+                                ErrorCode::Busy,
+                                format!("session is {}; wait for it to finish or cancel it", state.as_str()),
+                            )),
                         },
-                        Command::Stop => CommandResult::SessionStopped {
+                        Command::StartDictation { .. } => Ok(CommandResult::SessionStarted {
                             session_id: dictate_proto::SessionId("stub-1".into()),
-                        },
-                        Command::Cancel => CommandResult::SessionCancelled {
+                        }),
+                        Command::Stop => Ok(CommandResult::SessionStopped {
                             session_id: dictate_proto::SessionId("stub-1".into()),
-                        },
+                        }),
+                        Command::Cancel => Ok(CommandResult::SessionCancelled {
+                            session_id: dictate_proto::SessionId("stub-1".into()),
+                        }),
                         other => {
-                            let err = dictate_proto::ProtoError::unsupported_command(other.name());
-                            let out = Message::err(req.id, err).to_ndjson_line().unwrap();
-                            let _ = write.write_all(out.as_bytes()).await;
-                            continue;
+                            Err(ProtoError::unsupported_command(other.name()))
                         }
                     };
-                    let out = Message::ok(req.id, result).to_ndjson_line().unwrap();
+                    let out = match result {
+                        Ok(result) => Message::ok(req.id, result),
+                        Err(error) => Message::err(req.id, error),
+                    }
+                    .to_ndjson_line()
+                    .unwrap();
                     if write.write_all(out.as_bytes()).await.is_err() {
                         break;
                     }

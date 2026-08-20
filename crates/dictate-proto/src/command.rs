@@ -39,6 +39,12 @@ pub enum Command {
         options: Option<SessionOptions>,
     },
 
+    /// Atomically start a toggle-mode session when idle, or stop the active
+    /// recording session. The daemon resolves the branch in its single-writer
+    /// engine, so clients do not need a racy `get_status` followed by
+    /// `start_dictation` or `stop` sequence.
+    Toggle,
+
     /// Stop capturing and run the rest of the pipeline.
     Stop,
 
@@ -176,6 +182,7 @@ impl Command {
         match self {
             Self::Handshake(_) => "handshake",
             Self::StartDictation { .. } => "start_dictation",
+            Self::Toggle => "toggle",
             Self::Stop => "stop",
             Self::Cancel => "cancel",
             Self::GetStatus => "get_status",
@@ -233,7 +240,7 @@ impl Command {
             }
 
             // Driving the host's microphone.
-            Self::StartDictation { .. } => features.host_capture,
+            Self::StartDictation { .. } | Self::Toggle => features.host_capture,
 
             // Stop and Cancel apply to whatever session this connection owns —
             // including one it started by uploading audio — so they are gated
@@ -418,6 +425,7 @@ mod tests {
             options: None
         }
         .is_permitted(&remote));
+        assert!(!Command::Toggle.is_permitted(&remote));
         // ...rewrite the host's config,
         assert!(!Command::SetConfig { entries: vec![] }.is_permitted(&remote));
         // ...or read the host's dictation history.
@@ -435,6 +443,7 @@ mod tests {
                 mode: DictationMode::PushToTalk,
                 options: None,
             },
+            Command::Toggle,
             Command::Stop,
             Command::Cancel,
             Command::GetStatus,
@@ -483,6 +492,7 @@ mod tests {
     #[test]
     fn every_command_name_is_its_wire_tag() {
         let samples = [
+            Command::Toggle,
             Command::Stop,
             Command::Cancel,
             Command::GetStatus,

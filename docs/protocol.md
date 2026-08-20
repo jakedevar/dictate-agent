@@ -181,6 +181,7 @@ All commands are objects tagged with `type`.
 |---|---|---|
 | `handshake` | *(Hello, flattened)* | — |
 | `start_dictation` | `mode`, `options?` | `host_capture` |
+| `toggle` | — | `host_capture` |
 | `stop` | — | any session capability |
 | `cancel` | — | any session capability |
 | `get_status` | — | — |
@@ -204,6 +205,12 @@ they are how a client discovers everything else. A command whose feature is not
 granted must be answered `forbidden`.
 
 `mode` ∈ `toggle` | `push_to_talk` | `one_shot` | `wake_word` (default `toggle`).
+
+`toggle` atomically starts a toggle-mode session when idle, or stops the
+active recording session. The daemon resolves that branch in its single-writer
+engine actor; clients MUST use it for toggle controls rather than reading
+`get_status` and then sending `start_dictation` or `stop`. A toggle during a
+later pipeline stage is answered `busy`.
 
 ### `options` (SessionOptions)
 
@@ -474,7 +481,7 @@ them is worth showing the user a setting for.
 
 Two rules the daemon enforces that the wire format does not carry:
 
-- **Session ownership.** `stop` and `cancel` carry no session id, so the daemon
+- **Session ownership.** `toggle`, `stop`, and `cancel` carry no session id, so the daemon
   decides: a connection may control the session it started, a trusted-local
   connection may also control an unowned host session (which is what lets one
   `dictate` invocation start a session and the next one stop it), and a signal
