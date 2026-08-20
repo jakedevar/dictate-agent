@@ -78,7 +78,7 @@ dictate-fmt = { path = "crates/dictate-fmt" }
 dictate-history = { path = "crates/dictate-history" }
 dictate-inject = { path = "crates/dictate-inject" }
 dictate-proto = { path = "crates/dictate-proto" }
-dictate-stt = { path = "crates/dictate-stt" }
+dictate-stt = { path = "crates/dictate-stt", default-features = false }
 dictate-vad = { path = "crates/dictate-vad" }
 dictated = { path = "crates/dictated" }
 

@@ -8,6 +8,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
@@ -83,6 +84,10 @@ impl ModelManager {
             cache_dir,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                // A production model is about 1.6 GB. Bound a stalled pull
+                // without imposing a short interactive-request timeout.
+                .timeout(Duration::from_secs(30 * 60))
                 .build()
                 .expect("reqwest client construction does not require I/O"),
         }

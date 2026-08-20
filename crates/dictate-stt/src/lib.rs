@@ -1,9 +1,11 @@
 pub mod config;
 pub mod model;
+#[cfg(feature = "transcribe")]
 pub mod transcribe;
 
 pub use config::WhisperConfig;
 pub use model::{catalog_model, ModelManager, ModelSpec, ModelStatus, CATALOG};
+#[cfg(feature = "transcribe")]
 pub use transcribe::{Transcriber, WhisperStt};
 
 use std::future::Future;
