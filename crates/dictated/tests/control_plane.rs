@@ -1424,9 +1424,13 @@ async fn a_private_daemon_session_leaves_zero_history_rows() {
     client.request(Command::Stop).await.expect("stop");
     client.wait_for_state(State::Done).await;
 
-    let count: i64 = h.history.lock().unwrap().connection().query_row(
-        "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
-    ).unwrap();
+    let count: i64 = h
+        .history
+        .lock()
+        .unwrap()
+        .connection()
+        .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 0, "privacy must skip the history insert entirely");
     h.stop().await;
 }
@@ -1446,16 +1450,27 @@ async fn history_analytics_and_purge_are_available_over_the_socket() {
     client.wait_for_state(State::Recording).await;
     client.request(Command::Stop).await.expect("stop");
     client.wait_for_state(State::Done).await;
-    let analytics = match client.request(Command::GetHistoryAnalytics).await.expect("analytics") {
+    let analytics = match client
+        .request(Command::GetHistoryAnalytics)
+        .await
+        .expect("analytics")
+    {
         CommandResult::HistoryAnalytics(analytics) => analytics,
         other => panic!("expected history analytics, got {other:?}"),
     };
     assert_eq!(analytics.words_today, 2);
     assert!(analytics.overall_wpm.is_some());
-    assert!(matches!(client.request(Command::PurgeHistory).await, Ok(CommandResult::Ack)));
-    let count: i64 = h.history.lock().unwrap().connection().query_row(
-        "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
-    ).unwrap();
+    assert!(matches!(
+        client.request(Command::PurgeHistory).await,
+        Ok(CommandResult::Ack)
+    ));
+    let count: i64 = h
+        .history
+        .lock()
+        .unwrap()
+        .connection()
+        .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(count, 0);
     h.stop().await;
 }

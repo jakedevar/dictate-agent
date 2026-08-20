@@ -151,7 +151,10 @@ async fn tail(client: &mut Client, args: &Args) -> Result<i32> {
     client.request(Command::Subscribe { events }).await?;
 
     if !args.json {
-        eprintln!("watching {} — ctrl-c to stop", client::socket_path().display());
+        eprintln!(
+            "watching {} — ctrl-c to stop",
+            client::socket_path().display()
+        );
     }
     loop {
         let event = client.next_event().await?;
@@ -221,7 +224,12 @@ fn model(args: &Args) -> Result<i32> {
             let name = args.model_name.as_deref().unwrap_or("large-v3-turbo");
             let path = manager.ensure(name)?;
             let spec = dictate_stt::catalog_model(name).expect("ensure validated catalog name");
-            println!("pulled {} ({}, SHA-256 verified)\n{}", spec.id, spec.revision, path.display());
+            println!(
+                "pulled {} ({}, SHA-256 verified)\n{}",
+                spec.id,
+                spec.revision,
+                path.display()
+            );
             Ok(0)
         }
         "list" => {
@@ -309,22 +317,30 @@ impl Args {
                 "--purge" => out.purge = true,
                 "--analytics" => out.analytics = true,
                 "--limit" => {
-                    let raw = args.next().ok_or_else(|| anyhow::anyhow!("--limit needs a value"))?;
+                    let raw = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--limit needs a value"))?;
                     out.limit = Some(raw.parse().map_err(|_| {
                         anyhow::anyhow!("--limit must be a whole number, got '{raw}'")
                     })?);
                 }
                 "--text" => {
-                    out.text =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--text needs a value"))?)
+                    out.text = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--text needs a value"))?,
+                    )
                 }
                 "--events" => {
-                    out.events =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--events needs a value"))?)
+                    out.events = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--events needs a value"))?,
+                    )
                 }
                 "--socket" => {
-                    out.socket =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?)
+                    out.socket = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
+                    )
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),
                 other if out.command.is_none() => out.command = Some(other.to_string()),

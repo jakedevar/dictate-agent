@@ -286,7 +286,7 @@ pub struct SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::{ServerInfo, Features};
+    use crate::capability::{Features, ServerInfo};
     use crate::timings::StageTiming;
 
     fn status() -> Status {

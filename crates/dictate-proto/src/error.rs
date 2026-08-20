@@ -302,10 +302,7 @@ mod tests {
     fn unknown_code_round_trips_and_is_a_server_error() {
         let e: ProtoError =
             serde_json::from_str(r#"{"code":"flux_capacitor_drained","message":"?"}"#).unwrap();
-        assert_eq!(
-            e.code,
-            ErrorCode::Unknown("flux_capacitor_drained".into())
-        );
+        assert_eq!(e.code, ErrorCode::Unknown("flux_capacitor_drained".into()));
         assert!(!e.code.is_known());
         assert_eq!(e.code.http_status(), 500);
         assert!(!e.is_retryable());

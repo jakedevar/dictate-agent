@@ -107,13 +107,13 @@ pub use capability::{
     Capabilities, ClientInfo, ClientKind, Features, Hello, Limits, ServerHello, ServerInfo,
 };
 pub use command::{Command, SessionOptions};
-pub use envelope::{EventEnvelope, Message, Outcome, RequestId, Request, Response};
+pub use envelope::{EventEnvelope, Message, Outcome, Request, RequestId, Response};
 pub use error::{ErrorCode, ProtoError};
 pub use event::{AudioActivity, Event, FinalText, Hypothesis};
 pub use frame::{AudioFrame, FrameError, FrameKind};
 pub use records::{
     ConfigEntry, ConfigSnapshot, DailyWords, DictionaryEntry, EntrySource, HistoryAnalytics,
-    HistoryEntry, HistoryPage, HistoryQuery, SortOrder, Snippet,
+    HistoryEntry, HistoryPage, HistoryQuery, Snippet, SortOrder,
 };
 pub use result::{CommandResult, DaemonInfo, ModelStatus, SessionSummary, Status, Transcript};
 pub use state::{DictationMode, InjectMethod, InjectionOutcome, Route, SessionId, State};

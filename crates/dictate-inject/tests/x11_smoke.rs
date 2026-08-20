@@ -121,7 +121,7 @@ fn xvfb_xterm_reads_back_real_direct_injection() {
     }
     let window = window.expect("xterm window should appear");
     assert!(Command::new("xdotool")
-            .env("DISPLAY", &display)
+        .env("DISPLAY", &display)
         .args(["windowfocus", "--sync", &window])
         .status()
         .expect("focus xterm")

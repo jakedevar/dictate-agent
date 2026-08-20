@@ -358,7 +358,10 @@ mod tests {
         let stub = WaylandPortalStub;
         let caps = stub.capabilities();
         assert!(caps.needs_user_consent);
-        assert_eq!(resolve_policy(InjectionPolicy::Paste, &caps), InjectionPolicy::Type);
+        assert_eq!(
+            resolve_policy(InjectionPolicy::Paste, &caps),
+            InjectionPolicy::Type
+        );
 
         let outcome = stub.inject("needs consent", InjectionPolicy::Paste).await;
         assert!(matches!(

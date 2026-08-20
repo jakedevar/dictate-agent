@@ -343,7 +343,14 @@ impl Pipeline {
         {
             Step::Cancelled => {
                 stages.timings.vad = clock.failed("cancelled during voice activity detection");
-                return self.finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms)).await;
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
+                    .await;
             }
             Step::Continue(Ok(Ok(decision))) => {
                 stages.timings.vad = clock.ran();
@@ -864,7 +871,7 @@ impl Pipeline {
         // X11 performs its clipboard/key work on the blocking pool inside its
         // adapter. Portal backends instead await an authorization response;
         // keeping the port async preserves both contracts.
-                let outcome = self.injector.inject(text).await;
+        let outcome = self.injector.inject(text).await;
         drop(guard);
 
         stages.timings.inject = match &outcome {
@@ -1087,12 +1094,12 @@ mod tests {
     }
 
     #[test]
-    fn stages_start_honest_about_what_this_build_lacks() {
+    fn stages_start_unreported_until_the_pipeline_runs_them() {
         let s = Stages::new();
         assert_eq!(
             s.timings.vad,
-            StageTiming::skipped(SkipReason::NotSupported),
-            "VAD does not exist until S11 and must not report a fabricated zero"
+            StageTiming::NotReported,
+            "VAD exists, but must not report a fabricated zero before it runs"
         );
         assert_eq!(s.timings.fmt_rules, StageTiming::NotReported);
         assert_eq!(s.timings.stt, StageTiming::NotReported);

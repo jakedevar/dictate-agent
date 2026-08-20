@@ -33,10 +33,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
-pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
 use dictate_proto::{InjectMethod, InjectionOutcome};
+pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
 pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
-
 
 // ---------------------------------------------------------------------------
 // Audio capture

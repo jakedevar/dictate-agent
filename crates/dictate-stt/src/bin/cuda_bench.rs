@@ -18,8 +18,14 @@ async fn main() -> Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--model" => model = Some(PathBuf::from(args.next().context("--model needs a path")?)),
-            "--raw-f32" => raw = Some(PathBuf::from(args.next().context("--raw-f32 needs a path")?)),
-            "--iterations" => iterations = args.next().context("--iterations needs a value")?.parse()?,
+            "--raw-f32" => {
+                raw = Some(PathBuf::from(
+                    args.next().context("--raw-f32 needs a path")?,
+                ))
+            }
+            "--iterations" => {
+                iterations = args.next().context("--iterations needs a value")?.parse()?
+            }
             "--warmup" => warmup = args.next().context("--warmup needs a value")?.parse()?,
             "-h" | "--help" => {
                 println!("usage: cuda_bench --model <gguf> --raw-f32 <16kHz-mono-f32le> [--warmup 1] [--iterations 12]");
@@ -51,24 +57,43 @@ async fn main() -> Result<()> {
     };
     let recognizer = Transcriber::new(&config);
     for run in 0..warmup {
-        let result = recognizer.transcribe(&samples, SttRequest::default()).await?;
+        let result = recognizer
+            .transcribe(&samples, SttRequest::default())
+            .await?;
         let result = result.context("fixture was classified as no speech")?;
-        println!("warmup={run} load_ms={:.3} decode_ms={:.3} total_ms={:.3} text={:?}", result.timings.model_load_ms, result.timings.decode_ms, result.timings.total_ms, result.text);
+        println!(
+            "warmup={run} load_ms={:.3} decode_ms={:.3} total_ms={:.3} text={:?}",
+            result.timings.model_load_ms,
+            result.timings.decode_ms,
+            result.timings.total_ms,
+            result.text
+        );
     }
     let mut decoded = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        let result = recognizer.transcribe(&samples, SttRequest::default()).await?;
+        let result = recognizer
+            .transcribe(&samples, SttRequest::default())
+            .await?;
         let result = result.context("fixture was classified as no speech")?;
         decoded.push(result.timings.decode_ms);
-        println!("decode_ms={:.3} total_ms={:.3} text={:?}", result.timings.decode_ms, result.timings.total_ms, result.text);
+        println!(
+            "decode_ms={:.3} total_ms={:.3} text={:?}",
+            result.timings.decode_ms, result.timings.total_ms, result.text
+        );
     }
     decoded.sort_by(f64::total_cmp);
     let percentile = |p: f64| decoded[((decoded.len() - 1) as f64 * p).ceil() as usize];
     println!(
         "SUMMARY backend={} samples={} audio_ms={:.3} n={} p50_decode_ms={:.3} p95_decode_ms={:.3}",
-        recognizer.model().backend.unwrap_or_else(|| "unknown".into()),
-        samples.len(), samples.len() as f64 / 16_000.0 * 1000.0, iterations,
-        percentile(0.50), percentile(0.95)
+        recognizer
+            .model()
+            .backend
+            .unwrap_or_else(|| "unknown".into()),
+        samples.len(),
+        samples.len() as f64 / 16_000.0 * 1000.0,
+        iterations,
+        percentile(0.50),
+        percentile(0.95)
     );
     Ok(())
 }

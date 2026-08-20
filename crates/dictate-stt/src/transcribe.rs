@@ -145,7 +145,9 @@ impl Transcriber {
         let total_ms = started.elapsed().as_secs_f64() * 1000.0;
         let queue_ms = (total_ms - output.model_load_ms - output.decode_ms).max(0.0);
         info!(
-            total_ms, decode_ms = output.decode_ms, audio_ms,
+            total_ms,
+            decode_ms = output.decode_ms,
+            audio_ms,
             "Whisper transcription finished"
         );
         let _ = queued_at; // retained as a clear boundary for future queue telemetry.
@@ -193,7 +195,11 @@ fn whisper_worker(
                     &status,
                 );
             }
-            WorkerMessage::Transcribe { samples, request, reply } => {
+            WorkerMessage::Transcribe {
+                samples,
+                request,
+                reply,
+            } => {
                 let result = ensure_model_loaded(
                     &mut model,
                     &configured_path,
@@ -203,9 +209,14 @@ fn whisper_worker(
                     &status,
                 )
                 .and_then(|(model, load_ms)| {
-                    transcribe_with_model(model, &samples, &request).map(|(text, language, decode_ms)| {
-                        WorkerOutput { text, language, model_load_ms: load_ms, decode_ms }
-                    })
+                    transcribe_with_model(model, &samples, &request).map(
+                        |(text, language, decode_ms)| WorkerOutput {
+                            text,
+                            language,
+                            model_load_ms: load_ms,
+                            decode_ms,
+                        },
+                    )
                 });
                 let _ = reply.send(result);
             }
@@ -272,10 +283,17 @@ fn transcribe_with_model(
     // This knob is deliberately per-model/configurable instead of a hidden
     // magic number; quiet-speech users can tune it alongside S10's gain.
     params.set_no_speech_thold(request.no_speech_threshold.unwrap_or(0.6).clamp(0.0, 1.0));
-    if let Some(prompt) = request.initial_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+    if let Some(prompt) = request
+        .initial_prompt
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    {
         params.set_initial_prompt(prompt);
     }
-    model.state.full(params, samples).map_err(|e| anyhow!("{e}"))?;
+    model
+        .state
+        .full(params, samples)
+        .map_err(|e| anyhow!("{e}"))?;
     let language = if request.language.is_some() {
         request.language.clone()
     } else {
@@ -291,7 +309,11 @@ fn transcribe_with_model(
         }
     }
     let text = text.trim().to_string();
-    Ok(((!text.is_empty()).then_some(text), language, started.elapsed().as_secs_f64() * 1000.0))
+    Ok((
+        (!text.is_empty()).then_some(text),
+        language,
+        started.elapsed().as_secs_f64() * 1000.0,
+    ))
 }
 
 fn normalize_language(value: &str) -> Option<String> {
@@ -335,16 +357,29 @@ impl SttProvider for WhisperStt {
 /// are deliberately kept until S22's dictionary layer supersedes them.
 pub fn apply_corrections(text: &str) -> String {
     const CORRECTIONS: [(&str, &str); 23] = [
-        (".clod", ".claude"), (".cloud", ".claude"), (".clawed", ".claude"),
-        (" clod", " claude"), (" cloud", " claude"), (" clawed", " claude"),
-        ("Clod", "Claude"), ("Cloud", "Claude"), ("Clawed", "Claude"),
-        ("research code base", "/research_codebase"), ("research codebase", "/research_codebase"),
-        ("create plan", "/create_plan"), ("implement plan", "/implement_plan"),
-        ("validate plan", "/validate_plan"), ("create handoff", "/create_handoff"),
-        ("create hand off", "/create_handoff"), ("Research code base", "/research_codebase"),
-        ("Research codebase", "/research_codebase"), ("Create plan", "/create_plan"),
-        ("Implement plan", "/implement_plan"), ("Validate plan", "/validate_plan"),
-        ("Create handoff", "/create_handoff"), ("Create hand off", "/create_handoff"),
+        (".clod", ".claude"),
+        (".cloud", ".claude"),
+        (".clawed", ".claude"),
+        (" clod", " claude"),
+        (" cloud", " claude"),
+        (" clawed", " claude"),
+        ("Clod", "Claude"),
+        ("Cloud", "Claude"),
+        ("Clawed", "Claude"),
+        ("research code base", "/research_codebase"),
+        ("research codebase", "/research_codebase"),
+        ("create plan", "/create_plan"),
+        ("implement plan", "/implement_plan"),
+        ("validate plan", "/validate_plan"),
+        ("create handoff", "/create_handoff"),
+        ("create hand off", "/create_handoff"),
+        ("Research code base", "/research_codebase"),
+        ("Research codebase", "/research_codebase"),
+        ("Create plan", "/create_plan"),
+        ("Implement plan", "/implement_plan"),
+        ("Validate plan", "/validate_plan"),
+        ("Create handoff", "/create_handoff"),
+        ("Create hand off", "/create_handoff"),
     ];
     let mut result = text.to_string();
     for (from, to) in CORRECTIONS {
@@ -359,8 +394,14 @@ mod tests {
 
     #[test]
     fn all_23_corrections_are_retained() {
-        assert_eq!(apply_corrections("Clod cloud clawed create plan"), "Claude claude claude /create_plan");
-        assert_eq!(apply_corrections("Research code base Create hand off"), "/research_codebase /create_handoff");
+        assert_eq!(
+            apply_corrections("Clod cloud clawed create plan"),
+            "Claude claude claude /create_plan"
+        );
+        assert_eq!(
+            apply_corrections("Research code base Create hand off"),
+            "/research_codebase /create_handoff"
+        );
         assert_eq!(apply_corrections("plain text"), "plain text");
     }
 
@@ -373,7 +414,11 @@ mod tests {
 
     #[test]
     fn cpu_tiny_ci_config_never_requests_cuda() {
-        let config = WhisperConfig { model: "tiny.en".into(), device: "cpu".into(), ..WhisperConfig::default() };
+        let config = WhisperConfig {
+            model: "tiny.en".into(),
+            device: "cpu".into(),
+            ..WhisperConfig::default()
+        };
         let recognizer = Transcriber::new(&config);
         assert_eq!(recognizer.model().backend, None);
         drop(recognizer);

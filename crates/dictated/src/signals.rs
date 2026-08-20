@@ -126,6 +126,9 @@ mod tests {
 
     #[test]
     fn unsubscribed_signals_are_ignored() {
-        assert_eq!(classify(signal_hook::consts::signal::SIGHUP), SignalAction::Ignore);
+        assert_eq!(
+            classify(signal_hook::consts::signal::SIGHUP),
+            SignalAction::Ignore
+        );
     }
 }

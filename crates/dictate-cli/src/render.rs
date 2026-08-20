@@ -115,7 +115,14 @@ fn print_status(status: &Status) {
             on.push(name);
         }
     }
-    println!("allows   {}", if on.is_empty() { "—".into() } else { on.join(" ") });
+    println!(
+        "allows   {}",
+        if on.is_empty() {
+            "—".into()
+        } else {
+            on.join(" ")
+        }
+    );
     if f.headless {
         println!("         headless — text injection is not possible here");
     }
@@ -143,12 +150,7 @@ fn print_history(page: &HistoryPage) {
             Some("") => "(silence)".to_string(),
             Some(t) => truncate(t, 68),
         };
-        println!(
-            "{:>6}  {:<8} {}",
-            item.id,
-            item.route.as_str(),
-            text
-        );
+        println!("{:>6}  {:<8} {}", item.id, item.route.as_str(), text);
         if let Some(err) = &item.error {
             println!("        ! {}", err.message);
         }
@@ -180,7 +182,9 @@ pub fn event(event: &Event, json: bool) {
                 timings(&transcript.timings)
             );
         }
-        Event::Partial { hypothesis, seq, .. } => {
+        Event::Partial {
+            hypothesis, seq, ..
+        } => {
             // Never injectable, and labelled so nobody is tempted.
             println!("{:<12} [{seq}] {}", "partial?", hypothesis.display_text());
         }
@@ -188,7 +192,12 @@ pub fn event(event: &Event, json: bool) {
             println!("{:<12} {}", "injection", injection(outcome));
         }
         Event::Error { error, .. } => {
-            println!("{:<12} {} ({})", "error", error.message, error.code.as_str());
+            println!(
+                "{:<12} {} ({})",
+                "error",
+                error.message,
+                error.code.as_str()
+            );
         }
         Event::AudioLevel { rms, .. } => {
             println!("{:<12} {rms:.2}", "level");

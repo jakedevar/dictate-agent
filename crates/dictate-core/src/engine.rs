@@ -184,7 +184,8 @@ impl EngineHandle {
     /// `no_active_session`, `forbidden` if the caller does not own it, or
     /// `invalid_state` if it has already left `recording`.
     pub async fn stop(&self, actor: Actor) -> Result<SessionId, ProtoError> {
-        self.ask(|reply| EngineRequest::Stop { actor, reply }).await?
+        self.ask(|reply| EngineRequest::Stop { actor, reply })
+            .await?
     }
 
     /// Cancel the active session.
@@ -194,7 +195,8 @@ impl EngineHandle {
     /// `no_active_session`, `forbidden` if the caller does not own it, or
     /// `conflict` if injection has already been committed.
     pub async fn cancel(&self, actor: Actor) -> Result<SessionId, ProtoError> {
-        self.ask(|reply| EngineRequest::Cancel { actor, reply }).await?
+        self.ask(|reply| EngineRequest::Cancel { actor, reply })
+            .await?
     }
 
     /// Start-if-idle, stop-if-recording.
@@ -287,7 +289,11 @@ pub struct Engine {
 impl Engine {
     /// Build an engine and its handle. Call [`Engine::run`] to drive it.
     #[must_use]
-    pub fn new(pipeline: Arc<Pipeline>, bus: EventBus, identity: DaemonIdentity) -> (Self, EngineHandle) {
+    pub fn new(
+        pipeline: Arc<Pipeline>,
+        bus: EventBus,
+        identity: DaemonIdentity,
+    ) -> (Self, EngineHandle) {
         let (tx, rx) = mpsc::channel(MAILBOX_DEPTH);
         let handle = EngineHandle {
             tx: tx.clone(),
@@ -373,11 +379,10 @@ impl Engine {
         // race — they are simply ordered by the mailbox, and the second one
         // sees the first one's session and is told to back off.
         if self.has_live_session() {
-            return Err(ProtoError::new(
-                ErrorCode::Busy,
-                "a dictation session is already running",
-            )
-            .with_retry_after_ms(500));
+            return Err(
+                ProtoError::new(ErrorCode::Busy, "a dictation session is already running")
+                    .with_retry_after_ms(500),
+            );
         }
 
         // Opening the device is awaited here, inside the serialized loop, so
@@ -388,7 +393,9 @@ impl Engine {
             warn!("failed to start recording: {e}");
             self.pipeline
                 .notifier
-                .notify(crate::ports::Notice::Error(format!("Recording failed: {e}")));
+                .notify(crate::ports::Notice::Error(format!(
+                    "Recording failed: {e}"
+                )));
             return Err(ProtoError::new(ErrorCode::AudioDeviceError, e.to_string()));
         }
 
@@ -659,7 +666,10 @@ pub fn resolve_options(
         if !capabilities.allows_route(route) {
             return Err(ProtoError::new(
                 ErrorCode::Forbidden,
-                format!("route '{}' is not permitted for this connection", route.as_str()),
+                format!(
+                    "route '{}' is not permitted for this connection",
+                    route.as_str()
+                ),
             ));
         }
     }
@@ -770,7 +780,11 @@ mod tests {
             privacy: Some(true),
             ..SessionOptions::default()
         };
-        assert!(resolve_options(Some(&options), &caps(true)).unwrap().privacy);
+        assert!(
+            resolve_options(Some(&options), &caps(true))
+                .unwrap()
+                .privacy
+        );
     }
 
     #[test]

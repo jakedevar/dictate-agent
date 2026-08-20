@@ -66,7 +66,7 @@ impl LocalExecutor {
         use ollama_rs::models::ModelOptions;
         use ollama_rs::Ollama;
 
-        let ollama = Ollama::new(&self.host, self.port);
+        let ollama = Ollama::builder().host(&self.host).port(self.port).build();
         let request = GenerationRequest::new(model.to_string(), prompt.to_string())
             .options(ModelOptions::default().num_predict(2048));
 
@@ -79,7 +79,7 @@ impl LocalExecutor {
 /// Check if Ollama is running by hitting /api/tags.
 /// Port of local_executor.py:114-122
 pub async fn is_ollama_running(host: &str, port: u16) -> bool {
-    let ollama = ollama_rs::Ollama::new(host, port);
+    let ollama = ollama_rs::Ollama::builder().host(host).port(port).build();
     matches!(
         tokio::time::timeout(Duration::from_secs(2), ollama.list_local_models()).await,
         Ok(Ok(_))

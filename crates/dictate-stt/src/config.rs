@@ -26,14 +26,24 @@ pub struct WhisperConfig {
 impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
-            model: if cfg!(feature = "cpu-tiny-ci") { "tiny.en" } else { "large-v3-turbo" }.into(),
+            model: if cfg!(feature = "cpu-tiny-ci") {
+                "tiny.en"
+            } else {
+                "large-v3-turbo"
+            }
+            .into(),
             model_path: if cfg!(feature = "cpu-tiny-ci") {
                 "~/.local/share/dictate-agent/models/ggml-tiny.en.bin"
             } else {
                 "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
             }
             .into(),
-            device: if cfg!(feature = "cpu-tiny-ci") { "cpu" } else { "cuda" }.into(),
+            device: if cfg!(feature = "cpu-tiny-ci") {
+                "cpu"
+            } else {
+                "cuda"
+            }
+            .into(),
             no_speech_threshold: 0.6,
             language: "auto".into(),
             initial_prompt: None,

@@ -375,16 +375,15 @@ mod tests {
     fn config_entry_carries_arbitrary_values() {
         let e = ConfigEntry::new("whisper.model", serde_json::json!("large-v3-turbo"));
         let json = serde_json::to_string(&e).unwrap();
-        assert_eq!(
-            json,
-            r#"{"path":"whisper.model","value":"large-v3-turbo"}"#
-        );
+        assert_eq!(json, r#"{"path":"whisper.model","value":"large-v3-turbo"}"#);
 
         // A nested table is equally expressible, so a future config shape needs
         // no protocol change.
         let nested = ConfigEntry::new("vad", serde_json::json!({"threshold": 0.5}));
-        assert_eq!(serde_json::from_str::<ConfigEntry>(
-            &serde_json::to_string(&nested).unwrap()).unwrap(), nested);
+        assert_eq!(
+            serde_json::from_str::<ConfigEntry>(&serde_json::to_string(&nested).unwrap()).unwrap(),
+            nested
+        );
     }
 
     #[test]

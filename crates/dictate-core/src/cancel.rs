@@ -265,7 +265,10 @@ mod tests {
         let guard = t.enter_commit().expect("live token must commit");
         assert!(t.is_committed());
         assert_eq!(t.cancel(), CancelVerdict::TooLate);
-        assert!(!t.cancel().is_cancelled(), "TooLate must not read as cancelled");
+        assert!(
+            !t.cancel().is_cancelled(),
+            "TooLate must not read as cancelled"
+        );
         drop(guard);
         // Committed is terminal for the token: dropping the guard does not
         // re-open the cancellation window on an injection that already ran.
@@ -286,7 +289,10 @@ mod tests {
     fn commit_is_exclusive() {
         let t = CancelToken::new();
         assert!(t.enter_commit().is_some());
-        assert!(t.enter_commit().is_none(), "commit must be entered at most once");
+        assert!(
+            t.enter_commit().is_none(),
+            "commit must be entered at most once"
+        );
     }
 
     #[tokio::test]

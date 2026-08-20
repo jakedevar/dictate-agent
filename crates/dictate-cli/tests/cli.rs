@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use dictate_proto::{
-    Capabilities, Command, CommandResult, DaemonInfo, ErrorCode, Message, ModelStatus,
-    ProtoError, ServerHello, ServerInfo, State, Status,
+    Capabilities, Command, CommandResult, DaemonInfo, ErrorCode, Message, ModelStatus, ProtoError,
+    ServerHello, ServerInfo, State, Status,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -65,12 +65,14 @@ async fn stub_daemon_with_command_count(
                     }
 
                     let result = match req.command {
-                        Command::Handshake(_) => Ok(CommandResult::Handshake(Box::new(ServerHello {
-                            protocol_version: dictate_proto::PROTOCOL_VERSION,
-                            supported_versions: vec![dictate_proto::PROTOCOL_VERSION],
-                            server: ServerInfo::new("dictated", "0.2.0"),
-                            capabilities: Capabilities::local_trusted(),
-                        }))),
+                        Command::Handshake(_) => {
+                            Ok(CommandResult::Handshake(Box::new(ServerHello {
+                                protocol_version: dictate_proto::PROTOCOL_VERSION,
+                                supported_versions: vec![dictate_proto::PROTOCOL_VERSION],
+                                server: ServerInfo::new("dictated", "0.2.0"),
+                                capabilities: Capabilities::local_trusted(),
+                            })))
+                        }
                         Command::GetStatus => Ok(CommandResult::Status(Box::new(Status {
                             state: state.clone(),
                             session: None,
@@ -99,7 +101,10 @@ async fn stub_daemon_with_command_count(
                             }),
                             ref state => Err(ProtoError::new(
                                 ErrorCode::Busy,
-                                format!("session is {}; wait for it to finish or cancel it", state.as_str()),
+                                format!(
+                                    "session is {}; wait for it to finish or cancel it",
+                                    state.as_str()
+                                ),
                             )),
                         },
                         Command::StartDictation { .. } => Ok(CommandResult::SessionStarted {
@@ -111,9 +116,7 @@ async fn stub_daemon_with_command_count(
                         Command::Cancel => Ok(CommandResult::SessionCancelled {
                             session_id: dictate_proto::SessionId("stub-1".into()),
                         }),
-                        other => {
-                            Err(ProtoError::unsupported_command(other.name()))
-                        }
+                        other => Err(ProtoError::unsupported_command(other.name())),
                     };
                     let out = match result {
                         Ok(result) => Message::ok(req.id, result),

@@ -254,7 +254,10 @@ mod tests {
             assert!(spec.bytes > 1_000_000);
             assert!(spec.repository.contains('/'));
         }
-        assert_eq!(catalog_model("large-v3-turbo").unwrap().filename, "ggml-large-v3-turbo.bin");
+        assert_eq!(
+            catalog_model("large-v3-turbo").unwrap().filename,
+            "ggml-large-v3-turbo.bin"
+        );
         assert!(catalog_model("made-up").is_none());
     }
 
@@ -293,13 +296,24 @@ mod tests {
                     .and_then(|v| v.parse::<usize>().ok())
                     .unwrap_or(0);
                 let payload = &server_body[offset..];
-                let status = if offset > 0 { "206 Partial Content" } else { "200 OK" };
+                let status = if offset > 0 {
+                    "206 Partial Content"
+                } else {
+                    "200 OK"
+                };
                 write!(stream, "HTTP/1.1 {status}\r\nAccept-Ranges: bytes\r\nContent-Range: bytes {offset}-{} / {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", server_body.len() - 1, server_body.len(), payload.len()).unwrap();
                 stream.write_all(payload).unwrap();
             }
         });
         let dir = temp_dir("resume");
-        let spec = ModelSpec { id: "test", repository: "repo", revision: "0123456789012345678901234567890123456789", filename: "test.bin", sha256: TEST_SHA, bytes: body.len() as u64 };
+        let spec = ModelSpec {
+            id: "test",
+            repository: "repo",
+            revision: "0123456789012345678901234567890123456789",
+            filename: "test.bin",
+            sha256: TEST_SHA,
+            bytes: body.len() as u64,
+        };
         let manager = ModelManager::with_base_url(dir.clone(), format!("http://{addr}"));
         fs::write(manager.path_for(&spec), b"corrupt").unwrap();
         fs::write(partial_path(&manager.path_for(&spec)), &body[..8]).unwrap();
@@ -329,12 +343,24 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = [0_u8; 2048];
                 let _ = stream.read(&mut request).unwrap();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response_body.len()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
+                )
+                .unwrap();
                 stream.write_all(response_body).unwrap();
             }
         });
         let dir = temp_dir("retry");
-        let spec = ModelSpec { id: "test", repository: "repo", revision: "0123456789012345678901234567890123456789", filename: "test.bin", sha256: TEST_SHA, bytes: body.len() as u64 };
+        let spec = ModelSpec {
+            id: "test",
+            repository: "repo",
+            revision: "0123456789012345678901234567890123456789",
+            filename: "test.bin",
+            sha256: TEST_SHA,
+            bytes: body.len() as u64,
+        };
         let manager = ModelManager::with_base_url(dir.clone(), format!("http://{addr}"));
         let path = manager.pull(&spec).unwrap();
         assert_eq!(fs::read(path).unwrap(), *body);

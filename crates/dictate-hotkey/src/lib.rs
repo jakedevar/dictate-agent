@@ -463,11 +463,13 @@ mod tests {
         let pipeline = Arc::new(Pipeline {
             audio: Arc::new(MockAudio::with_seconds(0.1)),
             stt: Arc::new(MockStt::returning("hotkey transition")),
-            vad: Arc::new(MockVad::returning(dictate_core::ports::GateDecision::Speech {
-                samples: vec![0.1; 1_600],
-                leading_trimmed_ms: 0.0,
-                trailing_trimmed_ms: 0.0,
-            })),
+            vad: Arc::new(MockVad::returning(
+                dictate_core::ports::GateDecision::Speech {
+                    samples: vec![0.1; 1_600],
+                    leading_trimmed_ms: 0.0,
+                    trailing_trimmed_ms: 0.0,
+                },
+            )),
             formatter: Arc::new(MockFormatter::disabled()),
             injector: Arc::new(MockInjector::unavailable()),
             notifier: Arc::new(RecordingNotifier::default()),
@@ -518,10 +520,7 @@ mod tests {
         engine_task.await.expect("engine task");
     }
 
-    async fn wait_for_state(
-        events: &mut tokio::sync::broadcast::Receiver<Event>,
-        expected: State,
-    ) {
+    async fn wait_for_state(events: &mut tokio::sync::broadcast::Receiver<Event>, expected: State) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if matches!(

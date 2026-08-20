@@ -72,8 +72,8 @@ pub struct ServerDeps {
 #[must_use]
 pub fn local_capabilities(injection_available: bool) -> Capabilities {
     let mut caps = Capabilities::local_trusted();
-    let headless = std::env::var_os("DISPLAY").is_none()
-        && std::env::var_os("WAYLAND_DISPLAY").is_none();
+    let headless =
+        std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
     caps.features.headless = headless;
     caps.features.text_injection = injection_available && !headless;
     // Partials are specified but never emitted; advertising them would make a
@@ -111,10 +111,7 @@ impl Server {
             // cleaning up". Only the second is safe to clear, and connecting
             // is the only way to tell them apart.
             match UnixStream::connect(path).await {
-                Ok(_) => anyhow::bail!(
-                    "another daemon is already listening on {}",
-                    path.display()
-                ),
+                Ok(_) => anyhow::bail!("another daemon is already listening on {}", path.display()),
                 Err(_) => {
                     debug!("clearing stale socket at {}", path.display());
                     std::fs::remove_file(path)
@@ -125,8 +122,8 @@ impl Server {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let listener = UnixListener::bind(path)
-            .with_context(|| format!("binding {}", path.display()))?;
+        let listener =
+            UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
         info!("listening on {}", path.display());
         Ok(Self {
             listener,
@@ -141,7 +138,11 @@ impl Server {
     }
 
     /// Accept connections until `shutdown` resolves.
-    pub async fn serve(self, deps: Arc<ServerDeps>, shutdown: impl std::future::Future<Output = ()>) {
+    pub async fn serve(
+        self,
+        deps: Arc<ServerDeps>,
+        shutdown: impl std::future::Future<Output = ()>,
+    ) {
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -444,10 +445,7 @@ async fn dispatch(
 
         Command::StartDictation { mode, options } => {
             let resolved = resolve_options(options.as_ref(), &capabilities)?;
-            let session_id = deps
-                .engine
-                .start(conn.actor(), mode, resolved)
-                .await?;
+            let session_id = deps.engine.start(conn.actor(), mode, resolved).await?;
             Ok(CommandResult::SessionStarted { session_id })
         }
 
@@ -613,7 +611,11 @@ mod tests {
         let caps = local_capabilities(true);
         assert!(!caps.routes.is_empty());
         for route in dictate_proto::Route::known() {
-            assert!(caps.allows_route(route), "{} must be allowed", route.as_str());
+            assert!(
+                caps.allows_route(route),
+                "{} must be allowed",
+                route.as_str()
+            );
         }
     }
 

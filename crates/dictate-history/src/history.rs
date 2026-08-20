@@ -163,10 +163,7 @@ impl HistoryStore {
     /// # Errors
     ///
     /// Propagates SQLite failures.
-    pub fn query(
-        &self,
-        q: &dictate_proto::HistoryQuery,
-    ) -> Result<dictate_proto::HistoryPage> {
+    pub fn query(&self, q: &dictate_proto::HistoryQuery) -> Result<dictate_proto::HistoryPage> {
         crate::query::query(&self.conn, q)
     }
 
@@ -193,10 +190,9 @@ impl HistoryStore {
             return Ok(0);
         };
         let cutoff = (Utc::now() - Duration::days(i64::from(days))).to_rfc3339();
-        Ok(self.conn.execute(
-            "DELETE FROM interactions WHERE timestamp < ?1",
-            [cutoff],
-        )? as u64)
+        Ok(self
+            .conn
+            .execute("DELETE FROM interactions WHERE timestamp < ?1", [cutoff])? as u64)
     }
 
     /// Return WPM, daily word totals, and active-day streaks.
@@ -238,7 +234,10 @@ impl HistoryStore {
             words_today: words_by_day.get(&today_key).copied().unwrap_or(0),
             words_by_day: words_by_day
                 .iter()
-                .map(|(day, words)| DailyWords { day: day.clone(), words: *words })
+                .map(|(day, words)| DailyWords {
+                    day: day.clone(),
+                    words: *words,
+                })
                 .collect(),
             current_streak_days: streak_ending_at(&words_by_day, today),
             longest_streak_days: longest_streak(&words_by_day),
@@ -255,11 +254,14 @@ impl HistoryStore {
             return Ok(0);
         }
         let source = path.to_string_lossy().into_owned();
-        let imported_before: Option<i64> = self.conn.query_row(
-            "SELECT row_count FROM history_imports WHERE source_path = ?1",
-            [source.as_str()],
-            |row| row.get(0),
-        ).optional()?;
+        let imported_before: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT row_count FROM history_imports WHERE source_path = ?1",
+                [source.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
         if imported_before.is_some() {
             return Ok(0);
         }
@@ -309,7 +311,9 @@ impl HistoryStore {
             if import_result.is_ok() {
                 return Err(detach_error.into());
             }
-            error!("legacy import failed and attached database cleanup also failed: {detach_error}");
+            error!(
+                "legacy import failed and attached database cleanup also failed: {detach_error}"
+            );
         }
         import_result
     }
@@ -436,9 +440,15 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         }
     }
     conn.execute("DELETE FROM schema_version", [])?;
-    conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        [SCHEMA_VERSION],
+    )?;
     // Backfill the external-content FTS table after creating it over old rows.
-    conn.execute("INSERT INTO interactions_fts(interactions_fts) VALUES ('rebuild')", [])?;
+    conn.execute(
+        "INSERT INTO interactions_fts(interactions_fts) VALUES ('rebuild')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -475,7 +485,12 @@ fn empty_analytics() -> HistoryAnalytics {
 fn streak_ending_at(days: &BTreeMap<String, u64>, mut day: chrono::NaiveDate) -> u32 {
     let mut streak = 0;
     loop {
-        if days.get(&day.format("%F").to_string()).copied().unwrap_or(0) == 0 {
+        if days
+            .get(&day.format("%F").to_string())
+            .copied()
+            .unwrap_or(0)
+            == 0
+        {
             return streak;
         }
         streak += 1;
@@ -618,17 +633,25 @@ mod tests {
         drop(legacy);
 
         let store = HistoryStore::new(&config(path.clone())).unwrap();
-        let version: i32 = store.connection().query_row(
-            "SELECT version FROM schema_version", [], |row| row.get(0),
-        ).unwrap();
+        let version: i32 = store
+            .connection()
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        for column in ["capture_duration_ms", "app_context", "stt_model", "word_count"] {
+        for column in [
+            "capture_duration_ms",
+            "app_context",
+            "stt_model",
+            "word_count",
+        ] {
             assert!(column_exists(store.connection(), "interactions", column).unwrap());
         }
-        let page = store.query(&dictate_proto::HistoryQuery {
-            text: Some("survives migration".into()),
-            ..Default::default()
-        }).unwrap();
+        let page = store
+            .query(&dictate_proto::HistoryQuery {
+                text: Some("survives migration".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(page.total, Some(1));
         let _ = std::fs::remove_file(path);
     }
@@ -671,9 +694,10 @@ mod tests {
             corrected_transcription: Some("do not retain this".into()),
             ..private.begin()
         });
-        let count: i64 = private.connection().query_row(
-            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = private
+            .connection()
+            .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 0);
         drop(private);
 
@@ -690,8 +714,10 @@ mod tests {
             ((Utc::now() - Duration::days(6)).to_rfc3339(), "kept"),
         ] {
             store.commit(&Interaction {
-                session_id: "retention".into(), timestamp,
-                corrected_transcription: Some(text.into()), completed: true,
+                session_id: "retention".into(),
+                timestamp,
+                corrected_transcription: Some(text.into()),
+                completed: true,
                 ..Default::default()
             });
         }
@@ -704,21 +730,29 @@ mod tests {
              VALUES ('python', '2026-01-02T00:00:00+00:00', 'imported from python', 'type', 1)",
             [],
         ).unwrap();
-        store.connection().execute_batch(
-            "CREATE TRIGGER reject_import_marker BEFORE INSERT ON history_imports
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER reject_import_marker BEFORE INSERT ON history_imports
              BEGIN SELECT RAISE(ABORT, 'marker rejected'); END;",
-        ).unwrap();
+            )
+            .unwrap();
         assert!(store.import_python_db(&source).is_err());
-        let rolled_back: i64 = store.connection().query_row(
-            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
-        ).unwrap();
+        let rolled_back: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(rolled_back, 0, "failed import must not leave copied rows");
-        store.connection().execute_batch("DROP TRIGGER reject_import_marker").unwrap();
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER reject_import_marker")
+            .unwrap();
         assert_eq!(store.import_python_db(&source).unwrap(), 1);
         assert_eq!(store.import_python_db(&source).unwrap(), 0);
-        let source_count: i64 = Connection::open(&source).unwrap().query_row(
-            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
-        ).unwrap();
+        let source_count: i64 = Connection::open(&source)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(source_count, 1, "legacy source must remain unchanged");
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(path);

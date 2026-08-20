@@ -483,11 +483,10 @@ mod tests {
         assert!(Command::GetStatus.is_permitted(&none));
         assert!(Command::Subscribe { events: vec![] }.is_permitted(&none));
         assert!(Command::Unsubscribe.is_permitted(&none));
-        assert!(Command::Handshake(Hello::new(ClientInfo::new(
-            "x",
-            ClientKind::Remote
-        )))
-        .is_permitted(&none));
+        assert!(
+            Command::Handshake(Hello::new(ClientInfo::new("x", ClientKind::Remote)))
+                .is_permitted(&none)
+        );
     }
 
     #[test]

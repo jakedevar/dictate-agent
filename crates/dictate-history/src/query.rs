@@ -106,9 +106,10 @@ pub fn query(conn: &Connection, q: &HistoryQuery) -> Result<HistoryPage> {
     let total: u64 = {
         let sql = format!("SELECT COUNT(*) FROM {from}{where_sql}");
         let mut stmt = conn.prepare(&sql)?;
-        stmt.query_row(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| {
-            r.get::<_, i64>(0)
-        })? as u64
+        stmt.query_row(
+            rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())),
+            |r| r.get::<_, i64>(0),
+        )? as u64
     };
 
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
@@ -172,10 +173,7 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryEntry> {
         // A recorded grammar error means the pass burned its time and then
         // fell back; that cost belongs in the budget, so it is `Failed`.
         fmt_llm: match (fmt_llm_ms.or_else(|| fmt_s.map(|s| s * 1000.0)), fmt_error) {
-            (Some(ms), Some(e)) => StageTiming::Failed {
-                ms,
-                error: Some(e),
-            },
+            (Some(ms), Some(e)) => StageTiming::Failed { ms, error: Some(e) },
             (Some(ms), None) => StageTiming::ran(ms),
             (None, _) => StageTiming::NotReported,
         },
@@ -184,7 +182,8 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryEntry> {
         audio_ms: audio_s.map(|s| s * 1000.0),
     };
 
-    let word_count = stored_word_count.or_else(|| text.as_ref().map(|t| t.split_whitespace().count() as u32));
+    let word_count =
+        stored_word_count.or_else(|| text.as_ref().map(|t| t.split_whitespace().count() as u32));
     let wpm = match (&word_count, audio_s) {
         (Some(w), Some(secs)) if secs > 0.0 => Some(f64::from(*w) / (secs / 60.0)),
         _ => None,
@@ -366,7 +365,11 @@ mod tests {
 
     #[test]
     fn paging_reports_a_next_offset_only_while_more_remain() {
-        let store = store_with((0..5).map(|i| interaction(&format!("row {i}"), "type")).collect());
+        let store = store_with(
+            (0..5)
+                .map(|i| interaction(&format!("row {i}"), "type"))
+                .collect(),
+        );
         let page = query(
             store.connection(),
             &HistoryQuery {
