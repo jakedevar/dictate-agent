@@ -211,6 +211,10 @@ mod tests {
         assert!(config.history.db_path.is_empty());
         assert_eq!(config.history.max_response_length, 10000);
         assert!(config.timer.sound_enabled);
+        assert!(!config.hotkey.enabled);
+        assert!(config.hotkey.devices.is_empty());
+        assert_eq!(config.hotkey.release_grace_ms, 45);
+        assert_eq!(config.hotkey.double_tap_ms, 320);
     }
 
     #[test]
@@ -248,6 +252,15 @@ max_response_length = 500
 [timer]
 sound_enabled = false
 sound_file = "/tmp/alarm.wav"
+
+[hotkey]
+enabled = true
+devices = ["/dev/input/event7"]
+hold_to_talk = [57]
+toggle = [88]
+cancel = [29, 56]
+release_grace_ms = 50
+double_tap_ms = 250
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.whisper.model_path, "/tmp/test-model.bin");
@@ -258,6 +271,13 @@ sound_file = "/tmp/alarm.wav"
         assert_eq!(config.grammar.min_words, 5);
         assert!(!config.output.auto_type);
         assert!(!config.notifications.enabled);
+        assert!(config.hotkey.enabled);
+        assert_eq!(config.hotkey.devices, ["/dev/input/event7"]);
+        assert_eq!(config.hotkey.hold_to_talk, [57]);
+        assert_eq!(config.hotkey.toggle, [88]);
+        assert_eq!(config.hotkey.cancel, [29, 56]);
+        assert_eq!(config.hotkey.release_grace_ms, 50);
+        assert_eq!(config.hotkey.double_tap_ms, 250);
         assert_eq!(config.notifications.timeout_ms, 5000);
         assert!(!config.history.enabled);
         assert_eq!(config.history.db_path, "/tmp/test.db");

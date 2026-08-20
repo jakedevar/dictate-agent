@@ -49,3 +49,27 @@ max_response_length = 10000
 # Timer alarm configuration
 sound_enabled = true
 sound_file = "~/.config/dictate-agent/sounds/timer_alarm.wav"
+
+# Optional global evdev hotkeys. The existing WM keybinds and
+# scripts/dictate-toggle remain first-class whether this is enabled or not.
+# Enable only after the daemon user can read the selected /dev/input/event*
+# device (normally: `sudo usermod -aG input $USER`, then log out and back in).
+# Each chord is a list of Linux KEY_* numeric values from
+# /usr/include/linux/input-event-codes.h. The service grabs configured devices,
+# so choose a dedicated key device or a chord whose normal key handling you
+# intentionally want dictated to intercept.
+[hotkey]
+enabled = false
+devices = ["/dev/input/by-id/replace-with-your-keyboard-event-kbd"]
+# KEY_SPACE: hold starts recording; release stops after the debounce grace.
+hold_to_talk = [57]
+# Example independent toggle key (KEY_F12). Empty chords disable a mode.
+toggle = [88]
+# Static cancel chord, available throughout a session (KEY_LEFTCTRL + KEY_LEFTALT).
+cancel = [29, 56]
+# Absorbs hardware/X11 auto-repeat key-up bursts before ending a hold.
+release_grace_ms = 45
+# A second hold-key press during the release grace is a lock only when it is
+# also inside this window; the lock lasts until S11's hands-free auto-stop (or
+# the static cancel chord).
+double_tap_ms = 320
