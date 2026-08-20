@@ -131,6 +131,15 @@ pub enum Command {
         query: HistoryQuery,
     },
 
+    /// Read WPM, daily-word, and streak aggregates for retained history.
+    GetHistoryAnalytics,
+
+    /// Permanently delete all locally stored interaction history.
+    ///
+    /// Deliberately has no filters: a partial delete is too easy to mistake
+    /// for a privacy guarantee. Retention handles selective expiry.
+    PurgeHistory,
+
     /// Transcribe caller-supplied audio through the full pipeline.
     ///
     /// The thin-client entry point. Backs `POST /v1/transcribe`, where the
@@ -190,6 +199,8 @@ impl Command {
             Self::UpsertSnippet { .. } => "upsert_snippet",
             Self::DeleteSnippet { .. } => "delete_snippet",
             Self::QueryHistory { .. } => "query_history",
+            Self::GetHistoryAnalytics => "get_history_analytics",
+            Self::PurgeHistory => "purge_history",
             Self::TranscribeAudio { .. } => "transcribe_audio",
             Self::BeginAudioStream { .. } => "begin_audio_stream",
             Self::EndAudioStream { .. } => "end_audio_stream",
@@ -209,6 +220,7 @@ impl Command {
                 | Self::DeleteDictionaryEntry { .. }
                 | Self::UpsertSnippet { .. }
                 | Self::DeleteSnippet { .. }
+                | Self::PurgeHistory
         )
     }
 
@@ -257,6 +269,8 @@ impl Command {
             Self::UpsertSnippet { .. } | Self::DeleteSnippet { .. } => features.snippets_write,
 
             Self::QueryHistory { .. } => features.history_read,
+            Self::GetHistoryAnalytics => features.history_read,
+            Self::PurgeHistory => features.history_write,
         }
     }
 

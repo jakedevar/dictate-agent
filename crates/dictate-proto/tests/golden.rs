@@ -158,6 +158,16 @@ fn golden_command_lifecycle() {
     pin("cancel", Command::Cancel, json!({"type": "cancel"}));
     pin("get_status", Command::GetStatus, json!({"type": "get_status"}));
     pin(
+        "get_history_analytics",
+        Command::GetHistoryAnalytics,
+        json!({"type": "get_history_analytics"}),
+    );
+    pin(
+        "purge_history",
+        Command::PurgeHistory,
+        json!({"type": "purge_history"}),
+    );
+    pin(
         "unsubscribe",
         Command::Unsubscribe,
         json!({"type": "unsubscribe"}),
@@ -561,6 +571,7 @@ fn golden_result_handshake_capabilities() {
                     "transcribe_upload": true,
                     "host_capture": false,
                     "history_read": false,
+                    "history_write": false,
                     "dictionary_read": false,
                     "dictionary_write": false,
                     "snippets_read": false,

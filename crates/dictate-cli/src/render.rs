@@ -10,8 +10,8 @@
 //!   said, because those are different facts.
 
 use dictate_proto::{
-    CommandResult, Event, HistoryPage, InjectionOutcome, StageTiming, StageTimings, Status,
-    Transcript,
+    CommandResult, Event, HistoryAnalytics, HistoryPage, InjectionOutcome, StageTiming,
+    StageTimings, Status, Transcript,
 };
 
 /// Print a command result.
@@ -33,6 +33,7 @@ pub fn result(result: &CommandResult, json: bool) {
         }
         CommandResult::Status(status) => print_status(status),
         CommandResult::History(page) => print_history(page),
+        CommandResult::HistoryAnalytics(analytics) => print_history_analytics(analytics),
         CommandResult::Transcript(t) => print_transcript(t),
         CommandResult::Handshake(h) => {
             println!("{} {}", h.server.name, h.server.version);
@@ -48,6 +49,21 @@ pub fn result(result: &CommandResult, json: bool) {
         // A result this build does not model. Degrade rather than fail — the
         // daemon may simply be newer than the CLI.
         other => println!("{}", other.name()),
+    }
+}
+
+fn print_history_analytics(analytics: &HistoryAnalytics) {
+    match analytics.overall_wpm {
+        Some(wpm) => println!("wpm      {wpm:.1}"),
+        None => println!("wpm      —"),
+    }
+    println!("today    {} words", analytics.words_today);
+    println!(
+        "streak   {} days (best {})",
+        analytics.current_streak_days, analytics.longest_streak_days
+    );
+    for day in &analytics.words_by_day {
+        println!("{:<10} {}", day.day, day.words);
     }
 }
 

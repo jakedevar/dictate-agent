@@ -112,8 +112,8 @@ pub use error::{ErrorCode, ProtoError};
 pub use event::{Event, FinalText, Hypothesis};
 pub use frame::{AudioFrame, FrameError, FrameKind};
 pub use records::{
-    ConfigEntry, ConfigSnapshot, DictionaryEntry, EntrySource, HistoryEntry, HistoryPage,
-    HistoryQuery, SortOrder, Snippet,
+    ConfigEntry, ConfigSnapshot, DailyWords, DictionaryEntry, EntrySource, HistoryAnalytics,
+    HistoryEntry, HistoryPage, HistoryQuery, SortOrder, Snippet,
 };
 pub use result::{CommandResult, DaemonInfo, ModelStatus, SessionSummary, Status, Transcript};
 pub use state::{DictationMode, InjectMethod, InjectionOutcome, Route, SessionId, State};

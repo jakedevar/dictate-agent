@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capabilities, ServerHello};
 use crate::event::FinalText;
-use crate::records::{ConfigSnapshot, DictionaryEntry, HistoryPage, Snippet};
+use crate::records::{ConfigSnapshot, DictionaryEntry, HistoryAnalytics, HistoryPage, Snippet};
 use crate::state::{DictationMode, InjectionOutcome, Route, SessionId, State};
 use crate::timings::StageTimings;
 
@@ -161,6 +161,9 @@ pub enum CommandResult {
     /// A page of history.
     History(HistoryPage),
 
+    /// Aggregate history metrics.
+    HistoryAnalytics(HistoryAnalytics),
+
     /// A finished transcript, for
     /// [`Command::TranscribeAudio`](crate::Command::TranscribeAudio).
     ///
@@ -198,6 +201,7 @@ impl CommandResult {
             Self::Snippet { .. } => "snippet",
             Self::Deleted { .. } => "deleted",
             Self::History(_) => "history",
+            Self::HistoryAnalytics(_) => "history_analytics",
             Self::Transcript(_) => "transcript",
             Self::AudioStreamOpened { .. } => "audio_stream_opened",
             Self::Unknown => "unknown",

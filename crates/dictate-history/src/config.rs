@@ -8,6 +8,13 @@ pub struct HistoryConfig {
     /// Empty string means default: ~/.local/share/dictate-agent/history.db
     pub db_path: String,
     pub max_response_length: usize,
+    /// Global no-store mode. Session privacy can enable the same guarantee
+    /// for one dictation without changing this setting.
+    pub privacy_mode: bool,
+    /// Delete rows older than this many UTC days. `None` retains history.
+    pub retention_days: Option<u32>,
+    /// Import the Python reference daemon's database once, if it exists.
+    pub import_python_db: bool,
 }
 
 impl Default for HistoryConfig {
@@ -16,6 +23,9 @@ impl Default for HistoryConfig {
             enabled: true,
             db_path: String::new(),
             max_response_length: 10000,
+            privacy_mode: false,
+            retention_days: None,
+            import_python_db: false,
         }
     }
 }

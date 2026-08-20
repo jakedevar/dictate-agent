@@ -489,6 +489,30 @@ async fn dispatch(
             Ok(CommandResult::History(page))
         }
 
+        Command::GetHistoryAnalytics => {
+            let history = deps.history.clone();
+            let analytics = tokio::task::spawn_blocking(move || {
+                let store = history.lock().map_err(|_| "history store is poisoned")?;
+                store.analytics().map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ProtoError::new(ErrorCode::HistoryError, e))?;
+            Ok(CommandResult::HistoryAnalytics(analytics))
+        }
+
+        Command::PurgeHistory => {
+            let history = deps.history.clone();
+            tokio::task::spawn_blocking(move || {
+                let store = history.lock().map_err(|_| "history store is poisoned")?;
+                store.purge().map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ProtoError::new(ErrorCode::HistoryError, e))?;
+            Ok(CommandResult::Ack)
+        }
+
         // Unreachable: `is_implemented` has already refused everything that
         // does not have an arm above. Kept total rather than `unreachable!()`
         // so a command added to the protocol without being wired up here is

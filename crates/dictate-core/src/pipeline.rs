@@ -159,6 +159,9 @@ pub struct ResolvedOptions {
     pub allowed_routes: Vec<Route>,
     /// Suppress persistence of transcript text for this session.
     pub privacy: bool,
+    /// Caller-supplied app context; S23 will populate this from focus when it
+    /// is absent, but remote clients may already know their target app.
+    pub app: Option<String>,
 }
 
 impl Default for ResolvedOptions {
@@ -168,6 +171,7 @@ impl Default for ResolvedOptions {
             forced_route: None,
             allowed_routes: Route::known().to_vec(),
             privacy: false,
+            app: None,
         }
     }
 }
@@ -253,6 +257,9 @@ impl Pipeline {
             let store = self.history.lock().expect("history mutex poisoned");
             store.begin()
         };
+        interaction.no_store = opts.privacy;
+        interaction.app_context = opts.app.clone();
+        interaction.stt_model = Some(self.stt.model().name);
 
         // --- Capture flush --------------------------------------------------
         self.notifier.notify(Notice::Transcribing);
@@ -750,6 +757,18 @@ impl Pipeline {
         }
 
         if let Some(mut interaction) = interaction {
+            interaction.capture_duration_ms = timings.capture.elapsed_ms();
+            interaction.vad_duration_ms = timings.vad.elapsed_ms();
+            interaction.stt_duration_ms = timings.stt.elapsed_ms();
+            interaction.fmt_rules_duration_ms = timings.fmt_rules.elapsed_ms();
+            interaction.fmt_llm_duration_ms = timings.fmt_llm.elapsed_ms();
+            interaction.inject_duration_ms = timings.inject.elapsed_ms();
+            interaction.word_count = transcript.as_ref().and_then(|t| t.word_count).or_else(|| {
+                interaction
+                    .corrected_transcription
+                    .as_ref()
+                    .map(|text| text.split_whitespace().count() as u32)
+            });
             if let Some(err) = &outcome.error {
                 if interaction.error_summary.is_none() {
                     interaction.error_summary = Some(err.message.clone());
@@ -759,7 +778,8 @@ impl Pipeline {
                 interaction.error_summary.get_or_insert_with(|| "cancelled".into());
             }
             match self.history.lock() {
-                Ok(store) => store.commit(&interaction),
+                Ok(store) if !interaction.no_store => store.commit(&interaction),
+                Ok(_) => {}
                 Err(e) => error!("history mutex poisoned, dropping interaction: {e}"),
             }
         }
