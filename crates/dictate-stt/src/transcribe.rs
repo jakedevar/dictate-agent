@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 use tracing::{error, info};
@@ -216,10 +216,10 @@ fn whisper_worker(
 
 fn ensure_model_loaded<'a>(
     model: &'a mut Option<WorkerModel>,
-    configured_path: &PathBuf,
+    configured_path: &Path,
     model_name: &str,
     requested_backend: &str,
-    cache_dir: &PathBuf,
+    cache_dir: &Path,
     status: &Arc<Mutex<ModelInfo>>,
 ) -> Result<(&'a mut WorkerModel, f64)> {
     if model.is_none() {
@@ -227,9 +227,9 @@ fn ensure_model_loaded<'a>(
         // Explicit existing paths support offline/custom GGUFs. Otherwise a
         // catalog name is resolved and pulled reproducibly on first use.
         let path = if configured_path.exists() {
-            configured_path.clone()
+            configured_path.to_path_buf()
         } else {
-            ModelManager::new(cache_dir.clone()).ensure(model_name)?
+            ModelManager::new(cache_dir.to_path_buf()).ensure(model_name)?
         };
         info!(path = %path.display(), backend = requested_backend, "loading Whisper model");
         let loaded = load_worker_model(&path, requested_backend == "cuda")?;

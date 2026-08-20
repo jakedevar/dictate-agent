@@ -70,7 +70,7 @@ PATH=/opt/cuda/bin:$PATH WHISPER_DONT_GENERATE_BINDINGS=1 \
 
 The benchmark creates one provider/model instance, excludes a single cold
 warm-up from percentiles, and measures 12 subsequent complete `full()` decodes.
-The final run recorded:
+The initial implementation run recorded:
 
 | Metric | Result |
 |---|---:|
@@ -86,3 +86,25 @@ The cold model load is below S12's ≤5 s daemon-check target. The p50 is also
 inside the 300–500 ms stage budget, leaving normal pipeline headroom. These are
 single-authoritative-decode measurements, not evidence that an additional
 concurrent partial decoder is safe.
+
+## Recovery validation run
+
+After reconstructing S12 into the assigned recovery sandbox, a fresh run on
+the same physical RTX 5080, checksum-verified model, and regenerated fixture
+completed on 2026-08-19. The fixture hashes again matched the values above;
+whisper.cpp logged `using CUDA0 backend` and the provider reported `cuda`.
+
+| Metric | Result |
+|---|---:|
+| Cold model load | 658.419 ms |
+| Cold warm-up decode | 162.703 ms |
+| Cold end-to-end request | 821.325 ms |
+| Warm decode p50 | **113.262 ms** |
+| Warm decode p95 | **114.314 ms** |
+| Warm decodes | 12, after one excluded cold warm-up |
+
+The lower serial timings do not reverse the decision: this measurement does
+not run concurrent partial and final decoders, and whisper-rs still lacks an
+incremental/state-reuse path. A GO would require a dedicated contention test
+showing the authoritative final remains within budget while a competing decode
+is active.
