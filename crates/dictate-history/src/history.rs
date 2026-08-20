@@ -107,7 +107,7 @@ impl HistoryStore {
         }
 
         let mut conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL")?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON")?;
 
         // Install the current schema then migrate v1/Python databases in place.
         conn.execute_batch(include_str!("../../../sql/schema.sql"))?;
@@ -175,7 +175,13 @@ impl HistoryStore {
         if !self.enabled {
             return Ok(0);
         }
-        Ok(self.conn.execute("DELETE FROM interactions", [])? as u64)
+        let removed = self.conn.execute("DELETE FROM interactions", [])? as u64;
+        // secure_delete overwrites deleted cells in the main database. A WAL
+        // checkpoint plus VACUUM removes residual pages from both files so an
+        // explicit privacy purge is stronger than ordinary retention cleanup.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM")?;
+        Ok(removed)
     }
 
     /// Enforce the configured retention window now and after each commit.
@@ -261,9 +267,18 @@ impl HistoryStore {
         if !table_exists(&legacy, "interactions")? {
             return Ok(0);
         }
-        self.conn.execute("ATTACH DATABASE ?1 AS python_history", [path.to_string_lossy().as_ref()])?;
-        let imported = self.conn.execute(
-            "INSERT INTO interactions (
+        drop(legacy);
+        self.conn.execute(
+            "ATTACH DATABASE ?1 AS python_history",
+            [path.to_string_lossy().as_ref()],
+        )?;
+        let import_result = (|| -> Result<u64> {
+            // Copied rows and the idempotency marker commit together. If the
+            // marker fails, dropping the transaction rolls back the rows so a
+            // retry cannot duplicate legacy history.
+            let transaction = self.conn.unchecked_transaction()?;
+            let imported = transaction.execute(
+                "INSERT INTO interactions (
                 session_id, timestamp, audio_duration_s, raw_transcription,
                 corrected_transcription, transcription_duration_s, grammar_input,
                 grammar_output, grammar_changed, grammar_error, grammar_duration_s,
@@ -280,14 +295,23 @@ impl HistoryStore {
                 execution_error, output_typed, output_char_count, total_duration_s,
                 completed, error_summary
              FROM python_history.interactions",
-            [],
-        )? as u64;
-        self.conn.execute("DETACH DATABASE python_history", [])?;
-        self.conn.execute(
-            "INSERT INTO history_imports (source_path, imported_at, row_count) VALUES (?1, ?2, ?3)",
-            params![source, Utc::now().to_rfc3339(), imported as i64],
-        )?;
-        Ok(imported)
+                [],
+            )? as u64;
+            transaction.execute(
+                "INSERT INTO history_imports (source_path, imported_at, row_count) VALUES (?1, ?2, ?3)",
+                params![source, Utc::now().to_rfc3339(), imported as i64],
+            )?;
+            transaction.commit()?;
+            Ok(imported)
+        })();
+        let detach_result = self.conn.execute("DETACH DATABASE python_history", []);
+        if let Err(detach_error) = detach_result {
+            if import_result.is_ok() {
+                return Err(detach_error.into());
+            }
+            error!("legacy import failed and attached database cleanup also failed: {detach_error}");
+        }
+        import_result
     }
 
     pub fn begin(&self) -> Interaction {
@@ -656,6 +680,11 @@ mod tests {
         let mut settings = config(path.clone());
         settings.retention_days = Some(7);
         let store = HistoryStore::new(&settings).unwrap();
+        let secure_delete: i64 = store
+            .connection()
+            .query_row("PRAGMA secure_delete", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(secure_delete, 1);
         for (timestamp, text) in [
             ((Utc::now() - Duration::days(8)).to_rfc3339(), "expired"),
             ((Utc::now() - Duration::days(6)).to_rfc3339(), "kept"),
@@ -675,6 +704,16 @@ mod tests {
              VALUES ('python', '2026-01-02T00:00:00+00:00', 'imported from python', 'type', 1)",
             [],
         ).unwrap();
+        store.connection().execute_batch(
+            "CREATE TRIGGER reject_import_marker BEFORE INSERT ON history_imports
+             BEGIN SELECT RAISE(ABORT, 'marker rejected'); END;",
+        ).unwrap();
+        assert!(store.import_python_db(&source).is_err());
+        let rolled_back: i64 = store.connection().query_row(
+            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(rolled_back, 0, "failed import must not leave copied rows");
+        store.connection().execute_batch("DROP TRIGGER reject_import_marker").unwrap();
         assert_eq!(store.import_python_db(&source).unwrap(), 1);
         assert_eq!(store.import_python_db(&source).unwrap(), 0);
         let source_count: i64 = Connection::open(&source).unwrap().query_row(
