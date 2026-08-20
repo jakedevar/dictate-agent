@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use arboard::{Clipboard, Error as ClipboardError};
+use arboard::Clipboard;
 use dictate_proto::{ErrorCode, InjectMethod, InjectionOutcome, ProtoError, SkipReason};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use tracing::{error, info, warn};
@@ -173,15 +173,14 @@ impl X11Injector {
     }
 
     /// Save text before changing it and restore it after both a successful and
-    /// a failed paste. `ContentNotAvailable` means an empty text clipboard;
-    /// it is restored as empty rather than treated as an un-restorable state.
+    /// a failed paste. A clipboard without textual content is not safe to
+    /// replace: it may contain an image or another format that arboard cannot
+    /// round-trip, so the caller falls back to direct typing instead.
     fn paste_transaction(&self, text: &str) -> Result<()> {
         let mut clipboard = Clipboard::new().context("opening clipboard")?;
-        let saved = match clipboard.get_text() {
-            Ok(value) => value,
-            Err(ClipboardError::ContentNotAvailable) => String::new(),
-            Err(e) => return Err(anyhow!(e)).context("saving clipboard text"),
-        };
+        let saved = clipboard
+            .get_text()
+            .context("saving textual clipboard before injection")?;
         clipboard
             .set_text(text.to_owned())
             .context("setting dictation text on clipboard")?;
@@ -190,7 +189,19 @@ impl X11Injector {
         let restore_result = clipboard
             .set_text(saved)
             .context("restoring clipboard text");
-        paste_result.and(restore_result)
+        match (paste_result, restore_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(restore_error)) => {
+                // Delivery already happened. Retrying through direct typing
+                // would duplicate the transcript in the focused application.
+                warn!("text was pasted, but clipboard restoration failed: {restore_error}");
+                Ok(())
+            }
+            (Err(paste_error), Ok(())) => Err(paste_error),
+            (Err(paste_error), Err(restore_error)) => Err(anyhow!(
+                "paste failed: {paste_error}; clipboard restoration also failed: {restore_error}"
+            )),
+        }
     }
 
     fn send_paste(&self) -> Result<()> {
@@ -232,6 +243,48 @@ impl Injector for X11Injector {
         requested: InjectionPolicy,
     ) -> Pin<Box<dyn Future<Output = InjectionOutcome> + Send + 'a>> {
         Box::pin(async move { self.inject_blocking(text, requested) })
+    }
+}
+
+/// Contract stub for a future Wayland portal implementation.
+///
+/// It is intentionally not selected by the daemon yet. Its purpose is to keep
+/// the backend boundary honest: a portal request can be accepted while still
+/// awaiting a user decision, which is neither success nor failure.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WaylandPortalStub;
+
+impl Injector for WaylandPortalStub {
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            backend: "portal".into(),
+            clipboard_save_restore: false,
+            direct_typing: true,
+            needs_user_consent: true,
+        }
+    }
+
+    fn inject<'a>(
+        &'a self,
+        text: &'a str,
+        requested: InjectionPolicy,
+    ) -> Pin<Box<dyn Future<Output = InjectionOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            if requested == InjectionPolicy::Off {
+                return InjectionOutcome::Skipped {
+                    reason: SkipReason::Disabled,
+                };
+            }
+            if text.trim().is_empty() {
+                return InjectionOutcome::Skipped {
+                    reason: SkipReason::NoSpeechDetected,
+                };
+            }
+            InjectionOutcome::AwaitingConsent {
+                backend: "portal".into(),
+                consent_id: None,
+            }
+        })
     }
 }
 
@@ -298,5 +351,23 @@ mod tests {
             wayland_tool_chain("GNOME", |tool| tool == "wtype"),
             vec!["wtype"]
         );
+    }
+
+    #[tokio::test]
+    async fn wayland_stub_reports_pending_consent_without_claiming_delivery() {
+        let stub = WaylandPortalStub;
+        let caps = stub.capabilities();
+        assert!(caps.needs_user_consent);
+        assert_eq!(resolve_policy(InjectionPolicy::Paste, &caps), InjectionPolicy::Type);
+
+        let outcome = stub.inject("needs consent", InjectionPolicy::Paste).await;
+        assert!(matches!(
+            outcome,
+            InjectionOutcome::AwaitingConsent {
+                ref backend,
+                consent_id: None
+            } if backend == "portal"
+        ));
+        assert!(!outcome.is_settled());
     }
 }
