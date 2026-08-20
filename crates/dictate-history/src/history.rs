@@ -8,7 +8,9 @@ use std::time::Instant;
 use tracing::{error, info};
 
 const SCHEMA_VERSION: i32 = 2;
-const DEFAULT_DB_DIR: &str = "dictate-agent";
+// S02 deliberately gives the Rust daemon a distinct database from the live
+// Python daemon. S30 can optionally import the latter read-only.
+const DEFAULT_DB_DIR: &str = "dictated";
 
 pub struct HistoryStore {
     conn: Connection,
@@ -209,7 +211,7 @@ impl HistoryStore {
             ))
         })?;
         let mut words_by_day = BTreeMap::<String, u64>::new();
-        let mut words = 0_u64;
+        let mut words_with_audio = 0_u64;
         let mut audio_s = 0.0_f64;
         for row in rows {
             let (day, stored_words, text, duration) = row?;
@@ -217,15 +219,16 @@ impl HistoryStore {
                 .map(u64::from)
                 .unwrap_or_else(|| text.as_deref().map_or(0, word_count));
             *words_by_day.entry(day).or_default() += count;
-            words += count;
-            if count > 0 {
-                audio_s += duration.unwrap_or(0.0).max(0.0);
+            let duration = duration.unwrap_or(0.0).max(0.0);
+            if count > 0 && duration > 0.0 {
+                words_with_audio += count;
+                audio_s += duration;
             }
         }
         let today = Utc::now().date_naive();
         let today_key = today.format("%F").to_string();
         Ok(HistoryAnalytics {
-            overall_wpm: (audio_s > 0.0).then_some(words as f64 / (audio_s / 60.0)),
+            overall_wpm: (audio_s > 0.0).then_some(words_with_audio as f64 / (audio_s / 60.0)),
             words_today: words_by_day.get(&today_key).copied().unwrap_or(0),
             words_by_day: words_by_day
                 .iter()
@@ -481,6 +484,43 @@ fn longest_streak(days: &BTreeMap<String, u64>) -> u32 {
 mod tests {
     use super::*;
 
+    fn config(path: PathBuf) -> crate::config::HistoryConfig {
+        crate::config::HistoryConfig {
+            enabled: true,
+            db_path: path.to_string_lossy().into_owned(),
+            max_response_length: 10_000,
+            ..Default::default()
+        }
+    }
+
+    fn temp_db(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "dictate-history-{name}-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn create_v1_database(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, timestamp TEXT NOT NULL,
+                audio_duration_s REAL, raw_transcription TEXT, corrected_transcription TEXT,
+                transcription_duration_s REAL, grammar_input TEXT, grammar_output TEXT,
+                grammar_changed INTEGER, grammar_error TEXT, grammar_duration_s REAL,
+                route_type TEXT, route_model TEXT, route_trigger TEXT, route_confidence REAL,
+                prompt_sent TEXT, response_text TEXT, execution_model TEXT, execution_duration_s REAL,
+                execution_success INTEGER, execution_error TEXT, output_typed INTEGER,
+                output_char_count INTEGER, total_duration_s REAL, completed INTEGER DEFAULT 0,
+                error_summary TEXT
+            );
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version VALUES (1);",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_history_store_create() {
         let config = crate::config::HistoryConfig {
@@ -539,5 +579,109 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file("/tmp/dictate-agent-test-history-commit.db");
+    }
+
+    #[test]
+    fn v1_database_is_migrated_in_place_and_rebuilt_for_fts() {
+        let path = temp_db("migration");
+        create_v1_database(&path);
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute(
+            "INSERT INTO interactions (session_id, timestamp, corrected_transcription, raw_transcription, completed)
+             VALUES ('old', '2026-01-02T00:00:00+00:00', 'history survives migration', 'history survives migration', 1)",
+            [],
+        ).unwrap();
+        drop(legacy);
+
+        let store = HistoryStore::new(&config(path.clone())).unwrap();
+        let version: i32 = store.connection().query_row(
+            "SELECT version FROM schema_version", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for column in ["capture_duration_ms", "app_context", "stt_model", "word_count"] {
+            assert!(column_exists(store.connection(), "interactions", column).unwrap());
+        }
+        let page = store.query(&dictate_proto::HistoryQuery {
+            text: Some("survives migration".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(page.total, Some(1));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn analytics_reports_weighted_wpm_daily_words_and_streaks() {
+        let path = temp_db("analytics");
+        let store = HistoryStore::new(&config(path.clone())).unwrap();
+        let today = Utc::now().date_naive();
+        for (day, text) in [
+            (today - Duration::days(1), "one two"),
+            (today, "one two three four"),
+        ] {
+            store.commit(&Interaction {
+                session_id: "test".into(),
+                timestamp: format!("{day}T12:00:00+00:00"),
+                corrected_transcription: Some(text.into()),
+                audio_duration_s: Some(2.0),
+                word_count: Some(text.split_whitespace().count() as u32),
+                completed: true,
+                ..Default::default()
+            });
+        }
+        let analytics = store.analytics().unwrap();
+        assert_eq!(analytics.words_today, 4);
+        assert_eq!(analytics.current_streak_days, 2);
+        assert_eq!(analytics.longest_streak_days, 2);
+        assert_eq!(analytics.words_by_day.len(), 2);
+        assert!((analytics.overall_wpm.unwrap() - 90.0).abs() < f64::EPSILON);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn privacy_retention_purge_and_python_import_are_safe() {
+        let path = temp_db("privacy");
+        let mut settings = config(path.clone());
+        settings.privacy_mode = true;
+        let private = HistoryStore::new(&settings).unwrap();
+        private.commit(&Interaction {
+            corrected_transcription: Some("do not retain this".into()),
+            ..private.begin()
+        });
+        let count: i64 = private.connection().query_row(
+            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+        drop(private);
+
+        let mut settings = config(path.clone());
+        settings.retention_days = Some(7);
+        let store = HistoryStore::new(&settings).unwrap();
+        for (timestamp, text) in [
+            ((Utc::now() - Duration::days(8)).to_rfc3339(), "expired"),
+            ((Utc::now() - Duration::days(6)).to_rfc3339(), "kept"),
+        ] {
+            store.commit(&Interaction {
+                session_id: "retention".into(), timestamp,
+                corrected_transcription: Some(text.into()), completed: true,
+                ..Default::default()
+            });
+        }
+        assert_eq!(store.purge().unwrap(), 1);
+
+        let source = temp_db("python-source");
+        create_v1_database(&source);
+        Connection::open(&source).unwrap().execute(
+            "INSERT INTO interactions (session_id, timestamp, corrected_transcription, route_type, completed)
+             VALUES ('python', '2026-01-02T00:00:00+00:00', 'imported from python', 'type', 1)",
+            [],
+        ).unwrap();
+        assert_eq!(store.import_python_db(&source).unwrap(), 1);
+        assert_eq!(store.import_python_db(&source).unwrap(), 0);
+        let source_count: i64 = Connection::open(&source).unwrap().query_row(
+            "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(source_count, 1, "legacy source must remain unchanged");
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(path);
     }
 }

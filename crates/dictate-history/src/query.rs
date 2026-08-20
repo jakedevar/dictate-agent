@@ -247,9 +247,9 @@ mod tests {
 
     fn store_with(rows: Vec<Interaction>) -> HistoryStore {
         let dir = std::env::temp_dir().join(format!(
-            "dictate-history-query-{}-{:p}",
+            "dictate-history-query-{}-{}",
             std::process::id(),
-            &rows
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let store = HistoryStore::new(&HistoryConfig {

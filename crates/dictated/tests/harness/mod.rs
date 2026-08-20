@@ -125,6 +125,7 @@ impl Harness {
                 enabled: setup.history_enabled,
                 db_path: dir.join("history.db").to_string_lossy().into_owned(),
                 max_response_length: 10_000,
+                ..Default::default()
             })
             .unwrap(),
         ));

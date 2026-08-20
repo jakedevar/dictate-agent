@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct HistoryConfig {
     pub enabled: bool,
-    /// Empty string means default: ~/.local/share/dictate-agent/history.db
+    /// Empty string means default: ~/.local/share/dictated/history.db
     pub db_path: String,
     pub max_response_length: usize,
     /// Global no-store mode. Session privacy can enable the same guarantee
