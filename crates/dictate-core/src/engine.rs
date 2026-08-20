@@ -669,6 +669,7 @@ pub fn resolve_options(
         forced_route: options.route.clone(),
         allowed_routes: capabilities.routes.clone(),
         privacy: options.privacy.unwrap_or(false),
+        app: options.app.clone(),
     })
 }
 

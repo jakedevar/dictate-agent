@@ -113,6 +113,7 @@ unrecognized flag means "not permitted", which is the fail-safe direction.
 | `partial_transcripts` | server emits `partial` events (currently always `false`) |
 | `audio_level_events` | server emits `audio_level` events |
 | `history_read` | may query history |
+| `history_write` | may purge history |
 | `dictionary_read` / `dictionary_write` | may read / modify the dictionary |
 | `snippets_read` / `snippets_write` | may read / modify snippets |
 | `config_read` / `config_write` | may read / modify configuration |
@@ -196,6 +197,8 @@ All commands are objects tagged with `type`.
 | `upsert_snippet` | `snippet` | `snippets_write` |
 | `delete_snippet` | `id` | `snippets_write` |
 | `query_history` | `query` | `history_read` |
+| `get_history_analytics` | — | `history_read` |
+| `purge_history` | — | `history_write` |
 | `transcribe_audio` | `audio`, `options?` | `transcribe_upload` |
 | `begin_audio_stream` | `format`, `options?` | `streaming_audio` |
 | `end_audio_stream` | `stream_id` | `streaming_audio` |
@@ -451,6 +454,7 @@ the protocol crate — bearer-token auth is S33's mechanism.
 | `dictionary_entry` / `snippet` | the stored record, with server-assigned `id` |
 | `deleted` | `id` |
 | `history` | `items[]`, `total?`, `next_offset?` |
+| `history_analytics` | `overall_wpm?`, `words_today`, `words_by_day[]`, streaks |
 | `transcript` | Transcript |
 | `audio_stream_opened` | `stream_id`, `session_id` |
 
@@ -464,6 +468,11 @@ is not comparable to a CUDA one.
 A history entry's `text` being **absent** (privacy mode, or a session that
 failed before producing text) is distinct from an **empty string** (the user
 said nothing). Do not conflate them.
+
+`purge_history` removes every persisted interaction (and its FTS index entry)
+while keeping the daemon's SQLite connection open. A daemon in global privacy
+mode, or a `start_dictation` request with `options.privacy: true`, stores no
+row at all; this is stronger than masking transcript text after the fact.
 
 ---
 

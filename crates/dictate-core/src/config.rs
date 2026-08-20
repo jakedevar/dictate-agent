@@ -181,6 +181,9 @@ mod tests {
         assert!(config.history.enabled);
         assert!(config.history.db_path.is_empty());
         assert_eq!(config.history.max_response_length, 10000);
+        assert!(!config.history.privacy_mode);
+        assert_eq!(config.history.retention_days, None);
+        assert!(!config.history.import_python_db);
         assert!(config.timer.sound_enabled);
     }
 
@@ -219,6 +222,9 @@ timeout_ms = 5000
 enabled = false
 db_path = "/tmp/test.db"
 max_response_length = 500
+privacy_mode = true
+retention_days = 30
+import_python_db = true
 
 [timer]
 sound_enabled = false
@@ -238,6 +244,9 @@ sound_file = "/tmp/alarm.wav"
         assert_eq!(config.notifications.timeout_ms, 5000);
         assert!(!config.history.enabled);
         assert_eq!(config.history.db_path, "/tmp/test.db");
+        assert!(config.history.privacy_mode);
+        assert_eq!(config.history.retention_days, Some(30));
+        assert!(config.history.import_python_db);
         assert!(!config.timer.sound_enabled);
     }
 

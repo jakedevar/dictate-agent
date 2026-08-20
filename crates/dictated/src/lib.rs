@@ -208,12 +208,17 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
 
-    let capabilities = local_capabilities(injection_available);
+    let mut capabilities = local_capabilities(injection_available);
+    capabilities.features.privacy_mode = history
+        .lock()
+        .map(|store| store.is_privacy_mode())
+        .unwrap_or(false);
     let signal_options = ResolvedOptions {
         inject: capabilities.features.text_injection,
         forced_route: None,
         allowed_routes: capabilities.routes.clone(),
         privacy: false,
+        app: None,
     };
 
     let daemon = Daemon::start(pipeline, history, &runtime, capabilities, Some(pid)).await?;

@@ -30,7 +30,7 @@ COMMANDS:
     cancel              Abandon the current session, injecting nothing
     status              Show daemon and session state
     tail                Stream events until interrupted
-    history             List past dictations
+    history             List past dictations, or purge with --purge
     dict                Personal dictionary (not implemented until S22)
     model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
     model list          List catalog models and local verification state
@@ -39,6 +39,8 @@ OPTIONS:
     --limit <N>         history: rows to return (default 20)
     --text <QUERY>      history: substring to match
     --errors            history: only sessions that failed
+    --purge             history: permanently delete all stored dictations
+    --analytics         history: show WPM, daily words, and streaks
     --events <A,B>      tail: only these event types
     --json              print raw protocol JSON instead of a summary
     --socket <PATH>     override the control socket
@@ -163,6 +165,30 @@ async fn tail(client: &mut Client, args: &Args) -> Result<i32> {
 }
 
 async fn history(client: &mut Client, args: &Args) -> Result<i32> {
+    if args.analytics {
+        return match client.try_request(Command::GetHistoryAnalytics).await? {
+            Ok(result) => {
+                render::result(&result, args.json);
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                Ok(1)
+            }
+        };
+    }
+    if args.purge {
+        return match client.try_request(Command::PurgeHistory).await? {
+            Ok(result) => {
+                render::result(&result, args.json);
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                Ok(1)
+            }
+        };
+    }
     let query = HistoryQuery {
         text: args.text.clone(),
         limit: Some(args.limit.unwrap_or(20)),
@@ -263,6 +289,8 @@ struct Args {
     events: Option<String>,
     socket: Option<String>,
     errors: bool,
+    purge: bool,
+    analytics: bool,
     json: bool,
     help: bool,
     version: bool,
@@ -278,6 +306,8 @@ impl Args {
                 "-V" | "--version" => out.version = true,
                 "--json" => out.json = true,
                 "--errors" => out.errors = true,
+                "--purge" => out.purge = true,
+                "--analytics" => out.analytics = true,
                 "--limit" => {
                     let raw = args.next().ok_or_else(|| anyhow::anyhow!("--limit needs a value"))?;
                     out.limit = Some(raw.parse().map_err(|_| {

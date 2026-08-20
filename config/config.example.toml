@@ -93,10 +93,18 @@ timeout_ms = 1250
 [history]
 # Interaction history logging to SQLite
 enabled = true
-# Database location (empty = ~/.local/share/dictate-agent/history.db)
+# Database location (empty = the daemon's distinct XDG data database)
 db_path = ""
 # Truncate stored responses beyond this length (characters)
 max_response_length = 10000
+# Do not persist any dictation. `SessionOptions.privacy` enables the same
+# guarantee for one request without changing this global setting.
+privacy_mode = false
+# Remove rows older than this many UTC days. Omit to retain indefinitely.
+# retention_days = 90
+# One-time, read-only import from ~/.local/share/dictate-agent/history.db.
+# The Python database is never modified and each source is imported once.
+import_python_db = false
 
 [timer]
 # Timer alarm configuration

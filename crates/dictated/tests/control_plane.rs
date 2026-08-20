@@ -1405,6 +1405,61 @@ async fn query_history_returns_the_session_that_just_ran() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_private_daemon_session_leaves_zero_history_rows() {
+    let h = Harness::with(Setup::default().with_history()).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::Toggle,
+            options: Some(SessionOptions {
+                privacy: Some(true),
+                ..Default::default()
+            }),
+        })
+        .await
+        .expect("start private dictation");
+    client.wait_for_state(State::Recording).await;
+    client.request(Command::Stop).await.expect("stop");
+    client.wait_for_state(State::Done).await;
+
+    let count: i64 = h.history.lock().unwrap().connection().query_row(
+        "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(count, 0, "privacy must skip the history insert entirely");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_analytics_and_purge_are_available_over_the_socket() {
+    let h = Harness::with(Setup::default().with_history()).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: dictate_proto::DictationMode::Toggle,
+            options: None,
+        })
+        .await
+        .expect("start");
+    client.wait_for_state(State::Recording).await;
+    client.request(Command::Stop).await.expect("stop");
+    client.wait_for_state(State::Done).await;
+    let analytics = match client.request(Command::GetHistoryAnalytics).await.expect("analytics") {
+        CommandResult::HistoryAnalytics(analytics) => analytics,
+        other => panic!("expected history analytics, got {other:?}"),
+    };
+    assert_eq!(analytics.words_today, 2);
+    assert!(analytics.overall_wpm.is_some());
+    assert!(matches!(client.request(Command::PurgeHistory).await, Ok(CommandResult::Ack)));
+    let count: i64 = h.history.lock().unwrap().connection().query_row(
+        "SELECT COUNT(*) FROM interactions", [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(count, 0);
+    h.stop().await;
+}
+
 // ---------------------------------------------------------------------------
 // Notifications (the user-visible side effects the pipeline still owes)
 // ---------------------------------------------------------------------------
