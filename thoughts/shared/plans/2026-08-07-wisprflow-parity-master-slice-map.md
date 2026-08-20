@@ -273,6 +273,19 @@ clean worktree, both base commits, and the 379-test floor before implementation.
 | S30 | `1b41f0f9-2894-43a7-abdf-b1c4fd08d97c` | queued |
 | S31 | `d5e61ea7-2f59-4e52-81ef-0984e788950d` | queued |
 
+**INTEGRATED 2026-08-19** on RSI custody branch `rsi/4ba1578b` at
+`53fcda0`. The first worker cohort was interrupted by an RSI daemon restart;
+the recovery sessions completed distinct slices (not duplicate work): S10
+`9b385b1b-0641-4b74-b7d9-3c2f06938053`, S12
+`9b256891-5a1f-4eaf-9ce9-9d50ed4e18fa`, S13
+`595cd1cb-f1e2-4983-aa86-557a9943b313`, S30
+`18ddfb03-7bcf-4009-91f1-783305db8fa1`, and S31
+`134dab6b-f07b-466c-8b41-179b28e6932d`. S11 completed in its original session
+`4427665a-7bca-4856-b294-00acf34015a1`; the atomic S02 Toggle follow-up
+completed in `a514fe27-234b-4954-815b-26ba0ac079c0`. Final verification:
+`cargo test --workspace --all-targets` (419 passed) and
+`cargo clippy --workspace --all-targets -- -D warnings` (clean).
+
 **S10 — Audio subsystem v2** · implementer · M
 Scope: ring buffer + pre-roll (capture ~300ms before hotkey to stop
 first-syllable clipping — Wispr-feel detail); input device selection +
