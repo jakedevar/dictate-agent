@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use dictate_proto::{
-    Capabilities, Command, CommandResult, DaemonInfo, Message, ModelStatus, ServerHello,
-    ServerInfo, State, Status,
+    Capabilities, Command, CommandResult, DaemonInfo, ErrorCode, Message, ModelStatus,
+    ProtoError, ServerHello, ServerInfo, State, Status,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -22,6 +22,19 @@ use tokio::net::UnixListener;
 ///
 /// Returns the socket path and a handle that keeps it alive.
 async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
+    let (socket, server, _) = stub_daemon_with_command_count(state).await;
+    (socket, server)
+}
+
+/// Like [`stub_daemon`], but exposes the number of non-handshake requests the
+/// client made so a keybinding command cannot silently regress to read-then-act.
+async fn stub_daemon_with_command_count(
+    state: State,
+) -> (
+    PathBuf,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("dictate-cli-it-{}-{n}", std::process::id()));
@@ -30,9 +43,12 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
     let socket = dir.join("dictated.sock");
 
     let listener = UnixListener::bind(&socket).unwrap();
+    let command_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_command_count = command_count.clone();
     let handle = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let state = state.clone();
+            let command_count = server_command_count.clone();
             tokio::spawn(async move {
                 let (read, mut write) = stream.into_split();
                 let mut reader = BufReader::new(read);
@@ -44,15 +60,18 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
                     };
                     line.clear();
                     let Message::Request(req) = msg else { break };
+                    if !matches!(&req.command, Command::Handshake(_)) {
+                        command_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
 
                     let result = match req.command {
-                        Command::Handshake(_) => CommandResult::Handshake(Box::new(ServerHello {
+                        Command::Handshake(_) => Ok(CommandResult::Handshake(Box::new(ServerHello {
                             protocol_version: dictate_proto::PROTOCOL_VERSION,
                             supported_versions: vec![dictate_proto::PROTOCOL_VERSION],
                             server: ServerInfo::new("dictated", "0.2.0"),
                             capabilities: Capabilities::local_trusted(),
-                        })),
-                        Command::GetStatus => CommandResult::Status(Box::new(Status {
+                        }))),
+                        Command::GetStatus => Ok(CommandResult::Status(Box::new(Status {
                             state: state.clone(),
                             session: None,
                             daemon: DaemonInfo {
@@ -68,24 +87,40 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
                                 backend: Some("cuda".into()),
                             }),
                             capabilities: Capabilities::local_trusted(),
-                        })),
-                        Command::StartDictation { .. } => CommandResult::SessionStarted {
-                            session_id: dictate_proto::SessionId("stub-1".into()),
+                        }))),
+                        Command::Toggle => match state {
+                            State::Idle | State::Done | State::Error | State::Cancelled => {
+                                Ok(CommandResult::SessionStarted {
+                                    session_id: dictate_proto::SessionId("stub-1".into()),
+                                })
+                            }
+                            State::Recording => Ok(CommandResult::SessionStopped {
+                                session_id: dictate_proto::SessionId("stub-1".into()),
+                            }),
+                            ref state => Err(ProtoError::new(
+                                ErrorCode::Busy,
+                                format!("session is {}; wait for it to finish or cancel it", state.as_str()),
+                            )),
                         },
-                        Command::Stop => CommandResult::SessionStopped {
+                        Command::StartDictation { .. } => Ok(CommandResult::SessionStarted {
                             session_id: dictate_proto::SessionId("stub-1".into()),
-                        },
-                        Command::Cancel => CommandResult::SessionCancelled {
+                        }),
+                        Command::Stop => Ok(CommandResult::SessionStopped {
                             session_id: dictate_proto::SessionId("stub-1".into()),
-                        },
+                        }),
+                        Command::Cancel => Ok(CommandResult::SessionCancelled {
+                            session_id: dictate_proto::SessionId("stub-1".into()),
+                        }),
                         other => {
-                            let err = dictate_proto::ProtoError::unsupported_command(other.name());
-                            let out = Message::err(req.id, err).to_ndjson_line().unwrap();
-                            let _ = write.write_all(out.as_bytes()).await;
-                            continue;
+                            Err(ProtoError::unsupported_command(other.name()))
                         }
                     };
-                    let out = Message::ok(req.id, result).to_ndjson_line().unwrap();
+                    let out = match result {
+                        Ok(result) => Message::ok(req.id, result),
+                        Err(error) => Message::err(req.id, error),
+                    }
+                    .to_ndjson_line()
+                    .unwrap();
                     if write.write_all(out.as_bytes()).await.is_err() {
                         break;
                     }
@@ -94,7 +129,7 @@ async fn stub_daemon(state: State) -> (PathBuf, tokio::task::JoinHandle<()>) {
         }
     });
 
-    (socket, handle)
+    (socket, handle, command_count)
 }
 
 async fn run_dictate(socket: &PathBuf, args: &[&str]) -> (i32, String, String) {
@@ -148,6 +183,20 @@ async fn toggle_starts_when_the_daemon_is_idle() {
 
     assert_eq!(code, 0);
     assert!(stdout.contains("recording"), "{stdout}");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn toggle_is_one_atomic_protocol_request_after_handshake() {
+    let (socket, server, commands) = stub_daemon_with_command_count(State::Idle).await;
+    let (code, _, _) = run_dictate(&socket, &["toggle"]).await;
+
+    assert_eq!(code, 0);
+    assert_eq!(
+        commands.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "toggle must not regain a get_status-then-act round trip"
+    );
     server.abort();
 }
 

@@ -5,26 +5,17 @@
 //! binary on every dictation, and linking whisper.cpp into it would trade real
 //! startup latency for a little shared code.
 //!
-//! # Toggle is resolved here, and that is a compromise
+//! # Toggle is one atomic protocol request
 //!
-//! The protocol has no `toggle` command — it has `start_dictation` and `stop`.
-//! So `dictate toggle` reads the state and then acts on it, which leaves a
-//! window where another actor can move first. The daemon closes that window
-//! for itself (SIGUSR1 toggles *inside* the engine task, atomically), but a
-//! socket client cannot borrow that guarantee without a protocol change.
-//!
-//! The consequence is bounded and honest: if the CLI loses the race it is told
-//! `busy` or `no_active_session`, and it reports that rather than retrying into
-//! a second session. Jake's hotkey path goes through the signal shim and is not
-//! affected. Adding a `toggle` command would be an additive protocol change —
-//! flagged for the Epic-lead rather than taken unilaterally, since S32 and S33
-//! share this contract.
+//! `dictate toggle` sends protocol `toggle` once. The daemon resolves whether
+//! to start or stop inside its single-writer engine actor, sharing the same
+//! operation used by SIGUSR1 and avoiding a `get_status`-then-act race.
 
 mod client;
 mod render;
 
 use anyhow::{bail, Result};
-use dictate_proto::{Command, CommandResult, DictationMode, Event, HistoryQuery, State};
+use dictate_proto::{Command, DictationMode, Event, HistoryQuery};
 
 use crate::client::Client;
 
@@ -130,39 +121,15 @@ async fn run() -> Result<i32> {
     }
 }
 
-/// Start if idle, stop if recording.
-///
-/// See the module docs for why this is two round trips and what happens when
-/// it loses the race.
+/// Atomically start if idle, or stop if recording.
 async fn toggle(client: &mut Client, args: &Args) -> Result<i32> {
-    let CommandResult::Status(status) = client.request(Command::GetStatus).await? else {
-        bail!("the daemon did not answer get_status with a status");
-    };
-
-    let command = match status.state {
-        State::Recording => Command::Stop,
-        s if s.is_terminal() || s == State::Idle => Command::StartDictation {
-            mode: DictationMode::Toggle,
-            options: None,
-        },
-        // Mid-pipeline: neither verb applies. Saying so beats queueing a
-        // second session behind one the user cannot see.
-        other => {
-            eprintln!(
-                "dictate: session is {}; wait for it to finish, or `dictate cancel`",
-                other.as_str()
-            );
-            return Ok(1);
-        }
-    };
-
-    match client.try_request(command).await? {
+    match client.try_request(Command::Toggle).await? {
         Ok(result) => {
             render::result(&result, args.json);
             Ok(0)
         }
-        // Lost the race with another actor. Report it; do not retry into a
-        // state the user did not ask for.
+        // Do not retry: a busy result describes the state observed atomically
+        // by the engine, and a retry could become a different user action.
         Err(e) => {
             eprintln!("dictate: {} ({})", e.message, e.code.as_str());
             Ok(1)

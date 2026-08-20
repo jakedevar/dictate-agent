@@ -493,6 +493,34 @@ async fn two_racing_starts_produce_exactly_one_session() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_racing_protocol_toggles_start_exactly_one_session() {
+    // Each request is one atomic mailbox operation. One sees idle and starts;
+    // the other sees that foreign client's recording session and is refused by
+    // session ownership. A status-then-act client could instead race into a
+    // second start attempt after observing stale idle state.
+    let h = Harness::start().await;
+    let mut a = h.client().await;
+    let mut b = h.client().await;
+    let (ra, rb) = tokio::join!(a.request(Command::Toggle), b.request(Command::Toggle));
+    let outcomes = [ra, rb];
+    assert_eq!(
+        outcomes.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one racing toggle may create a session"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .filter(|error| error.code == ErrorCode::Forbidden)
+            .count(),
+        1,
+        "the other client's toggle must not stop a session it does not own"
+    );
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_concurrent_starts_still_produce_exactly_one_session() {
     let h = Harness::start().await;
 
@@ -793,15 +821,9 @@ async fn the_owner_can_stop_its_own_session_while_others_cannot() {
 async fn states_via_protocol(h: &Harness) -> Vec<State> {
     let mut client = h.client().await;
     client.subscribe().await;
-    client
-        .request(Command::StartDictation {
-            mode: dictate_proto::DictationMode::Toggle,
-            options: None,
-        })
-        .await
-        .expect("start");
+    client.request(Command::Toggle).await.expect("toggle start");
     client.wait_for_state(State::Recording).await;
-    client.request(Command::Stop).await.expect("stop");
+    client.request(Command::Toggle).await.expect("toggle stop");
     let mut seen = vec![State::Recording];
     seen.extend(client.wait_for_state(State::Done).await);
     seen

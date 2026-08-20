@@ -25,10 +25,9 @@
 //!
 //! SIGUSR1 and SIGUSR2 do not have their own recording logic. They construct
 //! [`Actor::Signal`] and send [`EngineRequest::Toggle`] / `Cancel` down the
-//! same channel the protocol commands use, and [`Engine::handle_toggle`]
-//! dispatches to the very functions `start_dictation` and `stop` call. There is
-//! no path by which the signal and socket routes can drift apart, because
-//! there is only one path.
+//! same channel the protocol commands use. [`Engine::handle_toggle`] is shared
+//! by signals and protocol `toggle` requests, so there is no path by which the
+//! two toggle routes can drift apart.
 
 use std::sync::Arc;
 
@@ -481,10 +480,9 @@ impl Engine {
         actor: &Actor,
         options: ResolvedOptions,
     ) -> Result<ToggleOutcome, ProtoError> {
-        // Resolved *inside* the engine, so there is no window between reading
-        // the state and acting on it. A client doing `get_status` then
-        // `start_dictation` has that window and gets `busy` if it loses; the
-        // signal path does not, which is why it uses this.
+        // Resolved inside the engine, so there is no window between reading
+        // the state and acting on it. Both protocol `toggle` and SIGUSR1 use
+        // this mailbox operation rather than a `get_status` then action pair.
         match self.active.as_ref().map(|s| s.handle.state()) {
             None => self
                 .handle_start(actor, DictationMode::Toggle, options)
@@ -678,7 +676,7 @@ pub fn resolve_options(
 /// clients without touching the engine.
 #[must_use]
 pub fn is_session_command(command: &Command) -> bool {
-    matches!(command, Command::Stop | Command::Cancel)
+    matches!(command, Command::Toggle | Command::Stop | Command::Cancel)
 }
 
 /// Every route a trusted local connection may invoke.
@@ -785,6 +783,7 @@ mod tests {
     fn session_commands_are_the_ones_without_a_session_id() {
         assert!(is_session_command(&Command::Stop));
         assert!(is_session_command(&Command::Cancel));
+        assert!(is_session_command(&Command::Toggle));
         assert!(!is_session_command(&Command::GetStatus));
     }
 }

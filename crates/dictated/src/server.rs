@@ -451,6 +451,21 @@ async fn dispatch(
             Ok(CommandResult::SessionStarted { session_id })
         }
 
+        Command::Toggle => {
+            let outcome = deps
+                .engine
+                .toggle(conn.actor(), resolve_options(None, &capabilities)?)
+                .await?;
+            Ok(match outcome {
+                dictate_core::ToggleOutcome::Started(session_id) => {
+                    CommandResult::SessionStarted { session_id }
+                }
+                dictate_core::ToggleOutcome::Stopped(session_id) => {
+                    CommandResult::SessionStopped { session_id }
+                }
+            })
+        }
+
         Command::Stop => {
             let session_id = deps.engine.stop(conn.actor()).await?;
             Ok(CommandResult::SessionStopped { session_id })
@@ -614,6 +629,7 @@ mod tests {
         }));
         // Implemented by this slice.
         assert!(is_implemented(&Command::GetStatus));
+        assert!(is_implemented(&Command::Toggle));
         assert!(is_implemented(&Command::Stop));
         assert!(is_implemented(&Command::Cancel));
         assert!(is_implemented(&Command::Unsubscribe));

@@ -154,6 +154,7 @@ fn golden_envelope_event() {
 
 #[test]
 fn golden_command_lifecycle() {
+    pin("toggle", Command::Toggle, json!({"type": "toggle"}));
     pin("stop", Command::Stop, json!({"type": "stop"}));
     pin("cancel", Command::Cancel, json!({"type": "cancel"}));
     pin("get_status", Command::GetStatus, json!({"type": "get_status"}));
