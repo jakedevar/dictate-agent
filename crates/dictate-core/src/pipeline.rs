@@ -41,8 +41,8 @@ use tracing::{error, info, warn};
 use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
 use crate::ports::{
-    audio_ms, AudioSource, FormatPlan, Formatter, MediaController, Notice, SttProvider,
-    StatusNotifier, TextInjector,
+    audio_ms, AudioSource, FormatPlan, Formatter, MediaController, Notice, StatusNotifier,
+    SttProvider, TextInjector,
 };
 use crate::router::{self, RouteType};
 use crate::session::SessionHandle;
@@ -257,14 +257,18 @@ impl Pipeline {
         // --- Capture flush --------------------------------------------------
         self.notifier.notify(Notice::Transcribing);
         if handle.advance_checked(State::Transcribing).is_err() {
-            return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+            return self
+                .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                .await;
         }
 
         let clock = StageClock::start();
         let samples = match self.race(&token, self.audio.stop()).await {
             Step::Cancelled => {
                 stages.timings.capture = clock.failed("cancelled during capture flush");
-                return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+                return self
+                    .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                    .await;
             }
             Step::Continue(s) => s,
         };
@@ -294,7 +298,12 @@ impl Pipeline {
             Step::Cancelled => {
                 stages.timings.stt = clock.failed("cancelled during transcription");
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(r) => r,
@@ -309,15 +318,22 @@ impl Pipeline {
                 error!("Transcription failed: {}", e);
                 stages.timings.stt = clock.failed(e.to_string());
                 self.notifier.notify(Notice::Clear);
-                self.notifier.notify(Notice::Error(format!("Transcription failed: {e}")));
+                self.notifier
+                    .notify(Notice::Error(format!("Transcription failed: {e}")));
                 interaction.error_summary = Some(format!("Transcription failed: {e}"));
                 let err = ProtoError::new(ErrorCode::SttFailed, e.to_string());
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(err, audio_len_ms),
+                    )
                     .await;
             }
         };
-        interaction.transcription_duration_s = stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
+        interaction.transcription_duration_s =
+            stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
 
         let Some(transcribed) = transcribed else {
             info!("No speech detected");
@@ -342,7 +358,12 @@ impl Pipeline {
         // --- Formatting -----------------------------------------------------
         if handle.advance_checked(State::Formatting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -379,7 +400,10 @@ impl Pipeline {
                         interaction.grammar_error = formatted.error.clone();
                         interaction.grammar_duration_s = Some(formatted.duration_s);
                         if formatted.changed {
-                            info!("Grammar corrected: \"{}\" → \"{}\"", raw_text, formatted.text);
+                            info!(
+                                "Grammar corrected: \"{}\" → \"{}\"",
+                                raw_text, formatted.text
+                            );
                         }
                         formatted.text
                     }
@@ -414,14 +438,24 @@ impl Pipeline {
             interaction.error_summary = Some(msg.clone());
             let err = ProtoError::new(ErrorCode::Forbidden, msg);
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::error(err, audio_len_ms),
+                )
                 .await;
         }
 
         // --- Dispatch and inject --------------------------------------------
         if handle.advance_checked(State::Injecting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -440,7 +474,12 @@ impl Pipeline {
         let (final_text, injection) = match dispatch {
             Step::Cancelled => {
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(v) => v,
@@ -511,7 +550,8 @@ impl Pipeline {
                 }
             }
             Route::Local => {
-                self.notifier.notify(Notice::Processing(self.local_model.clone()));
+                self.notifier
+                    .notify(Notice::Processing(self.local_model.clone()));
                 interaction.prompt_sent = Some(route_text.to_string());
                 interaction.execution_model = Some(self.local_model.clone());
 
@@ -576,7 +616,8 @@ impl Pipeline {
                 interaction.execution_success = Some(result.success);
                 if result.success {
                     interaction.response_text = Some(result.response.clone());
-                    self.notifier.notify(Notice::TimerSet(result.response.clone()));
+                    self.notifier
+                        .notify(Notice::TimerSet(result.response.clone()));
                 } else {
                     interaction.execution_error = result.error.clone();
                     self.notifier
@@ -664,22 +705,10 @@ impl Pipeline {
         };
 
         let clock = StageClock::start();
-        let injector = self.injector.clone();
-        let owned = text.to_string();
-        // The real injector blocks for ~50-100ms on clipboard save/paste/
-        // restore; keeping it off the runtime's worker threads is what lets
-        // other connections keep being served during it.
-        let outcome = tokio::task::spawn_blocking(move || injector.inject(&owned))
-            .await
-            .unwrap_or_else(|e| {
-                error!("injection task panicked: {e}");
-                InjectionOutcome::Failed {
-                    error: ProtoError::new(
-                        ErrorCode::InjectionFailed,
-                        "injection task panicked",
-                    ),
-                }
-            });
+        // X11 performs its clipboard/key work on the blocking pool inside its
+        // adapter. Portal backends instead await an authorization response;
+        // keeping the port async preserves both contracts.
+        let outcome = self.injector.inject(text).await;
         drop(guard);
 
         stages.timings.inject = match &outcome {
@@ -756,7 +785,9 @@ impl Pipeline {
                 }
             }
             if outcome.state == State::Cancelled {
-                interaction.error_summary.get_or_insert_with(|| "cancelled".into());
+                interaction
+                    .error_summary
+                    .get_or_insert_with(|| "cancelled".into());
             }
             match self.history.lock() {
                 Ok(store) => store.commit(&interaction),

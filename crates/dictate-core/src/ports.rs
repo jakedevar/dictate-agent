@@ -189,8 +189,11 @@ impl Drop for HostAudioSource {
 impl AudioSource for HostAudioSource {
     fn start(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.ask(AudioCmd::Start, Err(anyhow::anyhow!("audio thread is gone")))
-                .await
+            self.ask(
+                AudioCmd::Start,
+                Err(anyhow::anyhow!("audio thread is gone")),
+            )
+            .await
         })
     }
 
@@ -240,7 +243,8 @@ pub struct ModelInfo {
 /// cannot be tested without a seam and S12 has not run yet.
 pub trait SttProvider: Send + Sync + 'static {
     /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>>;
+    fn transcribe<'a>(&'a self, samples: &'a [f32])
+        -> BoxFuture<'a, Result<Option<Transcription>>>;
 
     /// Which model this provider is serving.
     fn model(&self) -> ModelInfo;
@@ -276,7 +280,10 @@ impl WhisperStt {
 }
 
 impl SttProvider for WhisperStt {
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>> {
+    fn transcribe<'a>(
+        &'a self,
+        samples: &'a [f32],
+    ) -> BoxFuture<'a, Result<Option<Transcription>>> {
         Box::pin(async move {
             let out = self.inner.transcribe(samples).await?;
             Ok(out.map(|r| Transcription {
@@ -401,13 +408,12 @@ impl Formatter for GrammarFormatter {
 
 /// Text injection into the focused application.
 ///
-/// Synchronous and non-interruptible by design: a clipboard save / paste /
-/// restore cycle has no safe midpoint. The pipeline compensates by taking the
-/// cancellation decision immediately *before* calling this — see
-/// [`crate::cancel::CancelToken::enter_commit`].
+/// The call is async because a Wayland portal can return an outstanding
+/// consent request. X11 is currently immediate, but keeping this boundary
+/// async avoids making a future consent flow a breaking redesign.
 pub trait TextInjector: Send + Sync + 'static {
     /// Inject `text`, reporting what actually happened.
-    fn inject(&self, text: &str) -> InjectionOutcome;
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome>;
 
     /// Whether injection is possible here at all. `false` on a headless host,
     /// and the reason the outcome becomes `Unavailable` rather than `Failed`.
@@ -416,7 +422,7 @@ pub trait TextInjector: Send + Sync + 'static {
 
 /// Clipboard-paste injection behind the trait.
 pub struct HostInjector {
-    inner: dictate_inject::OutputHandler,
+    inner: dictate_inject::X11Injector,
     enabled: bool,
 }
 
@@ -425,37 +431,38 @@ impl HostInjector {
     #[must_use]
     pub fn new(config: &dictate_inject::OutputConfig) -> Self {
         Self {
-            inner: dictate_inject::OutputHandler::new(config),
+            inner: dictate_inject::X11Injector::new(config),
             enabled: config.auto_type,
         }
     }
 }
 
 impl TextInjector for HostInjector {
-    fn inject(&self, text: &str) -> InjectionOutcome {
-        if !self.enabled {
-            return InjectionOutcome::Skipped {
-                reason: dictate_proto::SkipReason::Disabled,
-            };
-        }
-        let chars = text.trim().chars().count() as u32;
-        if self.inner.type_text(text) {
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars,
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = self.inner.default_policy();
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            if !self.enabled {
+                return InjectionOutcome::Skipped {
+                    reason: dictate_proto::SkipReason::Disabled,
+                };
             }
-        } else {
-            InjectionOutcome::Failed {
-                error: dictate_proto::ProtoError::new(
-                    dictate_proto::ErrorCode::InjectionFailed,
-                    "clipboard paste failed; see daemon log",
-                ),
-            }
-        }
+            tokio::task::spawn_blocking(move || inner.inject_blocking(&text, policy))
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
+                    error: dictate_proto::ProtoError::new(
+                        dictate_proto::ErrorCode::InjectionFailed,
+                        format!("injection task failed: {e}"),
+                    ),
+                })
+        })
     }
 
     fn is_available(&self) -> bool {
-        self.enabled
+        use dictate_inject::Injector as _;
+        let caps = self.inner.capabilities();
+        self.enabled && (caps.clipboard_save_restore || caps.direct_typing)
     }
 }
 
@@ -550,7 +557,9 @@ impl MediaController for PlayerctlMedia {
         let state_path = crate::config::media_state_path();
         if is_playing {
             let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl").arg("pause").output();
+            let _ = std::process::Command::new("playerctl")
+                .arg("pause")
+                .output();
             tracing::info!("Media paused");
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
@@ -979,42 +988,49 @@ pub mod mock {
         /// The assertion that matters for cancellation: after a cancelled
         /// session this must be empty.
         pub fn injected(&self) -> Vec<String> {
-            self.injected.lock().expect("mock injector poisoned").clone()
+            self.injected
+                .lock()
+                .expect("mock injector poisoned")
+                .clone()
         }
     }
 
     impl TextInjector for MockInjector {
-        fn inject(&self, text: &str) -> InjectionOutcome {
-            if let Some(gate) = &self.gate {
-                gate.mark_entered();
-                // Deliberately a blocking wait: the real injector is blocking,
-                // and the pipeline calls it via `spawn_blocking`.
-                while !gate.is_open() {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+        fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+            let text = text.to_string();
+            Box::pin(async move {
+                if let Some(gate) = &self.gate {
+                    gate.mark_entered();
+                    // Deliberately a blocking wait: the production X11 adapter
+                    // uses a blocking pool, while this double keeps the same
+                    // observable commit-point behavior.
+                    while !gate.is_open() {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 }
-            }
-            if !self.available {
-                return InjectionOutcome::Unavailable {
-                    backend: "none".into(),
-                    reason: "mock injector is unavailable".into(),
-                };
-            }
-            if self.fail {
-                return InjectionOutcome::Failed {
-                    error: dictate_proto::ProtoError::new(
-                        dictate_proto::ErrorCode::InjectionFailed,
-                        "mock injection failure",
-                    ),
-                };
-            }
-            self.injected
-                .lock()
-                .expect("mock injector poisoned")
-                .push(text.to_string());
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars: text.trim().chars().count() as u32,
-            }
+                if !self.available {
+                    return InjectionOutcome::Unavailable {
+                        backend: "none".into(),
+                        reason: "mock injector is unavailable".into(),
+                    };
+                }
+                if self.fail {
+                    return InjectionOutcome::Failed {
+                        error: dictate_proto::ProtoError::new(
+                            dictate_proto::ErrorCode::InjectionFailed,
+                            "mock injection failure",
+                        ),
+                    };
+                }
+                self.injected
+                    .lock()
+                    .expect("mock injector poisoned")
+                    .push(text.to_string());
+                InjectionOutcome::Injected {
+                    method: InjectMethod::Paste,
+                    chars: text.trim().chars().count() as u32,
+                }
+            })
         }
 
         fn is_available(&self) -> bool {
@@ -1100,12 +1116,12 @@ mod tests {
         assert!(out.duration_s > 0.0, "burned time must still be reported");
     }
 
-    #[test]
-    fn mock_injector_records_what_it_typed() {
+    #[tokio::test]
+    async fn mock_injector_records_what_it_typed() {
         use mock::MockInjector;
         let i = MockInjector::new();
         assert!(i.injected().is_empty());
-        let outcome = i.inject("hello there");
+        let outcome = i.inject("hello there").await;
         assert!(matches!(outcome, InjectionOutcome::Injected { .. }));
         assert_eq!(i.injected(), vec!["hello there".to_string()]);
     }

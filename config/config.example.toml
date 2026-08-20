@@ -31,6 +31,11 @@ timeout_s = 120.0
 [output]
 # Automatically type transcribed/response text via clipboard paste
 auto_type = true
+# `paste`, `type`, or `off`. A backend without safe clipboard save/restore
+# automatically resolves `paste` to `type`.
+policy = "paste"
+# Maximum Unicode scalar values sent per direct-typing operation.
+type_chunk_chars = 512
 
 [notifications]
 # Desktop notifications via notify-rust (D-Bus, no subprocess)
