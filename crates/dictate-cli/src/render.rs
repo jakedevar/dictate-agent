@@ -177,6 +177,9 @@ pub fn event(event: &Event, json: bool) {
         Event::AudioLevel { rms, .. } => {
             println!("{:<12} {rms:.2}", "level");
         }
+        Event::AudioActivity { activity, .. } => {
+            println!("{:<12} {activity:?}", "audio");
+        }
         Event::Unknown => println!("{:<12} (from a newer daemon)", "unknown"),
     }
 }

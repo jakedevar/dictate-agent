@@ -40,7 +40,8 @@ diagnostics, Rodio earcons, audio configuration, the additive protocol event,
 pipeline media/earcon/mute event publishing, production wiring, and the UDS
 event-stream test.
 
-Deliberately discarded as out of scope: CLI rendering and command changes;
+Deliberately discarded as out of scope: CLI command and formatting changes
+(except the required `audio_activity` renderer arm);
 core cancellation, engine, and session formatting; all history changes;
 unrelated protocol command/envelope/error/frame/record/result and compatibility
 test churn; daemon paths/server/signals churn; and every formatting-only hunk
