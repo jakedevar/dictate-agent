@@ -112,6 +112,11 @@ impl X11Injector {
                 reason: SkipReason::Disabled,
             };
         }
+        if requested == InjectionPolicy::Off {
+            return InjectionOutcome::Skipped {
+                reason: SkipReason::Disabled,
+            };
+        }
         let text = text.trim();
         if text.is_empty() {
             return InjectionOutcome::Skipped {
@@ -261,6 +266,20 @@ mod tests {
             resolve_policy(InjectionPolicy::Paste, &caps),
             InjectionPolicy::Type
         );
+    }
+
+    #[test]
+    fn off_policy_does_not_fall_back_to_the_clipboard() {
+        let config = crate::config::OutputConfig {
+            policy: InjectionPolicy::Off,
+            ..Default::default()
+        };
+        assert!(matches!(
+            X11Injector::new(&config).inject_blocking("do not inject", InjectionPolicy::Off),
+            InjectionOutcome::Skipped {
+                reason: SkipReason::Disabled
+            }
+        ));
     }
 
     #[test]
