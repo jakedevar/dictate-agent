@@ -907,7 +907,7 @@ pub mod mock {
     /// Injector that records what it was asked to type.
     #[derive(Debug)]
     pub struct MockInjector {
-        injected: Mutex<Vec<String>>,
+        injected: Arc<Mutex<Vec<String>>>,
         available: bool,
         availability_gate: Option<Arc<Gate>>,
         gate: Option<Arc<Gate>>,
@@ -917,7 +917,7 @@ pub mod mock {
     impl Default for MockInjector {
         fn default() -> Self {
             Self {
-                injected: Mutex::new(Vec::new()),
+                injected: Arc::new(Mutex::new(Vec::new())),
                 available: true,
                 availability_gate: None,
                 gate: None,
@@ -986,38 +986,48 @@ pub mod mock {
     impl TextInjector for MockInjector {
         fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
             let text = text.to_string();
+            let injected = self.injected.clone();
+            let gate = self.gate.clone();
+            let available = self.available;
+            let fail = self.fail;
             Box::pin(async move {
-            if let Some(gate) = &self.gate {
-                gate.mark_entered();
-                // Deliberately a blocking wait: the production X11 adapter
-                // uses a blocking pool, while this double keeps the same
-                // observable commit-point behavior.
-                while !gate.is_open() {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-            if !self.available {
-                return InjectionOutcome::Unavailable {
-                    backend: "none".into(),
-                    reason: "mock injector is unavailable".into(),
-                };
-            }
-            if self.fail {
-                return InjectionOutcome::Failed {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(gate) = &gate {
+                        gate.mark_entered();
+                        while !gate.is_open() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+                    if !available {
+                        return InjectionOutcome::Unavailable {
+                            backend: "none".into(),
+                            reason: "mock injector is unavailable".into(),
+                        };
+                    }
+                    if fail {
+                        return InjectionOutcome::Failed {
+                            error: dictate_proto::ProtoError::new(
+                                dictate_proto::ErrorCode::InjectionFailed,
+                                "mock injection failure",
+                            ),
+                        };
+                    }
+                    injected
+                        .lock()
+                        .expect("mock injector poisoned")
+                        .push(text.to_string());
+                    InjectionOutcome::Injected {
+                        method: InjectMethod::Paste,
+                        chars: text.trim().chars().count() as u32,
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
                     error: dictate_proto::ProtoError::new(
                         dictate_proto::ErrorCode::InjectionFailed,
-                        "mock injection failure",
+                        format!("mock injection task failed: {e}"),
                     ),
-                };
-            }
-            self.injected
-                .lock()
-                .expect("mock injector poisoned")
-                .push(text.to_string());
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars: text.trim().chars().count() as u32,
-            }
+                })
             })
         }
 
