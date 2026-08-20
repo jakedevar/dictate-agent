@@ -89,7 +89,9 @@ impl Daemon {
         let shutdown = Arc::new(Notify::new());
         let server_shutdown = shutdown.clone();
         let server = tokio::spawn(async move {
-            server.serve(deps, async move { server_shutdown.notified().await }).await;
+            server
+                .serve(deps, async move { server_shutdown.notified().await })
+                .await;
         });
 
         Ok(Self {
@@ -158,7 +160,9 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         notifier,
         media,
         history: history.clone(),
-        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&config.local)),
+        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
+            &config.local,
+        )),
         timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
         local_model: config.local.model.clone(),
     });
@@ -211,8 +215,17 @@ pub async fn run(config: Config) -> Result<()> {
         "dictated ready"
     );
 
+    // Evdev is optional and deliberately degrades to this unchanged signal
+    // path when input-device permissions have not been granted.
+    let hotkey = dictate_hotkey::HotkeyService::start(
+        &config.hotkey,
+        daemon.engine().clone(),
+        signal_options.clone(),
+    );
+
     // The signal shim owns the daemon's lifetime: it returns on SIGINT/SIGTERM.
     signals::listen(daemon.engine().clone(), signal_options).await?;
+    hotkey.shutdown();
     daemon.shutdown().await;
     Ok(())
 }

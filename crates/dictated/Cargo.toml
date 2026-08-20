@@ -16,6 +16,7 @@ anyhow = { workspace = true }
 dictate-core = { workspace = true }
 dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
+dictate-hotkey = { workspace = true }
 dictate-proto = { workspace = true }
 libc = { workspace = true }
 serde_json = { workspace = true }

@@ -22,6 +22,7 @@ pub struct Config {
     pub notifications: NotificationConfig,
     pub history: HistoryConfig,
     pub timer: TimerConfig,
+    pub hotkey: HotkeyConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,6 +45,22 @@ pub struct NotificationConfig {
 pub struct TimerConfig {
     pub sound_enabled: bool,
     pub sound_file: String,
+}
+
+/// Configuration for the optional evdev global-hotkey service.
+///
+/// Key values are Linux input-event key codes (the values named `KEY_*` in
+/// `/usr/include/linux/input-event-codes.h`). Empty chords are disabled.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct HotkeyConfig {
+    pub enabled: bool,
+    pub devices: Vec<String>,
+    pub hold_to_talk: Vec<u16>,
+    pub toggle: Vec<u16>,
+    pub cancel: Vec<u16>,
+    pub release_grace_ms: u64,
+    pub double_tap_ms: u64,
 }
 
 // --- Default implementations ---
@@ -77,6 +94,22 @@ impl Default for TimerConfig {
         Self {
             sound_enabled: true,
             sound_file: "~/.config/dictate-agent/sounds/timer_alarm.wav".into(),
+        }
+    }
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            // Signal/WM keybindings remain first-class. Opt in to evdev only
+            // after selecting a device that this user may read and grab.
+            enabled: false,
+            devices: Vec::new(),
+            hold_to_talk: Vec::new(),
+            toggle: Vec::new(),
+            cancel: Vec::new(),
+            release_grace_ms: 45,
+            double_tap_ms: 320,
         }
     }
 }
