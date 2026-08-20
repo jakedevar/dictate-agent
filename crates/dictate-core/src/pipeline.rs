@@ -42,7 +42,7 @@ use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
 use crate::ports::{
     audio_ms, AudioFeedback, AudioSource, FormatPlan, Formatter, GateDecision, MediaController,
-    Notice, StatusNotifier, SttProvider, TextInjector, VoiceActivityGate,
+    Notice, StatusNotifier, SttProvider, SttRequest, TextInjector, VoiceActivityGate,
 };
 use crate::router::{self, RouteType};
 use crate::session::SessionHandle;
@@ -403,7 +403,10 @@ impl Pipeline {
 
         // --- Speech to text -------------------------------------------------
         let clock = StageClock::start();
-        let transcribed = match self.race(&token, self.stt.transcribe(&samples)).await {
+        let transcribed = match self
+            .race(&token, self.stt.transcribe(&samples, SttRequest::default()))
+            .await
+        {
             Step::Cancelled => {
                 stages.timings.stt = clock.failed("cancelled during transcription");
                 return self

@@ -14,8 +14,8 @@
 //!   blocks until the test says go.
 //!
 //! The traits are deliberately narrow — they describe what the pipeline needs,
-//! not what the underlying crate offers. S12 replaces [`SttProvider`]'s
-//! implementation with its model-manager-backed one, and S13 replaces
+//! not what the underlying crate offers. S12 provides the model-manager-backed
+//! [`SttProvider`] from `dictate-stt`, and S13 replaces
 //! [`TextInjector`] with the per-app policy engine; neither needs to touch the
 //! engine to do it.
 //!
@@ -28,21 +28,15 @@
 //! the capture to a dedicated thread and talks to it over channels, which is
 //! the only arrangement that makes the rest of the daemon `Send`.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
+pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
 use dictate_proto::{InjectMethod, InjectionOutcome};
 pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
 
-/// A boxed future, the object-safe spelling of an `async fn` in a trait.
-///
-/// Written out rather than pulled in via `async_trait` to keep this crate's
-/// dependency budget where it is; the macro would generate exactly this.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ---------------------------------------------------------------------------
 // Audio capture
@@ -243,101 +237,6 @@ impl AudioSource for HostAudioSource {
             .lock()
             .map(|last| *last)
             .unwrap_or_default()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Speech to text
-// ---------------------------------------------------------------------------
-
-/// What the recognizer produced.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Transcription {
-    /// Recognized text, before any correction or formatting.
-    pub text: String,
-    /// Detected or configured language.
-    pub language: Option<String>,
-}
-
-/// Which model is answering, for `Status` and for the latency table S12 fills in.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModelInfo {
-    /// Model name, e.g. `large-v3-turbo`.
-    pub name: String,
-    /// Whether weights are resident and ready.
-    pub loaded: bool,
-    /// `cuda` or `cpu`. Load-bearing: a CPU-fallback latency number is not
-    /// comparable to a CUDA one.
-    pub backend: Option<String>,
-}
-
-/// Speech recognition.
-///
-/// S12 owns the final shape of this trait (model manager, language pinning,
-/// `initial_prompt` bias). It is defined here, minimally, because the daemon
-/// cannot be tested without a seam and S12 has not run yet.
-pub trait SttProvider: Send + Sync + 'static {
-    /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32])
-        -> BoxFuture<'a, Result<Option<Transcription>>>;
-
-    /// Which model this provider is serving.
-    fn model(&self) -> ModelInfo;
-}
-
-/// whisper-rs behind the trait.
-pub struct WhisperStt {
-    inner: dictate_stt::Transcriber,
-    model_name: String,
-    backend: String,
-}
-
-impl WhisperStt {
-    /// Build from whisper config and kick off the background model load.
-    #[must_use]
-    pub fn new(config: &dictate_stt::WhisperConfig) -> Self {
-        let inner = dictate_stt::Transcriber::new(config);
-        inner.load_model_async();
-        Self {
-            inner,
-            // The config names a GGUF path, not a model; the file stem is the
-            // closest thing to a model identity this build has. S12's model
-            // manager replaces this with a real catalog entry.
-            model_name: std::path::Path::new(&config.model_path)
-                .file_stem()
-                .map_or_else(
-                    || config.model_path.clone(),
-                    |s| s.to_string_lossy().into_owned(),
-                ),
-            backend: config.device.clone(),
-        }
-    }
-}
-
-impl SttProvider for WhisperStt {
-    fn transcribe<'a>(
-        &'a self,
-        samples: &'a [f32],
-    ) -> BoxFuture<'a, Result<Option<Transcription>>> {
-        Box::pin(async move {
-            let out = self.inner.transcribe(samples).await?;
-            Ok(out.map(|r| Transcription {
-                text: r.text,
-                language: Some(r.language),
-            }))
-        })
-    }
-
-    fn model(&self) -> ModelInfo {
-        ModelInfo {
-            name: self.model_name.clone(),
-            loaded: self.inner.is_model_loaded(),
-            // Reports the *configured* device. S12 replaces this with the
-            // backend actually selected at load time, which is the number the
-            // latency budget has to be read against — a CPU-fallback p50 is
-            // not comparable to a CUDA one.
-            backend: Some(self.backend.clone()),
-        }
     }
 }
 
@@ -890,6 +789,7 @@ pub mod mock {
         fn transcribe<'a>(
             &'a self,
             _samples: &'a [f32],
+            _request: SttRequest,
         ) -> BoxFuture<'a, Result<Option<Transcription>>> {
             Box::pin(async move {
                 if let Some(gate) = &self.gate {
@@ -905,6 +805,7 @@ pub mod mock {
                 Ok(self.text.clone().map(|text| Transcription {
                     text,
                     language: Some("en".into()),
+                    timings: dictate_stt::SttTimings::default(),
                 }))
             })
         }

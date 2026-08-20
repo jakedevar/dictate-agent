@@ -43,7 +43,11 @@ rodio = "0.20"
 
 # Whisper transcription
 # Build with WHISPER_DONT_GENERATE_BINDINGS=1 to use pre-generated bindings
-whisper-rs = { version = "0.16", features = ["cuda"] }
+whisper-rs = { version = "0.16" }
+
+# Pinned GGUF model pulls and integrity verification.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
 
 # CPU Silero VAD v5. The model is embedded by the crate; it does not require
 # CUDA or an external model download.

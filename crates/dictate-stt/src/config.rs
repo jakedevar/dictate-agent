@@ -4,20 +4,39 @@ use std::path::PathBuf;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct WhisperConfig {
+    /// Catalog model identity. `large-v3-turbo` is the production default;
+    /// `tiny.en` is deliberately small enough for CPU CI fixtures.
+    pub model: String,
     /// Path to GGUF model file, e.g. ~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin
+    ///
+    /// An explicit path opts out of catalog download and checksum management.
+    /// The default remains for compatibility with existing configurations.
     pub model_path: String,
     /// "cuda" or "cpu"
     pub device: String,
     /// Threshold for filtering non-speech (0.0-1.0, higher = stricter)
     pub no_speech_threshold: f32,
+    /// ISO-639-1/Whisper language code, or `"auto"` to ask Whisper to detect it.
+    pub language: String,
+    /// Optional vocabulary bias. S22 will supply per-dictionary terms here or
+    /// per call through [`crate::SttRequest`].
+    pub initial_prompt: Option<String>,
 }
 
 impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
-            model_path: "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin".into(),
-            device: "cuda".into(),
+            model: if cfg!(feature = "cpu-tiny-ci") { "tiny.en" } else { "large-v3-turbo" }.into(),
+            model_path: if cfg!(feature = "cpu-tiny-ci") {
+                "~/.local/share/dictate-agent/models/ggml-tiny.en.bin"
+            } else {
+                "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
+            }
+            .into(),
+            device: if cfg!(feature = "cpu-tiny-ci") { "cpu" } else { "cuda" }.into(),
             no_speech_threshold: 0.6,
+            language: "auto".into(),
+            initial_prompt: None,
         }
     }
 }

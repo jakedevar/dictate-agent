@@ -3,6 +3,14 @@ name = "dictate-stt"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["cuda"]
+# Production default: whisper.cpp CUDA on the RTX 5080.
+cuda = ["whisper-rs/cuda"]
+# CI/runtime fallback: selects tiny.en + CPU defaults. Combine with
+# `--no-default-features` to ensure no CUDA backend is required.
+cpu-tiny-ci = []
+
 [dependencies]
 anyhow = { workspace = true }
 dictate-fmt = { workspace = true }
@@ -10,3 +18,5 @@ serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 whisper-rs = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
