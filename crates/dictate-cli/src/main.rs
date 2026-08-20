@@ -1,9 +1,7 @@
 //! `dictate` — the control client.
 //!
-//! Speaks the protocol and nothing else. It has no pipeline, no state machine,
-//! and deliberately no dependency on `dictate-core`: a keybinding runs this
-//! binary on every dictation, and linking whisper.cpp into it would trade real
-//! startup latency for a little shared code.
+//! Speaks the protocol for daemon control. `model` is deliberately local: it
+//! can establish a verified first-run model before a daemon exists.
 //!
 //! # Toggle is resolved here, and that is a compromise
 //!
@@ -43,6 +41,8 @@ COMMANDS:
     tail                Stream events until interrupted
     history             List past dictations
     dict                Personal dictionary (not implemented until S22)
+    model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
+    model list          List catalog models and local verification state
 
 OPTIONS:
     --limit <N>         history: rows to return (default 20)
@@ -89,6 +89,9 @@ async fn run() -> Result<i32> {
     if let Some(path) = &args.socket {
         // SAFETY: single-threaded runtime, set before any concurrent access.
         unsafe { std::env::set_var(client::SOCKET_ENV, path) };
+    }
+    if command == "model" {
+        return model(&args);
     }
     let mut client = Client::connect_default().await?;
 
@@ -211,6 +214,45 @@ async fn history(client: &mut Client, args: &Args) -> Result<i32> {
     }
 }
 
+/// Manage pinned local Whisper models without requiring a running daemon.
+fn model(args: &Args) -> Result<i32> {
+    let action = args.model_action.as_deref().unwrap_or("list");
+    let config = dictate_stt::WhisperConfig::default();
+    let cache_dir = dictate_stt::config::expand_tilde(&config.model_path)
+        .parent()
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("default Whisper model path has no parent"))?;
+    let manager = dictate_stt::ModelManager::new(cache_dir);
+    match action {
+        "pull" => {
+            let name = args.model_name.as_deref().unwrap_or("large-v3-turbo");
+            let path = manager.ensure(name)?;
+            let spec = dictate_stt::catalog_model(name).expect("ensure validated catalog name");
+            println!("pulled {} ({}, SHA-256 verified)\n{}", spec.id, spec.revision, path.display());
+            Ok(0)
+        }
+        "list" => {
+            for item in manager.list()? {
+                let state = match (item.present, item.verified) {
+                    (false, _) => "missing",
+                    (true, true) => "verified",
+                    (true, false) => "CORRUPT",
+                };
+                println!(
+                    "{:<16} {:<8} {:>10}  {}\n  {}",
+                    item.spec.id,
+                    state,
+                    item.bytes_on_disk.unwrap_or(item.spec.bytes),
+                    item.spec.revision,
+                    item.path.display()
+                );
+            }
+            Ok(0)
+        }
+        other => bail!("model expects `pull [NAME]` or `list`, got '{other}'"),
+    }
+}
+
 /// The dictionary is wired to the protocol but has no backing store until S22.
 ///
 /// The command is sent for real rather than short-circuited locally, so what
@@ -247,6 +289,8 @@ async fn dict(client: &mut Client, args: &Args) -> Result<i32> {
 #[derive(Debug, Default, Clone)]
 struct Args {
     command: Option<String>,
+    model_action: Option<String>,
+    model_name: Option<String>,
     limit: Option<u32>,
     text: Option<String>,
     events: Option<String>,
@@ -287,6 +331,12 @@ impl Args {
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),
                 other if out.command.is_none() => out.command = Some(other.to_string()),
+                other if out.command.as_deref() == Some("model") && out.model_action.is_none() => {
+                    out.model_action = Some(other.to_string())
+                }
+                other if out.command.as_deref() == Some("model") && out.model_name.is_none() => {
+                    out.model_name = Some(other.to_string())
+                }
                 other => bail!("unexpected argument '{other}'"),
             }
         }
@@ -350,6 +400,15 @@ mod tests {
     #[test]
     fn a_second_positional_argument_is_rejected() {
         assert!(parse(&["status", "extra"]).is_err());
+    }
+
+    #[test]
+    fn model_subcommands_accept_an_optional_model_name() {
+        let pull = parse(&["model", "pull", "tiny.en"]).unwrap();
+        assert_eq!(pull.model_action.as_deref(), Some("pull"));
+        assert_eq!(pull.model_name.as_deref(), Some("tiny.en"));
+        let list = parse(&["model", "list"]).unwrap();
+        assert_eq!(list.model_action.as_deref(), Some("list"));
     }
 
     #[test]

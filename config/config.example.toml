@@ -2,9 +2,13 @@
 # Copy to ~/.config/dictate-agent/config.toml
 
 [whisper]
-# Path to GGUF model file
-# Download: wget -O ~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin \
-#   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+# Pinned catalog model. `dictate model pull` downloads with Range-resume and
+# SHA-256 verification. The daemon also pulls the named catalog model at its
+# first load when it is absent.
+model = "large-v3-turbo"
+
+# Explicit GGUF path (kept for offline/custom models). The default is the
+# catalog location for `model`; custom existing paths are not downloaded.
 model_path = "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
 
 # Device: "cuda" for GPU (RTX), "cpu" for CPU-only
@@ -12,6 +16,12 @@ device = "cuda"
 
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
 no_speech_threshold = 0.6
+
+# `auto` detects the spoken language; set e.g. "en", "fr", or "ja" to pin it.
+language = "auto"
+
+# Optional dictionary/jargon bias. S22 will populate this automatically.
+initial_prompt = ""
 
 [grammar]
 # Auto grammar correction (runs between transcription and routing)
