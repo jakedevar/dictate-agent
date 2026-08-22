@@ -339,7 +339,10 @@ impl core::fmt::Display for FrameError {
                 write!(f, "incomplete frame: {needed} more byte(s) needed")
             }
             Self::BadMagic { found } => {
-                write!(f, "bad frame magic: expected {FRAME_MAGIC:?}, found {found:?}")
+                write!(
+                    f,
+                    "bad frame magic: expected {FRAME_MAGIC:?}, found {found:?}"
+                )
             }
             Self::UnsupportedVersion { found } => write!(
                 f,

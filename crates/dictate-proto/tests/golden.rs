@@ -154,9 +154,24 @@ fn golden_envelope_event() {
 
 #[test]
 fn golden_command_lifecycle() {
+    pin("toggle", Command::Toggle, json!({"type": "toggle"}));
     pin("stop", Command::Stop, json!({"type": "stop"}));
     pin("cancel", Command::Cancel, json!({"type": "cancel"}));
-    pin("get_status", Command::GetStatus, json!({"type": "get_status"}));
+    pin(
+        "get_status",
+        Command::GetStatus,
+        json!({"type": "get_status"}),
+    );
+    pin(
+        "get_history_analytics",
+        Command::GetHistoryAnalytics,
+        json!({"type": "get_history_analytics"}),
+    );
+    pin(
+        "purge_history",
+        Command::PurgeHistory,
+        json!({"type": "purge_history"}),
+    );
     pin(
         "unsubscribe",
         Command::Unsubscribe,
@@ -561,6 +576,7 @@ fn golden_result_handshake_capabilities() {
                     "transcribe_upload": true,
                     "host_capture": false,
                     "history_read": false,
+                    "history_write": false,
                     "dictionary_read": false,
                     "dictionary_write": false,
                     "snippets_read": false,
@@ -687,7 +703,10 @@ fn golden_enum_vocabularies() {
         ),
         (
             "SortOrder",
-            SortOrder::known().iter().map(SortOrder::to_string).collect(),
+            SortOrder::known()
+                .iter()
+                .map(SortOrder::to_string)
+                .collect(),
             &["desc", "asc"],
         ),
         (
@@ -711,7 +730,10 @@ fn golden_enum_vocabularies() {
 /// Every error code's wire string, pinned. S33 maps these to HTTP statuses.
 #[test]
 fn golden_error_code_vocabulary() {
-    let actual: Vec<String> = ErrorCode::known().iter().map(ErrorCode::to_string).collect();
+    let actual: Vec<String> = ErrorCode::known()
+        .iter()
+        .map(ErrorCode::to_string)
+        .collect();
     assert_eq!(
         actual,
         [

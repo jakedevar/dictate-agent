@@ -262,7 +262,10 @@ impl PidFile {
 
     /// Release both files, removing each only if we still own it.
     pub fn release(&mut self) {
-        for path in [Some(&self.path), self.legacy.as_ref()].into_iter().flatten() {
+        for path in [Some(&self.path), self.legacy.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             // Re-read before deleting: if another daemon reclaimed the file
             // while we were running, removing it would strand *them*.
             let ours = std::fs::read_to_string(path)
@@ -288,7 +291,8 @@ mod tests {
     use super::*;
 
     fn tempdir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dictated-paths-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dictated-paths-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -302,7 +306,11 @@ mod tests {
 
         assert_ne!(p.pid, python_pid, "PID files must not collide");
         assert_ne!(p.socket, python_pid);
-        assert_ne!(default_history_db(), python_db, "history DBs must not collide");
+        assert_ne!(
+            default_history_db(),
+            python_db,
+            "history DBs must not collide"
+        );
         assert!(p.pid.ends_with("dictated.pid"));
         assert!(p.socket.ends_with("dictated.sock"));
         // The legacy path is *known* to the daemon, but only as something it

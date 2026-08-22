@@ -1,10 +1,41 @@
 # Dictate Agent Configuration (Rust version)
 # Copy to ~/.config/dictate-agent/config.toml
 
+[audio]
+# Exact PipeWire/ALSA input device name. Empty uses the system default.
+input_device = ""
+# Keep audio immediately before the hotkey so the first syllable is not clipped.
+pre_roll_ms = 300
+# Preserve final words after the stop hotkey.
+trailing_capture_ms = 500
+# Reopen the selected/default device on the next start after a hotplug error.
+hotplug_recovery = true
+# Warn after this much effectively silent captured audio (does not fail dictation).
+mic_mute_warning = true
+mic_mute_min_ms = 900
+mic_mute_rms = 0.0015
+
+[audio.gain]
+# Bounded AGC makes whisper-quiet speech more audible to Whisper.
+enabled = true
+target_rms = 0.12
+min_gain = 1.0
+max_gain = 8.0
+silence_rms = 0.002
+
+[audio.earcons]
+# Opt in to short start/stop/cancel/error chimes; existing installs remain silent.
+enabled = false
+volume = 0.18
+
 [whisper]
-# Path to GGUF model file
-# Download: wget -O ~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin \
-#   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+# Pinned catalog model. `dictate model pull` downloads with Range-resume and
+# SHA-256 verification. The daemon also pulls the named catalog model at its
+# first load when it is absent.
+model = "large-v3-turbo"
+
+# Explicit GGUF path (kept for offline/custom models). The default is the
+# catalog location for `model`; custom existing paths are not downloaded.
 model_path = "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
 
 # Device: "cuda" for GPU (RTX), "cpu" for CPU-only
@@ -12,6 +43,23 @@ device = "cuda"
 
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
 no_speech_threshold = 0.6
+
+[vad]
+# CPU Silero VAD: skip STT for silence and trim silence around speech.
+enabled = true
+# Higher values are stricter. Tune against the bundled fixtures and real mic.
+speech_threshold = 0.5
+min_speech_ms = 120
+speech_pad_ms = 100
+# `one_shot` and wake-word sessions end after this post-speech silence.
+trailing_silence_ms = 900
+poll_interval_ms = 32
+
+# `auto` detects the spoken language; set e.g. "en", "fr", or "ja" to pin it.
+language = "auto"
+
+# Optional dictionary/jargon bias. S22 will populate this automatically.
+initial_prompt = ""
 
 [grammar]
 # Auto grammar correction (runs between transcription and routing)
@@ -31,6 +79,11 @@ timeout_s = 120.0
 [output]
 # Automatically type transcribed/response text via clipboard paste
 auto_type = true
+# `paste`, `type`, or `off`. A backend without safe clipboard save/restore
+# automatically resolves `paste` to `type`.
+policy = "paste"
+# Maximum Unicode scalar values sent per direct-typing operation.
+type_chunk_chars = 512
 
 [notifications]
 # Desktop notifications via notify-rust (D-Bus, no subprocess)
@@ -40,12 +93,43 @@ timeout_ms = 1250
 [history]
 # Interaction history logging to SQLite
 enabled = true
-# Database location (empty = ~/.local/share/dictate-agent/history.db)
+# Database location (empty = the daemon's distinct XDG data database)
 db_path = ""
 # Truncate stored responses beyond this length (characters)
 max_response_length = 10000
+# Do not persist any dictation. `SessionOptions.privacy` enables the same
+# guarantee for one request without changing this global setting.
+privacy_mode = false
+# Remove rows older than this many UTC days. Omit to retain indefinitely.
+# retention_days = 90
+# One-time, read-only import from ~/.local/share/dictate-agent/history.db.
+# The Python database is never modified and each source is imported once.
+import_python_db = false
 
 [timer]
 # Timer alarm configuration
 sound_enabled = true
 sound_file = "~/.config/dictate-agent/sounds/timer_alarm.wav"
+
+# Optional global evdev hotkeys. The existing WM keybinds and
+# scripts/dictate-toggle remain first-class whether this is enabled or not.
+# Enable only after the daemon user can read the selected /dev/input/event*
+# device (normally: `sudo usermod -aG input $USER`, then log out and back in).
+# Each chord is a list of Linux KEY_* numeric values from
+# /usr/include/linux/input-event-codes.h. Devices are observed passively, so
+# ordinary keyboard input continues reaching X11/Wayland applications.
+[hotkey]
+enabled = false
+devices = ["/dev/input/by-id/replace-with-your-keyboard-event-kbd"]
+# KEY_SPACE: hold starts recording; release stops after the double-tap window.
+hold_to_talk = [57]
+# Example independent toggle key (KEY_F12). Empty chords disable a mode.
+toggle = [88]
+# Static cancel chord, available throughout a session (KEY_LEFTCTRL + KEY_LEFTALT).
+cancel = [29, 56]
+# Absorbs hardware/X11 auto-repeat key-up bursts before ending a hold.
+release_grace_ms = 45
+# A second hold-key press inside this window locks hands-free mode. Because the
+# daemon must know whether a second press is coming, a normal release is
+# deferred for this long (or release_grace_ms, whichever is greater).
+double_tap_ms = 320

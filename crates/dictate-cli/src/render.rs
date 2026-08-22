@@ -10,8 +10,8 @@
 //!   said, because those are different facts.
 
 use dictate_proto::{
-    CommandResult, Event, HistoryPage, InjectionOutcome, StageTiming, StageTimings, Status,
-    Transcript,
+    CommandResult, Event, HistoryAnalytics, HistoryPage, InjectionOutcome, StageTiming,
+    StageTimings, Status, Transcript,
 };
 
 /// Print a command result.
@@ -33,6 +33,7 @@ pub fn result(result: &CommandResult, json: bool) {
         }
         CommandResult::Status(status) => print_status(status),
         CommandResult::History(page) => print_history(page),
+        CommandResult::HistoryAnalytics(analytics) => print_history_analytics(analytics),
         CommandResult::Transcript(t) => print_transcript(t),
         CommandResult::Handshake(h) => {
             println!("{} {}", h.server.name, h.server.version);
@@ -48,6 +49,21 @@ pub fn result(result: &CommandResult, json: bool) {
         // A result this build does not model. Degrade rather than fail — the
         // daemon may simply be newer than the CLI.
         other => println!("{}", other.name()),
+    }
+}
+
+fn print_history_analytics(analytics: &HistoryAnalytics) {
+    match analytics.overall_wpm {
+        Some(wpm) => println!("wpm      {wpm:.1}"),
+        None => println!("wpm      —"),
+    }
+    println!("today    {} words", analytics.words_today);
+    println!(
+        "streak   {} days (best {})",
+        analytics.current_streak_days, analytics.longest_streak_days
+    );
+    for day in &analytics.words_by_day {
+        println!("{:<10} {}", day.day, day.words);
     }
 }
 
@@ -99,7 +115,14 @@ fn print_status(status: &Status) {
             on.push(name);
         }
     }
-    println!("allows   {}", if on.is_empty() { "—".into() } else { on.join(" ") });
+    println!(
+        "allows   {}",
+        if on.is_empty() {
+            "—".into()
+        } else {
+            on.join(" ")
+        }
+    );
     if f.headless {
         println!("         headless — text injection is not possible here");
     }
@@ -127,12 +150,7 @@ fn print_history(page: &HistoryPage) {
             Some("") => "(silence)".to_string(),
             Some(t) => truncate(t, 68),
         };
-        println!(
-            "{:>6}  {:<8} {}",
-            item.id,
-            item.route.as_str(),
-            text
-        );
+        println!("{:>6}  {:<8} {}", item.id, item.route.as_str(), text);
         if let Some(err) = &item.error {
             println!("        ! {}", err.message);
         }
@@ -164,7 +182,9 @@ pub fn event(event: &Event, json: bool) {
                 timings(&transcript.timings)
             );
         }
-        Event::Partial { hypothesis, seq, .. } => {
+        Event::Partial {
+            hypothesis, seq, ..
+        } => {
             // Never injectable, and labelled so nobody is tempted.
             println!("{:<12} [{seq}] {}", "partial?", hypothesis.display_text());
         }
@@ -172,10 +192,18 @@ pub fn event(event: &Event, json: bool) {
             println!("{:<12} {}", "injection", injection(outcome));
         }
         Event::Error { error, .. } => {
-            println!("{:<12} {} ({})", "error", error.message, error.code.as_str());
+            println!(
+                "{:<12} {} ({})",
+                "error",
+                error.message,
+                error.code.as_str()
+            );
         }
         Event::AudioLevel { rms, .. } => {
             println!("{:<12} {rms:.2}", "level");
+        }
+        Event::AudioActivity { activity, .. } => {
+            println!("{:<12} {activity:?}", "audio");
         }
         Event::Unknown => println!("{:<12} (from a newer daemon)", "unknown"),
     }

@@ -154,6 +154,16 @@ impl Notifier {
         self.notify("Cancelled", "Recording discarded", "dialog-cancel", None);
     }
 
+    /// A likely muted microphone is actionable but does not make the session fail.
+    pub fn microphone_muted(&self) {
+        self.notify(
+            "Microphone may be muted",
+            "Capture was nearly silent; check the microphone mute switch.",
+            "microphone-sensitivity-muted",
+            Some(5000),
+        );
+    }
+
     /// Timer successfully set — 1.25s auto-dismiss.
     pub fn timer_set(&self, message: &str) {
         self.notify("Timer Set", message, "alarm-symbolic", None);

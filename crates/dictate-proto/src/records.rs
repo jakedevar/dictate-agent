@@ -274,6 +274,32 @@ pub struct HistoryPage {
     pub next_offset: Option<u32>,
 }
 
+/// Aggregate history metrics for the CLI and dashboard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryAnalytics {
+    /// Weighted words per minute across completed dictations with audio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overall_wpm: Option<f64>,
+    /// Words dictated since the start of the current UTC day.
+    pub words_today: u64,
+    /// Completed words grouped by UTC day, oldest first.
+    #[serde(default)]
+    pub words_by_day: Vec<DailyWords>,
+    /// Consecutive active days ending today.
+    pub current_streak_days: u32,
+    /// Longest consecutive active-day run in retained history.
+    pub longest_streak_days: u32,
+}
+
+/// One UTC day's dictated-word total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DailyWords {
+    /// ISO-8601 calendar date (`YYYY-MM-DD`).
+    pub day: String,
+    /// Words completed that day.
+    pub words: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,16 +375,15 @@ mod tests {
     fn config_entry_carries_arbitrary_values() {
         let e = ConfigEntry::new("whisper.model", serde_json::json!("large-v3-turbo"));
         let json = serde_json::to_string(&e).unwrap();
-        assert_eq!(
-            json,
-            r#"{"path":"whisper.model","value":"large-v3-turbo"}"#
-        );
+        assert_eq!(json, r#"{"path":"whisper.model","value":"large-v3-turbo"}"#);
 
         // A nested table is equally expressible, so a future config shape needs
         // no protocol change.
         let nested = ConfigEntry::new("vad", serde_json::json!({"threshold": 0.5}));
-        assert_eq!(serde_json::from_str::<ConfigEntry>(
-            &serde_json::to_string(&nested).unwrap()).unwrap(), nested);
+        assert_eq!(
+            serde_json::from_str::<ConfigEntry>(&serde_json::to_string(&nested).unwrap()).unwrap(),
+            nested
+        );
     }
 
     #[test]

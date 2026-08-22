@@ -31,8 +31,8 @@ use anyhow::{Context, Result};
 use dictate_core::config::Config;
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    DesktopNotifier, GrammarFormatter, HostAudioSource, HostInjector, PlayerctlMedia, TextInjector,
-    WhisperStt,
+    DesktopNotifier, GrammarFormatter, HostAudioSource, HostEarcons, HostInjector, PlayerctlMedia,
+    TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
 use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
@@ -89,7 +89,9 @@ impl Daemon {
         let shutdown = Arc::new(Notify::new());
         let server_shutdown = shutdown.clone();
         let server = tokio::spawn(async move {
-            server.serve(deps, async move { server_shutdown.notified().await }).await;
+            server
+                .serve(deps, async move { server_shutdown.notified().await })
+                .await;
         });
 
         Ok(Self {
@@ -132,13 +134,19 @@ impl Daemon {
 ///
 /// If the audio device or the history database cannot be opened.
 pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<HistoryStore>>, bool)> {
-    let audio = Arc::new(HostAudioSource::new().context("opening the audio capture device")?);
+    let audio = Arc::new(
+        HostAudioSource::new(config.audio.clone()).context("opening the audio capture device")?,
+    );
     let stt = Arc::new(WhisperStt::new(&config.whisper));
+    let vad = Arc::new(
+        dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
+    );
     let formatter = Arc::new(GrammarFormatter::new(&config.grammar));
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
     let notifier = Arc::new(DesktopNotifier::new(&config.notifications));
     let media = Arc::new(PlayerctlMedia);
+    let earcons = Arc::new(HostEarcons::new(config.audio.earcons.clone()));
 
     // Default the history database to this daemon's own path rather than the
     // Python daemon's, unless the user has named one explicitly.
@@ -153,12 +161,16 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     let pipeline = Arc::new(Pipeline {
         audio,
         stt,
+        vad,
         formatter,
         injector,
         notifier,
         media,
+        earcons,
         history: history.clone(),
-        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&config.local)),
+        local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
+            &config.local,
+        )),
         timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
         local_model: config.local.model.clone(),
     });
@@ -196,12 +208,17 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
 
-    let capabilities = local_capabilities(injection_available);
+    let mut capabilities = local_capabilities(injection_available);
+    capabilities.features.privacy_mode = history
+        .lock()
+        .map(|store| store.is_privacy_mode())
+        .unwrap_or(false);
     let signal_options = ResolvedOptions {
         inject: capabilities.features.text_injection,
         forced_route: None,
         allowed_routes: capabilities.routes.clone(),
         privacy: false,
+        app: None,
     };
 
     let daemon = Daemon::start(pipeline, history, &runtime, capabilities, Some(pid)).await?;
@@ -211,8 +228,17 @@ pub async fn run(config: Config) -> Result<()> {
         "dictated ready"
     );
 
+    // Evdev is optional and deliberately degrades to this unchanged signal
+    // path when input-device permissions have not been granted.
+    let hotkey = dictate_hotkey::HotkeyService::start(
+        &config.hotkey,
+        daemon.engine().clone(),
+        signal_options.clone(),
+    );
+
     // The signal shim owns the daemon's lifetime: it returns on SIGINT/SIGTERM.
     signals::listen(daemon.engine().clone(), signal_options).await?;
+    hotkey.shutdown();
     daemon.shutdown().await;
     Ok(())
 }

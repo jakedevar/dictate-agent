@@ -36,9 +36,14 @@ const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 500;
 
 /// Columns selected, in the order [`map_row`] reads them.
-const COLUMNS: &str = "id, session_id, timestamp, corrected_transcription, raw_transcription, \
-                       route_type, transcription_duration_s, grammar_duration_s, grammar_error, \
-                       total_duration_s, audio_duration_s, error_summary";
+const COLUMNS: &str = "interactions.id, interactions.session_id, interactions.timestamp, \
+                       interactions.corrected_transcription, interactions.raw_transcription, \
+                       interactions.route_type, interactions.transcription_duration_s, \
+                       interactions.grammar_duration_s, interactions.grammar_error, \
+                       interactions.total_duration_s, interactions.audio_duration_s, interactions.error_summary, \
+                       interactions.capture_duration_ms, interactions.vad_duration_ms, interactions.stt_duration_ms, \
+                       interactions.fmt_rules_duration_ms, interactions.fmt_llm_duration_ms, \
+                       interactions.inject_duration_ms, interactions.app_context, interactions.word_count";
 
 /// Run a history query.
 ///
@@ -60,15 +65,14 @@ pub fn query(conn: &Connection, q: &HistoryQuery) -> Result<HistoryPage> {
 
     let mut where_clauses: Vec<String> = Vec::new();
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut from = "interactions";
 
-    if let Some(text) = &q.text {
-        // Parameterized: the pattern is a bound value, never concatenated into
-        // the statement.
-        where_clauses
-            .push("(corrected_transcription LIKE ?  OR raw_transcription LIKE ?)".into());
-        let pattern = format!("%{text}%");
-        binds.push(Box::new(pattern.clone()));
-        binds.push(Box::new(pattern));
+    if let Some(text) = q.text.as_deref().filter(|text| !text.trim().is_empty()) {
+        // Quoting each word makes this a literal user-facing search rather
+        // than exposing FTS grammar through the CLI/API.
+        from = "interactions JOIN interactions_fts ON interactions_fts.rowid = interactions.id";
+        where_clauses.push("interactions_fts MATCH ?".into());
+        binds.push(Box::new(fts_literal_query(text)));
     }
     if let Some(route) = &q.route {
         where_clauses.push("route_type = ?".into());
@@ -100,11 +104,12 @@ pub fn query(conn: &Connection, q: &HistoryQuery) -> Result<HistoryPage> {
     };
 
     let total: u64 = {
-        let sql = format!("SELECT COUNT(*) FROM interactions{where_sql}");
+        let sql = format!("SELECT COUNT(*) FROM {from}{where_sql}");
         let mut stmt = conn.prepare(&sql)?;
-        stmt.query_row(rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())), |r| {
-            r.get::<_, i64>(0)
-        })? as u64
+        stmt.query_row(
+            rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref())),
+            |r| r.get::<_, i64>(0),
+        )? as u64
     };
 
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
@@ -115,7 +120,7 @@ pub fn query(conn: &Connection, q: &HistoryQuery) -> Result<HistoryPage> {
     };
 
     let sql = format!(
-        "SELECT {COLUMNS} FROM interactions{where_sql} ORDER BY id {order} LIMIT ? OFFSET ?"
+        "SELECT {COLUMNS} FROM {from}{where_sql} ORDER BY interactions.id {order} LIMIT ? OFFSET ?"
     );
     let mut stmt = conn.prepare(&sql)?;
     binds.push(Box::new(limit));
@@ -151,30 +156,34 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryEntry> {
     let total_s: Option<f64> = row.get(9)?;
     let audio_s: Option<f64> = row.get(10)?;
     let error_summary: Option<String> = row.get(11)?;
+    let capture_ms: Option<f64> = row.get(12)?;
+    let vad_ms: Option<f64> = row.get(13)?;
+    let stt_ms: Option<f64> = row.get(14)?;
+    let fmt_rules_ms: Option<f64> = row.get(15)?;
+    let fmt_llm_ms: Option<f64> = row.get(16)?;
+    let inject_ms: Option<f64> = row.get(17)?;
+    let app: Option<String> = row.get(18)?;
+    let stored_word_count: Option<u32> = row.get(19)?;
 
     let timings = StageTimings {
-        capture: StageTiming::NotReported,
-        vad: StageTiming::NotReported,
-        stt: stt_s.map_or(StageTiming::NotReported, |s| StageTiming::ran(s * 1000.0)),
-        fmt_rules: StageTiming::NotReported,
+        capture: timing(capture_ms),
+        vad: timing(vad_ms),
+        stt: timing(stt_ms.or_else(|| stt_s.map(|s| s * 1000.0))),
+        fmt_rules: timing(fmt_rules_ms),
         // A recorded grammar error means the pass burned its time and then
         // fell back; that cost belongs in the budget, so it is `Failed`.
-        fmt_llm: match (fmt_s, fmt_error) {
-            (Some(s), Some(e)) => StageTiming::Failed {
-                ms: s * 1000.0,
-                error: Some(e),
-            },
-            (Some(s), None) => StageTiming::ran(s * 1000.0),
+        fmt_llm: match (fmt_llm_ms.or_else(|| fmt_s.map(|s| s * 1000.0)), fmt_error) {
+            (Some(ms), Some(e)) => StageTiming::Failed { ms, error: Some(e) },
+            (Some(ms), None) => StageTiming::ran(ms),
             (None, _) => StageTiming::NotReported,
         },
-        inject: StageTiming::NotReported,
+        inject: timing(inject_ms),
         total_ms: total_s.map(|s| s * 1000.0),
         audio_ms: audio_s.map(|s| s * 1000.0),
     };
 
-    let word_count = text
-        .as_ref()
-        .map(|t| t.split_whitespace().count() as u32);
+    let word_count =
+        stored_word_count.or_else(|| text.as_ref().map(|t| t.split_whitespace().count() as u32));
     let wpm = match (&word_count, audio_s) {
         (Some(w), Some(secs)) if secs > 0.0 => Some(f64::from(*w) / (secs / 60.0)),
         _ => None,
@@ -191,8 +200,20 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<HistoryEntry> {
         word_count,
         wpm,
         error: error_summary.map(|m| ProtoError::new(ErrorCode::Internal, m)),
-        app: None,
+        app,
     })
+}
+
+fn timing(ms: Option<f64>) -> StageTiming {
+    ms.map_or(StageTiming::NotReported, StageTiming::ran)
+}
+
+fn fts_literal_query(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -225,15 +246,16 @@ mod tests {
 
     fn store_with(rows: Vec<Interaction>) -> HistoryStore {
         let dir = std::env::temp_dir().join(format!(
-            "dictate-history-query-{}-{:p}",
+            "dictate-history-query-{}-{}",
             std::process::id(),
-            &rows
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let store = HistoryStore::new(&HistoryConfig {
             enabled: true,
             db_path: dir.join("h.db").to_string_lossy().into_owned(),
             max_response_length: 10_000,
+            ..Default::default()
         })
         .unwrap();
         for row in &rows {
@@ -343,7 +365,11 @@ mod tests {
 
     #[test]
     fn paging_reports_a_next_offset_only_while_more_remain() {
-        let store = store_with((0..5).map(|i| interaction(&format!("row {i}"), "type")).collect());
+        let store = store_with(
+            (0..5)
+                .map(|i| interaction(&format!("row {i}"), "type"))
+                .collect(),
+        );
         let page = query(
             store.connection(),
             &HistoryQuery {

@@ -1,10 +1,12 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+pub use dictate_audio::AudioConfig;
 pub use dictate_fmt::GrammarConfig;
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
 pub use dictate_stt::WhisperConfig;
+pub use dictate_vad::VadConfig;
 
 // XDG paths
 const CONFIG_DIR: &str = "dictate-agent";
@@ -15,13 +17,16 @@ const MEDIA_STATE_FILE: &str = "media_was_playing";
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
+    pub audio: AudioConfig,
     pub whisper: WhisperConfig,
+    pub vad: VadConfig,
     pub grammar: GrammarConfig,
     pub local: LocalConfig,
     pub output: OutputConfig,
     pub notifications: NotificationConfig,
     pub history: HistoryConfig,
     pub timer: TimerConfig,
+    pub hotkey: HotkeyConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,6 +49,22 @@ pub struct NotificationConfig {
 pub struct TimerConfig {
     pub sound_enabled: bool,
     pub sound_file: String,
+}
+
+/// Configuration for the optional evdev global-hotkey service.
+///
+/// Key values are Linux input-event key codes (the values named `KEY_*` in
+/// `/usr/include/linux/input-event-codes.h`). Empty chords are disabled.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct HotkeyConfig {
+    pub enabled: bool,
+    pub devices: Vec<String>,
+    pub hold_to_talk: Vec<u16>,
+    pub toggle: Vec<u16>,
+    pub cancel: Vec<u16>,
+    pub release_grace_ms: u64,
+    pub double_tap_ms: u64,
 }
 
 // --- Default implementations ---
@@ -77,6 +98,22 @@ impl Default for TimerConfig {
         Self {
             sound_enabled: true,
             sound_file: "~/.config/dictate-agent/sounds/timer_alarm.wav".into(),
+        }
+    }
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            // Signal/WM keybindings remain first-class. Opt in to evdev only
+            // after selecting a device that this user may read.
+            enabled: false,
+            devices: Vec::new(),
+            hold_to_talk: Vec::new(),
+            toggle: Vec::new(),
+            cancel: Vec::new(),
+            release_grace_ms: 45,
+            double_tap_ms: 320,
         }
     }
 }
@@ -177,7 +214,14 @@ mod tests {
         assert!(config.history.enabled);
         assert!(config.history.db_path.is_empty());
         assert_eq!(config.history.max_response_length, 10000);
+        assert!(!config.history.privacy_mode);
+        assert_eq!(config.history.retention_days, None);
+        assert!(!config.history.import_python_db);
         assert!(config.timer.sound_enabled);
+        assert!(!config.hotkey.enabled);
+        assert!(config.hotkey.devices.is_empty());
+        assert_eq!(config.hotkey.release_grace_ms, 45);
+        assert_eq!(config.hotkey.double_tap_ms, 320);
     }
 
     #[test]
@@ -187,6 +231,10 @@ mod tests {
 model_path = "/tmp/test-model.bin"
 device = "cpu"
 no_speech_threshold = 0.8
+
+[vad]
+speech_threshold = 0.7
+trailing_silence_ms = 1200
 
 [grammar]
 enabled = false
@@ -211,23 +259,47 @@ timeout_ms = 5000
 enabled = false
 db_path = "/tmp/test.db"
 max_response_length = 500
+privacy_mode = true
+retention_days = 30
+import_python_db = true
 
 [timer]
 sound_enabled = false
 sound_file = "/tmp/alarm.wav"
+
+[hotkey]
+enabled = true
+devices = ["/dev/input/event7"]
+hold_to_talk = [57]
+toggle = [88]
+cancel = [29, 56]
+release_grace_ms = 50
+double_tap_ms = 250
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.whisper.model_path, "/tmp/test-model.bin");
         assert_eq!(config.whisper.device, "cpu");
         assert!((config.whisper.no_speech_threshold - 0.8).abs() < f32::EPSILON);
+        assert!((config.vad.speech_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(config.vad.trailing_silence_ms, 1200);
         assert!(!config.grammar.enabled);
         assert_eq!(config.grammar.model, "test-model");
         assert_eq!(config.grammar.min_words, 5);
         assert!(!config.output.auto_type);
         assert!(!config.notifications.enabled);
+        assert!(config.hotkey.enabled);
+        assert_eq!(config.hotkey.devices, ["/dev/input/event7"]);
+        assert_eq!(config.hotkey.hold_to_talk, [57]);
+        assert_eq!(config.hotkey.toggle, [88]);
+        assert_eq!(config.hotkey.cancel, [29, 56]);
+        assert_eq!(config.hotkey.release_grace_ms, 50);
+        assert_eq!(config.hotkey.double_tap_ms, 250);
         assert_eq!(config.notifications.timeout_ms, 5000);
         assert!(!config.history.enabled);
         assert_eq!(config.history.db_path, "/tmp/test.db");
+        assert!(config.history.privacy_mode);
+        assert_eq!(config.history.retention_days, Some(30));
+        assert!(config.history.import_python_db);
         assert!(!config.timer.sound_enabled);
     }
 

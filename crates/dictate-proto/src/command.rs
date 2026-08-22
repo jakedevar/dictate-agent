@@ -39,6 +39,12 @@ pub enum Command {
         options: Option<SessionOptions>,
     },
 
+    /// Atomically start a toggle-mode session when idle, or stop the active
+    /// recording session. The daemon resolves the branch in its single-writer
+    /// engine, so clients do not need a racy `get_status` followed by
+    /// `start_dictation` or `stop` sequence.
+    Toggle,
+
     /// Stop capturing and run the rest of the pipeline.
     Stop,
 
@@ -131,6 +137,15 @@ pub enum Command {
         query: HistoryQuery,
     },
 
+    /// Read WPM, daily-word, and streak aggregates for retained history.
+    GetHistoryAnalytics,
+
+    /// Permanently delete all locally stored interaction history.
+    ///
+    /// Deliberately has no filters: a partial delete is too easy to mistake
+    /// for a privacy guarantee. Retention handles selective expiry.
+    PurgeHistory,
+
     /// Transcribe caller-supplied audio through the full pipeline.
     ///
     /// The thin-client entry point. Backs `POST /v1/transcribe`, where the
@@ -176,6 +191,7 @@ impl Command {
         match self {
             Self::Handshake(_) => "handshake",
             Self::StartDictation { .. } => "start_dictation",
+            Self::Toggle => "toggle",
             Self::Stop => "stop",
             Self::Cancel => "cancel",
             Self::GetStatus => "get_status",
@@ -190,6 +206,8 @@ impl Command {
             Self::UpsertSnippet { .. } => "upsert_snippet",
             Self::DeleteSnippet { .. } => "delete_snippet",
             Self::QueryHistory { .. } => "query_history",
+            Self::GetHistoryAnalytics => "get_history_analytics",
+            Self::PurgeHistory => "purge_history",
             Self::TranscribeAudio { .. } => "transcribe_audio",
             Self::BeginAudioStream { .. } => "begin_audio_stream",
             Self::EndAudioStream { .. } => "end_audio_stream",
@@ -209,6 +227,7 @@ impl Command {
                 | Self::DeleteDictionaryEntry { .. }
                 | Self::UpsertSnippet { .. }
                 | Self::DeleteSnippet { .. }
+                | Self::PurgeHistory
         )
     }
 
@@ -233,7 +252,7 @@ impl Command {
             }
 
             // Driving the host's microphone.
-            Self::StartDictation { .. } => features.host_capture,
+            Self::StartDictation { .. } | Self::Toggle => features.host_capture,
 
             // Stop and Cancel apply to whatever session this connection owns —
             // including one it started by uploading audio — so they are gated
@@ -257,6 +276,8 @@ impl Command {
             Self::UpsertSnippet { .. } | Self::DeleteSnippet { .. } => features.snippets_write,
 
             Self::QueryHistory { .. } => features.history_read,
+            Self::GetHistoryAnalytics => features.history_read,
+            Self::PurgeHistory => features.history_write,
         }
     }
 
@@ -418,6 +439,7 @@ mod tests {
             options: None
         }
         .is_permitted(&remote));
+        assert!(!Command::Toggle.is_permitted(&remote));
         // ...rewrite the host's config,
         assert!(!Command::SetConfig { entries: vec![] }.is_permitted(&remote));
         // ...or read the host's dictation history.
@@ -435,6 +457,7 @@ mod tests {
                 mode: DictationMode::PushToTalk,
                 options: None,
             },
+            Command::Toggle,
             Command::Stop,
             Command::Cancel,
             Command::GetStatus,
@@ -460,11 +483,10 @@ mod tests {
         assert!(Command::GetStatus.is_permitted(&none));
         assert!(Command::Subscribe { events: vec![] }.is_permitted(&none));
         assert!(Command::Unsubscribe.is_permitted(&none));
-        assert!(Command::Handshake(Hello::new(ClientInfo::new(
-            "x",
-            ClientKind::Remote
-        )))
-        .is_permitted(&none));
+        assert!(
+            Command::Handshake(Hello::new(ClientInfo::new("x", ClientKind::Remote)))
+                .is_permitted(&none)
+        );
     }
 
     #[test]
@@ -483,6 +505,7 @@ mod tests {
     #[test]
     fn every_command_name_is_its_wire_tag() {
         let samples = [
+            Command::Toggle,
             Command::Stop,
             Command::Cancel,
             Command::GetStatus,

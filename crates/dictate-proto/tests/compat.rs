@@ -46,10 +46,9 @@ fn newer_peer_may_add_fields_to_any_existing_message() {
         Event::StateChanged { ref to, .. } if *to == State::Recording
     ));
 
-    let r: CommandResult = serde_json::from_str(
-        r#"{"type":"session_started","session_id":"s","queue_position":0}"#,
-    )
-    .unwrap();
+    let r: CommandResult =
+        serde_json::from_str(r#"{"type":"session_started","session_id":"s","queue_position":0}"#)
+            .unwrap();
     assert_eq!(
         r,
         CommandResult::SessionStarted {
@@ -132,7 +131,10 @@ fn an_unknown_error_code_is_still_actionable() {
     // A client can still show the message, log the code, and pick a status.
     assert_eq!(e.to_string(), "[gpu_fell_over] oh no");
     assert_eq!(e.code.http_status(), 500);
-    assert!(!e.is_retryable(), "unknown codes must not be retried blindly");
+    assert!(
+        !e.is_retryable(),
+        "unknown codes must not be retried blindly"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -146,13 +148,13 @@ fn unknown_degrades_on_the_event_path_and_fails_on_the_command_path() {
     let unknown_type = r#"{"type":"summon_kraken","tentacles":8}"#;
 
     // Event path: a client must survive a newer daemon.
-    let e: Event = serde_json::from_str(unknown_type)
-        .expect("an unknown event must degrade, not fail");
+    let e: Event =
+        serde_json::from_str(unknown_type).expect("an unknown event must degrade, not fail");
     assert_eq!(e, Event::Unknown);
 
     // Result path: likewise.
-    let r: CommandResult = serde_json::from_str(unknown_type)
-        .expect("an unknown result must degrade, not fail");
+    let r: CommandResult =
+        serde_json::from_str(unknown_type).expect("an unknown result must degrade, not fail");
     assert_eq!(r, CommandResult::Unknown);
 
     // Command path: a server must NOT silently drop a request, because the
@@ -172,10 +174,8 @@ fn unknown_degrades_on_the_event_path_and_fails_on_the_command_path() {
 /// server can turn into a response, not as a dropped message.
 #[test]
 fn an_unknown_command_in_an_envelope_produces_a_reportable_error() {
-    let e = Message::parse(
-        r#"{"kind":"request","v":1,"id":7,"command":{"type":"summon_kraken"}}"#,
-    )
-    .unwrap_err();
+    let e = Message::parse(r#"{"kind":"request","v":1,"id":7,"command":{"type":"summon_kraken"}}"#)
+        .unwrap_err();
     assert_eq!(e.code, ErrorCode::MalformedRequest);
     // The server still knows the id from the raw JSON and can answer id 7.
     let raw: serde_json::Value = serde_json::from_str(
@@ -214,7 +214,10 @@ fn omitted_optional_fields_default_to_the_previous_behavior() {
     // Session options omit rather than assert: None means "server default",
     // never "off".
     let o: SessionOptions = serde_json::from_str("{}").unwrap();
-    assert_eq!(o.format_llm, None, "None must mean 'use the configured default'");
+    assert_eq!(
+        o.format_llm, None,
+        "None must mean 'use the configured default'"
+    );
     assert_eq!(o.inject, None);
 }
 
@@ -229,10 +232,9 @@ fn omitted_capabilities_fail_safe_to_denied() {
 
     // A newer daemon advertising unknown capabilities must not accidentally
     // grant the ones this build checks.
-    let caps: Capabilities = serde_json::from_str(
-        r#"{"features":{"mind_reading":true,"quantum_entanglement":true}}"#,
-    )
-    .unwrap();
+    let caps: Capabilities =
+        serde_json::from_str(r#"{"features":{"mind_reading":true,"quantum_entanglement":true}}"#)
+            .unwrap();
     assert!(!caps.features.text_injection);
     assert!(
         !Command::SetConfig { entries: vec![] }.is_permitted(&caps.features),
@@ -256,8 +258,8 @@ fn omitted_timings_read_as_unreported_not_as_zero() {
 
 #[test]
 fn a_newer_client_is_refused_with_a_specific_diagnosable_code() {
-    let e = Message::parse(r#"{"kind":"request","v":2,"id":1,"command":{"type":"stop"}}"#)
-        .unwrap_err();
+    let e =
+        Message::parse(r#"{"kind":"request","v":2,"id":1,"command":{"type":"stop"}}"#).unwrap_err();
     assert_eq!(e.code, ErrorCode::UnsupportedVersion);
     assert_eq!(e.code.http_status(), 501);
     assert!(

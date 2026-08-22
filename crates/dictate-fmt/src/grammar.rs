@@ -93,7 +93,7 @@ impl GrammarCorrector {
         use ollama_rs::models::ModelOptions;
         use ollama_rs::Ollama;
 
-        let ollama = Ollama::new(&self.host, self.port);
+        let ollama = Ollama::builder().host(&self.host).port(self.port).build();
         let prompt = GRAMMAR_PROMPT.replace("{text}", text);
 
         let request = GenerationRequest::new(self.model.clone(), prompt)

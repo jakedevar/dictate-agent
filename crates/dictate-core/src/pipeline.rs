@@ -32,8 +32,8 @@ use std::time::Instant;
 use dictate_history::history::Interaction;
 use dictate_history::HistoryStore;
 use dictate_proto::{
-    ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route, SkipReason, StageTiming,
-    StageTimings, State, Transcript,
+    AudioActivity, DictationMode, ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route,
+    SkipReason, StageTiming, StageTimings, State, Transcript,
 };
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
@@ -41,12 +41,13 @@ use tracing::{error, info, warn};
 use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
 use crate::ports::{
-    audio_ms, AudioSource, FormatPlan, Formatter, MediaController, Notice, SttProvider,
-    StatusNotifier, TextInjector,
+    audio_ms, AudioFeedback, AudioSource, FormatPlan, Formatter, GateDecision, MediaController,
+    Notice, StatusNotifier, SttProvider, SttRequest, TextInjector, VoiceActivityGate,
 };
 use crate::router::{self, RouteType};
 use crate::session::SessionHandle;
 use crate::timer::TimerExecutor;
+use dictate_audio::EarconCue;
 
 /// Map the router's internal enum onto the wire enum.
 ///
@@ -89,11 +90,6 @@ impl Stages {
     pub fn new() -> Self {
         Self {
             timings: StageTimings {
-                // VAD does not exist until S11. `not_supported` is the
-                // truthful answer — the stage is absent from this build, as
-                // distinct from being switched off by configuration or from
-                // having no data.
-                vad: StageTiming::skipped(SkipReason::NotSupported),
                 // The pure-Rust corrections pass currently executes *inside*
                 // `dictate-stt::transcribe`, so its cost is already counted
                 // in `stt` and it has no separately measured duration of its
@@ -159,6 +155,9 @@ pub struct ResolvedOptions {
     pub allowed_routes: Vec<Route>,
     /// Suppress persistence of transcript text for this session.
     pub privacy: bool,
+    /// Caller-supplied app context; S23 will populate this from focus when it
+    /// is absent, but remote clients may already know their target app.
+    pub app: Option<String>,
 }
 
 impl Default for ResolvedOptions {
@@ -168,6 +167,7 @@ impl Default for ResolvedOptions {
             forced_route: None,
             allowed_routes: Route::known().to_vec(),
             privacy: false,
+            app: None,
         }
     }
 }
@@ -189,6 +189,8 @@ pub struct Pipeline {
     pub audio: Arc<dyn AudioSource>,
     /// Recognizer.
     pub stt: Arc<dyn SttProvider>,
+    /// Silero gate/trim and hands-free trailing-silence tracker.
+    pub vad: Arc<dyn VoiceActivityGate>,
     /// LLM formatting pass.
     pub formatter: Arc<dyn Formatter>,
     /// Text injection.
@@ -197,6 +199,8 @@ pub struct Pipeline {
     pub notifier: Arc<dyn StatusNotifier>,
     /// Media pause/resume.
     pub media: Arc<dyn MediaController>,
+    /// Optional non-blocking start/stop/cancel/error earcons.
+    pub earcons: Arc<dyn AudioFeedback>,
     /// Interaction log.
     pub history: Arc<Mutex<HistoryStore>>,
     /// Ollama executor for the `local` route.
@@ -230,11 +234,21 @@ impl Pipeline {
         let token = handle.token().clone();
 
         self.notifier.notify(Notice::Recording);
+        self.earcon(&handle, EarconCue::Start, AudioActivity::EarconStart);
         // Best-effort and slow (a `playerctl` subprocess), so it runs off the
         // engine's thread and is not allowed to delay the state machine.
         {
             let media = self.media.clone();
-            let _ = tokio::task::spawn_blocking(move || media.pause_if_playing()).await;
+            let paused = tokio::task::spawn_blocking(move || media.pause_if_playing())
+                .await
+                .unwrap_or(false);
+            if paused {
+                handle.publish(Event::AudioActivity {
+                    session_id: handle.id().clone(),
+                    activity: AudioActivity::MediaPaused,
+                    at_ms: None,
+                });
+            }
         }
 
         // --- Recording: wait for stop, or for a cancel from any actor -------
@@ -247,32 +261,59 @@ impl Pipeline {
                 return self.finish(&handle, stages, None, Outcome::cancelled()).await;
             }
             () = stop.notified() => {}
+            () = self.auto_stop(&handle, &token), if matches!(handle.mode(), DictationMode::OneShot | DictationMode::WakeWord) => {}
         }
 
         let mut interaction = {
             let store = self.history.lock().expect("history mutex poisoned");
             store.begin()
         };
+        interaction.no_store = opts.privacy;
+        interaction.app_context = opts.app.clone();
+        interaction.stt_model = Some(self.stt.model().name);
 
         // --- Capture flush --------------------------------------------------
         self.notifier.notify(Notice::Transcribing);
         if handle.advance_checked(State::Transcribing).is_err() {
-            return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+            return self
+                .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                .await;
         }
 
         let clock = StageClock::start();
         let samples = match self.race(&token, self.audio.stop()).await {
             Step::Cancelled => {
                 stages.timings.capture = clock.failed("cancelled during capture flush");
-                return self.finish(&handle, stages, Some(interaction), Outcome::cancelled()).await;
+                return self
+                    .finish(&handle, stages, Some(interaction), Outcome::cancelled())
+                    .await;
             }
             Step::Continue(s) => s,
         };
         stages.timings.capture = clock.ran();
 
+        self.earcon(&handle, EarconCue::Stop, AudioActivity::EarconStop);
+        let diagnostics = self.audio.diagnostics();
+        if diagnostics.recovered_device {
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity: AudioActivity::DeviceRecovered,
+                at_ms: None,
+            });
+        }
+        if diagnostics.mic_mute_suspected {
+            self.notifier.notify(Notice::MicrophoneMuted);
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity: AudioActivity::MicrophoneMuted,
+                at_ms: None,
+            });
+        }
+
         let Some(samples) = samples else {
             warn!("No audio captured");
             self.notifier.notify(Notice::NoSpeech);
+            stages.timings.vad = StageTiming::skipped(SkipReason::NoSpeechDetected);
             stages.timings.stt = StageTiming::skipped(SkipReason::NoSpeechDetected);
             stages.timings.inject = StageTiming::skipped(SkipReason::NoSpeechDetected);
             return self
@@ -288,13 +329,107 @@ impl Pipeline {
         let audio_len_ms = audio_ms(&samples);
         interaction.audio_duration_s = Some(audio_len_ms / 1000.0);
 
+        // --- Voice activity gate and silence trim -------------------------
+        // This timing deliberately starts *after* recording has stopped. The
+        // one-shot monitor below spans user speaking time and is not latency.
+        let clock = StageClock::start();
+        let gated = match self
+            .race(&token, {
+                let vad = self.vad.clone();
+                let captured = samples.clone();
+                async move { tokio::task::spawn_blocking(move || vad.gate(&captured)).await }
+            })
+            .await
+        {
+            Step::Cancelled => {
+                stages.timings.vad = clock.failed("cancelled during voice activity detection");
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
+                    .await;
+            }
+            Step::Continue(Ok(Ok(decision))) => {
+                stages.timings.vad = clock.ran();
+                decision
+            }
+            Step::Continue(Ok(Err(e))) => {
+                stages.timings.vad = clock.failed(e.to_string());
+                let error = ProtoError::new(ErrorCode::Internal, format!("VAD failed: {e}"));
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(error, audio_len_ms),
+                    )
+                    .await;
+            }
+            Step::Continue(Err(e)) => {
+                stages.timings.vad = clock.failed("VAD worker failed");
+                let error = ProtoError::new(ErrorCode::Internal, format!("VAD worker failed: {e}"));
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(error, audio_len_ms),
+                    )
+                    .await;
+            }
+        };
+        let samples = match gated {
+            GateDecision::NoSpeech => {
+                info!(
+                    audio_ms = audio_len_ms,
+                    "VAD gated no-speech capture; skipping STT"
+                );
+                self.notifier.notify(Notice::NoSpeech);
+                stages.timings.stt = StageTiming::skipped(SkipReason::NoSpeechDetected);
+                stages.timings.inject = StageTiming::skipped(SkipReason::NoSpeechDetected);
+                return self
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::done(empty_transcript(SkipReason::NoSpeechDetected))
+                            .with_audio_ms(audio_len_ms),
+                    )
+                    .await;
+            }
+            GateDecision::Speech {
+                samples,
+                leading_trimmed_ms,
+                trailing_trimmed_ms,
+            } => {
+                info!(
+                    trimmed_leading_ms = leading_trimmed_ms,
+                    trimmed_trailing_ms = trailing_trimmed_ms,
+                    retained_ms = audio_ms(&samples),
+                    "VAD retained speech span"
+                );
+                samples
+            }
+        };
+
         // --- Speech to text -------------------------------------------------
         let clock = StageClock::start();
-        let transcribed = match self.race(&token, self.stt.transcribe(&samples)).await {
+        let transcribed = match self
+            .race(&token, self.stt.transcribe(&samples, SttRequest::default()))
+            .await
+        {
             Step::Cancelled => {
                 stages.timings.stt = clock.failed("cancelled during transcription");
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(r) => r,
@@ -309,15 +444,22 @@ impl Pipeline {
                 error!("Transcription failed: {}", e);
                 stages.timings.stt = clock.failed(e.to_string());
                 self.notifier.notify(Notice::Clear);
-                self.notifier.notify(Notice::Error(format!("Transcription failed: {e}")));
+                self.notifier
+                    .notify(Notice::Error(format!("Transcription failed: {e}")));
                 interaction.error_summary = Some(format!("Transcription failed: {e}"));
                 let err = ProtoError::new(ErrorCode::SttFailed, e.to_string());
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::error(err, audio_len_ms),
+                    )
                     .await;
             }
         };
-        interaction.transcription_duration_s = stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
+        interaction.transcription_duration_s =
+            stages.timings.stt.elapsed_ms().map(|ms| ms / 1000.0);
 
         let Some(transcribed) = transcribed else {
             info!("No speech detected");
@@ -342,7 +484,12 @@ impl Pipeline {
         // --- Formatting -----------------------------------------------------
         if handle.advance_checked(State::Formatting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -379,7 +526,10 @@ impl Pipeline {
                         interaction.grammar_error = formatted.error.clone();
                         interaction.grammar_duration_s = Some(formatted.duration_s);
                         if formatted.changed {
-                            info!("Grammar corrected: \"{}\" → \"{}\"", raw_text, formatted.text);
+                            info!(
+                                "Grammar corrected: \"{}\" → \"{}\"",
+                                raw_text, formatted.text
+                            );
                         }
                         formatted.text
                     }
@@ -414,14 +564,24 @@ impl Pipeline {
             interaction.error_summary = Some(msg.clone());
             let err = ProtoError::new(ErrorCode::Forbidden, msg);
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::error(err, audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::error(err, audio_len_ms),
+                )
                 .await;
         }
 
         // --- Dispatch and inject --------------------------------------------
         if handle.advance_checked(State::Injecting).is_err() {
             return self
-                .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                .finish(
+                    &handle,
+                    stages,
+                    Some(interaction),
+                    Outcome::cancelled_after(audio_len_ms),
+                )
                 .await;
         }
 
@@ -440,7 +600,12 @@ impl Pipeline {
         let (final_text, injection) = match dispatch {
             Step::Cancelled => {
                 return self
-                    .finish(&handle, stages, Some(interaction), Outcome::cancelled_after(audio_len_ms))
+                    .finish(
+                        &handle,
+                        stages,
+                        Some(interaction),
+                        Outcome::cancelled_after(audio_len_ms),
+                    )
                     .await;
             }
             Step::Continue(v) => v,
@@ -484,6 +649,43 @@ impl Pipeline {
         }
     }
 
+    /// Wait for end-of-speech in a hands-free session. Its work is excluded
+    /// from the final VAD timing because it occurs while the person speaks.
+    async fn auto_stop(&self, handle: &SessionHandle, token: &CancelToken) {
+        let mut tracker = match self.vad.trailing_silence_tracker() {
+            Ok(tracker) => tracker,
+            Err(error) => {
+                warn!(%error, session = %handle.id().as_str(), "one-shot VAD unavailable; explicit stop required");
+                std::future::pending::<()>().await;
+                return;
+            }
+        };
+        let interval = std::time::Duration::from_millis(u64::from(self.vad.poll_interval_ms()));
+        loop {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => return,
+                () = tokio::time::sleep(interval) => {}
+            }
+            let Some(snapshot) = self.audio.snapshot().await else {
+                warn!(session = %handle.id().as_str(), "one-shot audio snapshots unavailable; explicit stop required");
+                std::future::pending::<()>().await;
+                return;
+            };
+            match tracker.observe_snapshot(&snapshot) {
+                Ok(true) => {
+                    info!(session = %handle.id().as_str(), "one-shot VAD detected trailing silence");
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!(%error, session = %handle.id().as_str(), "one-shot VAD tracker failed; explicit stop required");
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+
     /// Execute the resolved route and inject its output.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch(
@@ -511,7 +713,8 @@ impl Pipeline {
                 }
             }
             Route::Local => {
-                self.notifier.notify(Notice::Processing(self.local_model.clone()));
+                self.notifier
+                    .notify(Notice::Processing(self.local_model.clone()));
                 interaction.prompt_sent = Some(route_text.to_string());
                 interaction.execution_model = Some(self.local_model.clone());
 
@@ -576,7 +779,8 @@ impl Pipeline {
                 interaction.execution_success = Some(result.success);
                 if result.success {
                     interaction.response_text = Some(result.response.clone());
-                    self.notifier.notify(Notice::TimerSet(result.response.clone()));
+                    self.notifier
+                        .notify(Notice::TimerSet(result.response.clone()));
                 } else {
                     interaction.execution_error = result.error.clone();
                     self.notifier
@@ -664,22 +868,10 @@ impl Pipeline {
         };
 
         let clock = StageClock::start();
-        let injector = self.injector.clone();
-        let owned = text.to_string();
-        // The real injector blocks for ~50-100ms on clipboard save/paste/
-        // restore; keeping it off the runtime's worker threads is what lets
-        // other connections keep being served during it.
-        let outcome = tokio::task::spawn_blocking(move || injector.inject(&owned))
-            .await
-            .unwrap_or_else(|e| {
-                error!("injection task panicked: {e}");
-                InjectionOutcome::Failed {
-                    error: ProtoError::new(
-                        ErrorCode::InjectionFailed,
-                        "injection task panicked",
-                    ),
-                }
-            });
+        // X11 performs its clipboard/key work on the blocking pool inside its
+        // adapter. Portal backends instead await an authorization response;
+        // keeping the port async preserves both contracts.
+        let outcome = self.injector.inject(text).await;
         drop(guard);
 
         stages.timings.inject = match &outcome {
@@ -709,6 +901,12 @@ impl Pipeline {
         // stopped it on the happy path.
         self.audio.cancel();
 
+        match &outcome.state {
+            State::Cancelled => self.earcon(handle, EarconCue::Cancel, AudioActivity::EarconCancel),
+            State::Error => self.earcon(handle, EarconCue::Error, AudioActivity::EarconError),
+            _ => {}
+        }
+
         let timings = stages.finish(outcome.audio_ms);
         let mut transcript = outcome.transcript;
         if let Some(t) = transcript.as_mut() {
@@ -723,7 +921,16 @@ impl Pipeline {
 
         {
             let media = self.media.clone();
-            let _ = tokio::task::spawn_blocking(move || media.resume_if_needed()).await;
+            let resumed = tokio::task::spawn_blocking(move || media.resume_if_needed())
+                .await
+                .unwrap_or(false);
+            if resumed {
+                handle.publish(Event::AudioActivity {
+                    session_id: handle.id().clone(),
+                    activity: AudioActivity::MediaResumed,
+                    at_ms: None,
+                });
+            }
         }
 
         // Publish the payload events *before* the terminal state change, so a
@@ -750,16 +957,31 @@ impl Pipeline {
         }
 
         if let Some(mut interaction) = interaction {
+            interaction.capture_duration_ms = timings.capture.elapsed_ms();
+            interaction.vad_duration_ms = timings.vad.elapsed_ms();
+            interaction.stt_duration_ms = timings.stt.elapsed_ms();
+            interaction.fmt_rules_duration_ms = timings.fmt_rules.elapsed_ms();
+            interaction.fmt_llm_duration_ms = timings.fmt_llm.elapsed_ms();
+            interaction.inject_duration_ms = timings.inject.elapsed_ms();
+            interaction.word_count = transcript.as_ref().and_then(|t| t.word_count).or_else(|| {
+                interaction
+                    .corrected_transcription
+                    .as_ref()
+                    .map(|text| text.split_whitespace().count() as u32)
+            });
             if let Some(err) = &outcome.error {
                 if interaction.error_summary.is_none() {
                     interaction.error_summary = Some(err.message.clone());
                 }
             }
             if outcome.state == State::Cancelled {
-                interaction.error_summary.get_or_insert_with(|| "cancelled".into());
+                interaction
+                    .error_summary
+                    .get_or_insert_with(|| "cancelled".into());
             }
             match self.history.lock() {
-                Ok(store) => store.commit(&interaction),
+                Ok(store) if !interaction.no_store => store.commit(&interaction),
+                Ok(_) => {}
                 Err(e) => error!("history mutex poisoned, dropping interaction: {e}"),
             }
         }
@@ -775,6 +997,19 @@ impl Pipeline {
             state: outcome.state,
             transcript,
             error: outcome.error,
+        }
+    }
+
+    /// Queue a cue without giving audio-output failure any authority over the
+    /// session. The paired event makes successful configured feedback visible
+    /// to `dictate tail` and future HUDs.
+    fn earcon(&self, handle: &SessionHandle, cue: EarconCue, activity: AudioActivity) {
+        if self.earcons.play(cue) {
+            handle.publish(Event::AudioActivity {
+                session_id: handle.id().clone(),
+                activity,
+                at_ms: None,
+            });
         }
     }
 }
@@ -859,12 +1094,12 @@ mod tests {
     }
 
     #[test]
-    fn stages_start_honest_about_what_this_build_lacks() {
+    fn stages_start_unreported_until_the_pipeline_runs_them() {
         let s = Stages::new();
         assert_eq!(
             s.timings.vad,
-            StageTiming::skipped(SkipReason::NotSupported),
-            "VAD does not exist until S11 and must not report a fabricated zero"
+            StageTiming::NotReported,
+            "VAD exists, but must not report a fabricated zero before it runs"
         );
         assert_eq!(s.timings.fmt_rules, StageTiming::NotReported);
         assert_eq!(s.timings.stt, StageTiming::NotReported);

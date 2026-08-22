@@ -39,10 +39,19 @@ signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
 # Audio capture
 cpal = "0.15"
+rodio = "0.20"
 
 # Whisper transcription
 # Build with WHISPER_DONT_GENERATE_BINDINGS=1 to use pre-generated bindings
-whisper-rs = { version = "0.16", features = ["cuda"] }
+whisper-rs = { version = "0.16" }
+
+# Pinned GGUF model pulls and integrity verification.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+
+# CPU Silero VAD v5. The model is embedded by the crate; it does not require
+# CUDA or an external model download.
+voice_activity_detector = "0.2.1"
 
 # Ollama client
 ollama-rs = { version = "0.3", features = ["stream"] }
@@ -60,6 +69,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+evdev = "0.13"
 
 # Workspace crates
 dictate-audio = { path = "crates/dictate-audio" }
@@ -69,7 +79,9 @@ dictate-fmt = { path = "crates/dictate-fmt" }
 dictate-history = { path = "crates/dictate-history" }
 dictate-inject = { path = "crates/dictate-inject" }
 dictate-proto = { path = "crates/dictate-proto" }
-dictate-stt = { path = "crates/dictate-stt" }
+dictate-stt = { path = "crates/dictate-stt", default-features = false }
+dictate-vad = { path = "crates/dictate-vad" }
+dictate-hotkey = { path = "crates/dictate-hotkey" }
 dictated = { path = "crates/dictated" }
 
 [profile.release]

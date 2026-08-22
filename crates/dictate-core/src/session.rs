@@ -247,7 +247,10 @@ impl SessionHandle {
     /// The current state.
     #[must_use]
     pub fn state(&self) -> State {
-        self.state.lock().expect("session state mutex poisoned").clone()
+        self.state
+            .lock()
+            .expect("session state mutex poisoned")
+            .clone()
     }
 
     /// Whether the session has reached a terminal state.
@@ -275,10 +278,7 @@ impl SessionHandle {
                 to = %next.as_str(),
                 "rejected an illegal state transition"
             );
-            return Err(InvalidTransition {
-                from,
-                to: next,
-            });
+            return Err(InvalidTransition { from, to: next });
         }
         *guard = next.clone();
         drop(guard);
@@ -509,12 +509,7 @@ mod tests {
     fn advance_checked_stops_on_cancel() {
         let bus = EventBus::new(16);
         let token = CancelToken::new();
-        let h = SessionHandle::new(
-            new_session_id(),
-            DictationMode::Toggle,
-            token.clone(),
-            bus,
-        );
+        let h = SessionHandle::new(new_session_id(), DictationMode::Toggle, token.clone(), bus);
         h.advance_checked(State::Recording).unwrap();
         token.cancel();
         assert!(h.advance_checked(State::Transcribing).is_err());

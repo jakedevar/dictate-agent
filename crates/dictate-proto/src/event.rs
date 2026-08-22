@@ -6,6 +6,29 @@ use crate::error::ProtoError;
 use crate::result::Transcript;
 use crate::state::{InjectionOutcome, SessionId, State};
 
+/// A best-effort audio-side action that is useful to a HUD and to daemon
+/// diagnostics, but never changes a dictation result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioActivity {
+    /// A recording-start chime was queued.
+    EarconStart,
+    /// A recording-stop chime was queued.
+    EarconStop,
+    /// A cancellation chime was queued.
+    EarconCancel,
+    /// An error chime was queued.
+    EarconError,
+    /// The daemon paused media that it found playing.
+    MediaPaused,
+    /// The daemon resumed media it had paused.
+    MediaResumed,
+    /// Capture was effectively silent long enough to suggest a muted mic.
+    MicrophoneMuted,
+    /// The input stream was reopened after a device/stream failure.
+    DeviceRecovered,
+}
+
 /// Text that has been through the full pipeline and is safe to inject.
 ///
 /// Distinct from [`Hypothesis`] at the type level: a function that injects text
@@ -198,6 +221,18 @@ pub enum Event {
         at_ms: Option<u64>,
     },
 
+    /// Audio subsystem feedback: earcons, media control, mute warnings, and
+    /// input-device recovery. These events are informational and additive.
+    AudioActivity {
+        /// The session this activity belongs to.
+        session_id: SessionId,
+        /// The action that occurred.
+        activity: AudioActivity,
+        /// When, in milliseconds since the Unix epoch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at_ms: Option<u64>,
+    },
+
     /// An event type this build does not recognize. See the crate-level
     /// compatibility rule.
     #[serde(other)]
@@ -216,6 +251,7 @@ impl Event {
             Self::InjectionResolved { .. } => "injection_resolved",
             Self::Error { .. } => "error",
             Self::AudioLevel { .. } => "audio_level",
+            Self::AudioActivity { .. } => "audio_activity",
             Self::Unknown => "unknown",
         }
     }
@@ -229,6 +265,7 @@ impl Event {
             | Self::Final { session_id, .. }
             | Self::InjectionResolved { session_id, .. }
             | Self::AudioLevel { session_id, .. } => Some(session_id),
+            Self::AudioActivity { session_id, .. } => Some(session_id),
             Self::Error { session_id, .. } => session_id.as_ref(),
             Self::Unknown => None,
         }
@@ -367,6 +404,11 @@ mod tests {
                 rms: 0.25,
                 peak: Some(0.9),
                 at_ms: None,
+            },
+            Event::AudioActivity {
+                session_id: "s".into(),
+                activity: AudioActivity::MediaPaused,
+                at_ms: Some(1_700_000_000_001),
             },
         ];
         for e in events {

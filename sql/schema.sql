@@ -32,9 +32,54 @@ CREATE TABLE IF NOT EXISTS interactions (
 
     total_duration_s REAL,
     completed INTEGER DEFAULT 0,
-    error_summary TEXT
+    error_summary TEXT,
+
+    -- History v2. All stage values are milliseconds; NULL means that the
+    -- stage was not measured, rather than pretending it took zero time.
+    capture_duration_ms REAL,
+    vad_duration_ms REAL,
+    stt_duration_ms REAL,
+    fmt_rules_duration_ms REAL,
+    fmt_llm_duration_ms REAL,
+    inject_duration_ms REAL,
+    app_context TEXT,
+    stt_model TEXT,
+    word_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
+);
+
+-- External-content FTS keeps transcript search fast without duplicating the
+-- rest of the interaction record. Triggers keep it correct for inserts,
+-- imports, retention cleanup, and explicit purges.
+CREATE VIRTUAL TABLE IF NOT EXISTS interactions_fts USING fts5(
+    corrected_transcription,
+    raw_transcription,
+    content='interactions',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS interactions_ai AFTER INSERT ON interactions BEGIN
+    INSERT INTO interactions_fts(rowid, corrected_transcription, raw_transcription)
+    VALUES (new.id, new.corrected_transcription, new.raw_transcription);
+END;
+
+CREATE TRIGGER IF NOT EXISTS interactions_ad AFTER DELETE ON interactions BEGIN
+    INSERT INTO interactions_fts(interactions_fts, rowid, corrected_transcription, raw_transcription)
+    VALUES ('delete', old.id, old.corrected_transcription, old.raw_transcription);
+END;
+
+CREATE TRIGGER IF NOT EXISTS interactions_au AFTER UPDATE OF corrected_transcription, raw_transcription ON interactions BEGIN
+    INSERT INTO interactions_fts(interactions_fts, rowid, corrected_transcription, raw_transcription)
+    VALUES ('delete', old.id, old.corrected_transcription, old.raw_transcription);
+    INSERT INTO interactions_fts(rowid, corrected_transcription, raw_transcription)
+    VALUES (new.id, new.corrected_transcription, new.raw_transcription);
+END;
+
+CREATE TABLE IF NOT EXISTS history_imports (
+    source_path TEXT PRIMARY KEY,
+    imported_at TEXT NOT NULL,
+    row_count INTEGER NOT NULL
 );

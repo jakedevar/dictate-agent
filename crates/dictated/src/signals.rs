@@ -11,16 +11,13 @@
 //!
 //! | Signal | Engine call | Protocol equivalent |
 //! |---|---|---|
-//! | `SIGUSR1` | [`EngineHandle::toggle`] | `start_dictation` / `stop` |
+//! | `SIGUSR1` | [`EngineHandle::toggle`] | `toggle` |
 //! | `SIGUSR2` | [`EngineHandle::cancel`] | `cancel` |
 //! | `SIGINT`/`SIGTERM` | shutdown | — |
 //!
-//! [`EngineHandle::toggle`] is not a fourth verb: it inspects the state inside
-//! the engine task and calls the same `handle_start` / `handle_stop` that
-//! `start_dictation` and `stop` call. Toggling *inside* the engine is also what
-//! makes the signal path race-free — a client doing `get_status` then
-//! `start_dictation` has a window between the two where another actor can act,
-//! and gets `busy` if it loses; the signal path never opens that window.
+//! [`EngineHandle::toggle`] is the protocol `toggle` operation: it inspects
+//! state inside the engine task and calls `handle_start` or `handle_stop`.
+//! Toggling there makes both the signal and socket paths race-free.
 //!
 //! # Why signals outrank connections
 //!
@@ -129,6 +126,9 @@ mod tests {
 
     #[test]
     fn unsubscribed_signals_are_ignored() {
-        assert_eq!(classify(signal_hook::consts::signal::SIGHUP), SignalAction::Ignore);
+        assert_eq!(
+            classify(signal_hook::consts::signal::SIGHUP),
+            SignalAction::Ignore
+        );
     }
 }

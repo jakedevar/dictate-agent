@@ -281,6 +281,19 @@ earlier isolated 379-test run passed, so S02-FIX awaits a serialized retry.
 | S30 | `39af03b6-430d-4487-8bcf-3252af348399` | running |
 | S31 | `3fa6014f-3f1b-4a34-82b3-58d9eba39a8b` | running |
 
+**INTEGRATED 2026-08-19** on RSI custody branch `rsi/4ba1578b` at
+`53fcda0`. The first worker cohort was interrupted by an RSI daemon restart;
+the recovery sessions completed distinct slices (not duplicate work): S10
+`9b385b1b-0641-4b74-b7d9-3c2f06938053`, S12
+`9b256891-5a1f-4eaf-9ce9-9d50ed4e18fa`, S13
+`595cd1cb-f1e2-4983-aa86-557a9943b313`, S30
+`18ddfb03-7bcf-4009-91f1-783305db8fa1`, and S31
+`134dab6b-f07b-466c-8b41-179b28e6932d`. S11 completed in its original session
+`4427665a-7bca-4856-b294-00acf34015a1`; the atomic S02 Toggle follow-up
+completed in `a514fe27-234b-4954-815b-26ba0ac079c0`. Final verification:
+`cargo test --workspace --all-targets` (419 passed) and
+`cargo clippy --workspace --all-targets -- -D warnings` (clean).
+
 **S10 — Audio subsystem v2** · implementer · M
 Scope: ring buffer + pre-roll (capture ~300ms before hotkey to stop
 first-syllable clipping — Wispr-feel detail); input device selection +

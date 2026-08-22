@@ -339,16 +339,14 @@ mod tests {
 
     #[test]
     fn request_ids_accept_numbers_and_strings() {
-        let n: Message = serde_json::from_str(
-            r#"{"kind":"request","v":1,"id":42,"command":{"type":"stop"}}"#,
-        )
-        .unwrap();
+        let n: Message =
+            serde_json::from_str(r#"{"kind":"request","v":1,"id":42,"command":{"type":"stop"}}"#)
+                .unwrap();
         assert_eq!(n.id(), Some(&RequestId::Number(42)));
 
-        let s: Message = serde_json::from_str(
-            r#"{"kind":"request","v":1,"id":"42","command":{"type":"stop"}}"#,
-        )
-        .unwrap();
+        let s: Message =
+            serde_json::from_str(r#"{"kind":"request","v":1,"id":"42","command":{"type":"stop"}}"#)
+                .unwrap();
         assert_eq!(s.id(), Some(&RequestId::Text("42".into())));
         assert_ne!(n.id(), s.id(), "42 and \"42\" are different ids");
     }
@@ -395,10 +393,9 @@ mod tests {
     /// An unknown command must surface as an error, never be dropped.
     #[test]
     fn an_unknown_command_is_a_parse_error_not_a_silent_drop() {
-        let e = Message::parse(
-            r#"{"kind":"request","v":1,"id":1,"command":{"type":"summon_kraken"}}"#,
-        )
-        .unwrap_err();
+        let e =
+            Message::parse(r#"{"kind":"request","v":1,"id":1,"command":{"type":"summon_kraken"}}"#)
+                .unwrap_err();
         assert_eq!(e.code, ErrorCode::MalformedRequest);
     }
 

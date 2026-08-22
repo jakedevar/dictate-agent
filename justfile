@@ -17,6 +17,11 @@ build:
 test:
     cargo test --workspace
 
+# CPU-only tiny-model contract. This is the no-GPU CI fallback; it exercises
+# catalog/config/provider seams without downloading a model during unit tests.
+test-cpu:
+    cargo test -p dictate-stt --no-default-features --features cpu-tiny-ci
+
 # Clippy, all targets, all crates
 clippy:
     cargo clippy --all-targets --workspace

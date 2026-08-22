@@ -14,8 +14,8 @@
 //!   blocks until the test says go.
 //!
 //! The traits are deliberately narrow — they describe what the pipeline needs,
-//! not what the underlying crate offers. S12 replaces [`SttProvider`]'s
-//! implementation with its model-manager-backed one, and S13 replaces
+//! not what the underlying crate offers. S12 provides the model-manager-backed
+//! [`SttProvider`] from `dictate-stt`, and S13 replaces
 //! [`TextInjector`] with the per-app policy engine; neither needs to touch the
 //! engine to do it.
 //!
@@ -28,19 +28,14 @@
 //! the capture to a dedicated thread and talks to it over channels, which is
 //! the only arrangement that makes the rest of the daemon `Send`.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
 use dictate_proto::{InjectMethod, InjectionOutcome};
-
-/// A boxed future, the object-safe spelling of an `async fn` in a trait.
-///
-/// Written out rather than pulled in via `async_trait` to keep this crate's
-/// dependency budget where it is; the macro would generate exactly this.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
+pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
 
 // ---------------------------------------------------------------------------
 // Audio capture
@@ -64,6 +59,16 @@ pub trait AudioSource: Send + Sync + 'static {
 
     /// Whether capture is currently running.
     fn is_recording(&self) -> bool;
+
+    /// Copy audio captured so far without stopping the stream. This is only
+    /// used by hands-free VAD auto-stop; regular recording never snapshots.
+    fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>>;
+
+    /// Diagnostics from the most recently stopped capture. Defaulting to an
+    /// empty value preserves every third-party/test `AudioSource` implementation.
+    fn diagnostics(&self) -> CaptureDiagnostics {
+        CaptureDiagnostics::default()
+    }
 }
 
 /// Sample rate the pipeline captures and transcribes at.
@@ -78,6 +83,7 @@ pub fn audio_ms(samples: &[f32]) -> f64 {
 enum AudioCmd {
     Start(std::sync::mpsc::Sender<Result<()>>),
     Stop(std::sync::mpsc::Sender<Option<Vec<f32>>>),
+    Snapshot(std::sync::mpsc::Sender<Option<Vec<f32>>>),
     Cancel,
     Shutdown,
 }
@@ -86,6 +92,7 @@ enum AudioCmd {
 pub struct HostAudioSource {
     tx: std::sync::mpsc::Sender<AudioCmd>,
     recording: Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<CaptureDiagnostics>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -95,16 +102,18 @@ impl HostAudioSource {
     /// # Errors
     ///
     /// Propagates a device-open failure from the capture thread.
-    pub fn new() -> Result<Self> {
+    pub fn new(config: crate::config::AudioConfig) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<AudioCmd>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
         let recording = Arc::new(AtomicBool::new(false));
         let flag = recording.clone();
+        let diagnostics = Arc::new(Mutex::new(CaptureDiagnostics::default()));
+        let diagnostics_for_thread = diagnostics.clone();
 
         let thread = std::thread::Builder::new()
             .name("dictate-audio".into())
             .spawn(move || {
-                let mut capture = match dictate_audio::AudioCapture::new() {
+                let mut capture = match AudioCapture::new(config) {
                     Ok(c) => {
                         let _ = ready_tx.send(Ok(()));
                         c
@@ -135,7 +144,14 @@ impl HostAudioSource {
                         }
                         AudioCmd::Stop(reply) => {
                             let samples = rt.block_on(capture.stop());
+                            if let Ok(mut last) = diagnostics_for_thread.lock() {
+                                *last = capture.diagnostics();
+                            }
                             flag.store(false, Ordering::Release);
+                            let _ = reply.send(samples);
+                        }
+                        AudioCmd::Snapshot(reply) => {
+                            let samples = capture.is_recording().then(|| capture.snapshot());
                             let _ = reply.send(samples);
                         }
                         AudioCmd::Cancel => {
@@ -155,6 +171,7 @@ impl HostAudioSource {
         Ok(Self {
             tx,
             recording,
+            diagnostics,
             thread: Mutex::new(Some(thread)),
         })
     }
@@ -189,8 +206,11 @@ impl Drop for HostAudioSource {
 impl AudioSource for HostAudioSource {
     fn start(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.ask(AudioCmd::Start, Err(anyhow::anyhow!("audio thread is gone")))
-                .await
+            self.ask(
+                AudioCmd::Start,
+                Err(anyhow::anyhow!("audio thread is gone")),
+            )
+            .await
         })
     }
 
@@ -206,96 +226,16 @@ impl AudioSource for HostAudioSource {
     fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Acquire)
     }
-}
 
-// ---------------------------------------------------------------------------
-// Speech to text
-// ---------------------------------------------------------------------------
-
-/// What the recognizer produced.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Transcription {
-    /// Recognized text, before any correction or formatting.
-    pub text: String,
-    /// Detected or configured language.
-    pub language: Option<String>,
-}
-
-/// Which model is answering, for `Status` and for the latency table S12 fills in.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ModelInfo {
-    /// Model name, e.g. `large-v3-turbo`.
-    pub name: String,
-    /// Whether weights are resident and ready.
-    pub loaded: bool,
-    /// `cuda` or `cpu`. Load-bearing: a CPU-fallback latency number is not
-    /// comparable to a CUDA one.
-    pub backend: Option<String>,
-}
-
-/// Speech recognition.
-///
-/// S12 owns the final shape of this trait (model manager, language pinning,
-/// `initial_prompt` bias). It is defined here, minimally, because the daemon
-/// cannot be tested without a seam and S12 has not run yet.
-pub trait SttProvider: Send + Sync + 'static {
-    /// Transcribe 16 kHz mono f32 samples. `Ok(None)` means no speech.
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>>;
-
-    /// Which model this provider is serving.
-    fn model(&self) -> ModelInfo;
-}
-
-/// whisper-rs behind the trait.
-pub struct WhisperStt {
-    inner: dictate_stt::Transcriber,
-    model_name: String,
-    backend: String,
-}
-
-impl WhisperStt {
-    /// Build from whisper config and kick off the background model load.
-    #[must_use]
-    pub fn new(config: &dictate_stt::WhisperConfig) -> Self {
-        let inner = dictate_stt::Transcriber::new(config);
-        inner.load_model_async();
-        Self {
-            inner,
-            // The config names a GGUF path, not a model; the file stem is the
-            // closest thing to a model identity this build has. S12's model
-            // manager replaces this with a real catalog entry.
-            model_name: std::path::Path::new(&config.model_path)
-                .file_stem()
-                .map_or_else(
-                    || config.model_path.clone(),
-                    |s| s.to_string_lossy().into_owned(),
-                ),
-            backend: config.device.clone(),
-        }
-    }
-}
-
-impl SttProvider for WhisperStt {
-    fn transcribe<'a>(&'a self, samples: &'a [f32]) -> BoxFuture<'a, Result<Option<Transcription>>> {
-        Box::pin(async move {
-            let out = self.inner.transcribe(samples).await?;
-            Ok(out.map(|r| Transcription {
-                text: r.text,
-                language: Some(r.language),
-            }))
-        })
+    fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+        Box::pin(async move { self.ask(AudioCmd::Snapshot, None).await })
     }
 
-    fn model(&self) -> ModelInfo {
-        ModelInfo {
-            name: self.model_name.clone(),
-            loaded: self.inner.is_model_loaded(),
-            // Reports the *configured* device. S12 replaces this with the
-            // backend actually selected at load time, which is the number the
-            // latency budget has to be read against — a CPU-fallback p50 is
-            // not comparable to a CUDA one.
-            backend: Some(self.backend.clone()),
-        }
+    fn diagnostics(&self) -> CaptureDiagnostics {
+        self.diagnostics
+            .lock()
+            .map(|last| *last)
+            .unwrap_or_default()
     }
 }
 
@@ -401,13 +341,12 @@ impl Formatter for GrammarFormatter {
 
 /// Text injection into the focused application.
 ///
-/// Synchronous and non-interruptible by design: a clipboard save / paste /
-/// restore cycle has no safe midpoint. The pipeline compensates by taking the
-/// cancellation decision immediately *before* calling this — see
-/// [`crate::cancel::CancelToken::enter_commit`].
+/// The call is async because a Wayland portal can return an outstanding
+/// consent request. X11 is currently immediate, but keeping this boundary
+/// async avoids making a future consent flow a breaking redesign.
 pub trait TextInjector: Send + Sync + 'static {
     /// Inject `text`, reporting what actually happened.
-    fn inject(&self, text: &str) -> InjectionOutcome;
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome>;
 
     /// Whether injection is possible here at all. `false` on a headless host,
     /// and the reason the outcome becomes `Unavailable` rather than `Failed`.
@@ -416,7 +355,7 @@ pub trait TextInjector: Send + Sync + 'static {
 
 /// Clipboard-paste injection behind the trait.
 pub struct HostInjector {
-    inner: dictate_inject::OutputHandler,
+    inner: dictate_inject::X11Injector,
     enabled: bool,
 }
 
@@ -425,37 +364,38 @@ impl HostInjector {
     #[must_use]
     pub fn new(config: &dictate_inject::OutputConfig) -> Self {
         Self {
-            inner: dictate_inject::OutputHandler::new(config),
+            inner: dictate_inject::X11Injector::new(config),
             enabled: config.auto_type,
         }
     }
 }
 
 impl TextInjector for HostInjector {
-    fn inject(&self, text: &str) -> InjectionOutcome {
-        if !self.enabled {
-            return InjectionOutcome::Skipped {
-                reason: dictate_proto::SkipReason::Disabled,
-            };
-        }
-        let chars = text.trim().chars().count() as u32;
-        if self.inner.type_text(text) {
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars,
+    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = self.inner.default_policy();
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            if !self.enabled {
+                return InjectionOutcome::Skipped {
+                    reason: dictate_proto::SkipReason::Disabled,
+                };
             }
-        } else {
-            InjectionOutcome::Failed {
-                error: dictate_proto::ProtoError::new(
-                    dictate_proto::ErrorCode::InjectionFailed,
-                    "clipboard paste failed; see daemon log",
-                ),
-            }
-        }
+            tokio::task::spawn_blocking(move || inner.inject_blocking(&text, policy))
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
+                    error: dictate_proto::ProtoError::new(
+                        dictate_proto::ErrorCode::InjectionFailed,
+                        format!("injection task failed: {e}"),
+                    ),
+                })
+        })
     }
 
     fn is_available(&self) -> bool {
-        self.enabled
+        use dictate_inject::Injector as _;
+        let caps = self.inner.capabilities();
+        self.enabled && (caps.clipboard_save_restore || caps.direct_typing)
     }
 }
 
@@ -480,6 +420,8 @@ pub enum Notice {
     TimerSet(String),
     /// Something failed.
     Error(String),
+    /// Capture was silent for long enough to indicate a muted microphone.
+    MicrophoneMuted,
     /// Clear any transient status.
     Clear,
 }
@@ -518,6 +460,7 @@ impl StatusNotifier for DesktopNotifier {
             Notice::Cancelled => n.cancelled(),
             Notice::TimerSet(msg) => n.timer_set(&msg),
             Notice::Error(msg) => n.error(&msg),
+            Notice::MicrophoneMuted => n.microphone_muted(),
             Notice::Clear => n.clear_status(),
         }
     }
@@ -526,9 +469,9 @@ impl StatusNotifier for DesktopNotifier {
 /// Pause and resume whatever the user was listening to.
 pub trait MediaController: Send + Sync + 'static {
     /// Pause if something is playing, remembering that we did.
-    fn pause_if_playing(&self);
+    fn pause_if_playing(&self) -> bool;
     /// Resume only if we were the one who paused.
-    fn resume_if_needed(&self);
+    fn resume_if_needed(&self) -> bool;
 }
 
 /// `playerctl` behind the trait, with the same state file today's daemon uses.
@@ -536,7 +479,7 @@ pub trait MediaController: Send + Sync + 'static {
 pub struct PlayerctlMedia;
 
 impl MediaController for PlayerctlMedia {
-    fn pause_if_playing(&self) {
+    fn pause_if_playing(&self) -> bool {
         let is_playing = std::process::Command::new("playerctl")
             .arg("status")
             .output()
@@ -549,22 +492,67 @@ impl MediaController for PlayerctlMedia {
 
         let state_path = crate::config::media_state_path();
         if is_playing {
-            let _ = std::fs::write(&state_path, "playing");
-            let _ = std::process::Command::new("playerctl").arg("pause").output();
-            tracing::info!("Media paused");
+            let paused = std::process::Command::new("playerctl")
+                .arg("pause")
+                .status()
+                .is_ok_and(|status| status.success());
+            if paused {
+                let _ = std::fs::write(&state_path, "playing");
+                tracing::info!("Media paused");
+            }
+            paused
         } else if state_path.exists() {
             // Clean up a state file left by a previous crash.
             let _ = std::fs::remove_file(&state_path);
+            false
+        } else {
+            false
         }
     }
 
-    fn resume_if_needed(&self) {
+    fn resume_if_needed(&self) -> bool {
         let state_path = crate::config::media_state_path();
         if state_path.exists() {
             let _ = std::fs::remove_file(&state_path);
-            let _ = std::process::Command::new("playerctl").arg("play").output();
-            tracing::info!("Media resumed");
+            let resumed = std::process::Command::new("playerctl")
+                .arg("play")
+                .status()
+                .is_ok_and(|status| status.success());
+            if resumed {
+                tracing::info!("Media resumed");
+            }
+            resumed
+        } else {
+            false
         }
+    }
+}
+
+/// Short auditory feedback is deliberately separate from desktop status
+/// notifications. A missing output device must never make dictation fail.
+pub trait AudioFeedback: Send + Sync + 'static {
+    /// Queue a cue and return whether an earcon was enabled and queued.
+    fn play(&self, cue: EarconCue) -> bool;
+}
+
+/// Rodio-backed production earcons.
+#[derive(Debug, Clone)]
+pub struct HostEarcons {
+    inner: EarconPlayer,
+}
+
+impl HostEarcons {
+    #[must_use]
+    pub fn new(config: dictate_audio::EarconConfig) -> Self {
+        Self {
+            inner: EarconPlayer::new(config),
+        }
+    }
+}
+
+impl AudioFeedback for HostEarcons {
+    fn play(&self, cue: EarconCue) -> bool {
+        self.inner.play(cue)
     }
 }
 
@@ -592,6 +580,7 @@ pub mod mock {
         /// torn down rather than left dangling.
         pub cancels: AtomicUsize,
         stop_delay: std::time::Duration,
+        snapshot_available: bool,
     }
 
     impl MockAudio {
@@ -603,6 +592,7 @@ pub mod mock {
                 recording: AtomicBool::new(false),
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
+                snapshot_available: true,
             }
         }
 
@@ -614,6 +604,7 @@ pub mod mock {
                 recording: AtomicBool::new(false),
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
+                snapshot_available: true,
             }
         }
 
@@ -622,6 +613,13 @@ pub mod mock {
         #[must_use]
         pub fn with_stop_delay(mut self, delay: std::time::Duration) -> Self {
             self.stop_delay = delay;
+            self
+        }
+
+        /// Simulate a capture backend that cannot provide live snapshots.
+        #[must_use]
+        pub fn without_snapshots(mut self) -> Self {
+            self.snapshot_available = false;
             self
         }
 
@@ -658,6 +656,73 @@ pub mod mock {
 
         fn is_recording(&self) -> bool {
             self.recording.load(Ordering::Acquire)
+        }
+
+        fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+            Box::pin(async move {
+                (self.snapshot_available && self.recording.load(Ordering::Acquire))
+                    .then(|| self.samples.clone())
+            })
+        }
+    }
+
+    /// Deterministic VAD double for pipeline tests.
+    pub struct MockVad {
+        decision: GateDecision,
+        auto_stop: bool,
+        gates: AtomicUsize,
+    }
+
+    impl MockVad {
+        #[must_use]
+        pub fn returning(decision: GateDecision) -> Self {
+            Self {
+                decision,
+                auto_stop: false,
+                gates: AtomicUsize::new(0),
+            }
+        }
+
+        #[must_use]
+        pub fn auto_stopping(mut self) -> Self {
+            self.auto_stop = true;
+            self
+        }
+
+        #[must_use]
+        pub fn gate_count(&self) -> usize {
+            self.gates.load(Ordering::Acquire)
+        }
+    }
+
+    impl VoiceActivityGate for MockVad {
+        fn gate(&self, _samples: &[f32]) -> Result<GateDecision> {
+            self.gates.fetch_add(1, Ordering::AcqRel);
+            Ok(self.decision.clone())
+        }
+
+        fn trailing_silence_tracker(&self) -> Result<Box<dyn TrailingSilenceTracker>> {
+            Ok(Box::new(MockTrailingSilence {
+                auto_stop: self.auto_stop,
+            }))
+        }
+
+        fn enabled(&self) -> bool {
+            true
+        }
+
+        fn poll_interval_ms(&self) -> u32 {
+            1
+        }
+    }
+
+    struct MockTrailingSilence {
+        auto_stop: bool,
+    }
+
+    impl TrailingSilenceTracker for MockTrailingSilence {
+        fn observe_snapshot(&mut self, _samples: &[f32]) -> Result<bool> {
+            Ok(self.auto_stop)
         }
     }
 
@@ -723,6 +788,7 @@ pub mod mock {
         fn transcribe<'a>(
             &'a self,
             _samples: &'a [f32],
+            _request: SttRequest,
         ) -> BoxFuture<'a, Result<Option<Transcription>>> {
             Box::pin(async move {
                 if let Some(gate) = &self.gate {
@@ -738,6 +804,7 @@ pub mod mock {
                 Ok(self.text.clone().map(|text| Transcription {
                     text,
                     language: Some("en".into()),
+                    timings: dictate_stt::SttTimings::default(),
                 }))
             })
         }
@@ -907,7 +974,7 @@ pub mod mock {
     /// Injector that records what it was asked to type.
     #[derive(Debug)]
     pub struct MockInjector {
-        injected: Mutex<Vec<String>>,
+        injected: Arc<Mutex<Vec<String>>>,
         available: bool,
         availability_gate: Option<Arc<Gate>>,
         gate: Option<Arc<Gate>>,
@@ -917,7 +984,7 @@ pub mod mock {
     impl Default for MockInjector {
         fn default() -> Self {
             Self {
-                injected: Mutex::new(Vec::new()),
+                injected: Arc::new(Mutex::new(Vec::new())),
                 available: true,
                 availability_gate: None,
                 gate: None,
@@ -979,42 +1046,59 @@ pub mod mock {
         /// The assertion that matters for cancellation: after a cancelled
         /// session this must be empty.
         pub fn injected(&self) -> Vec<String> {
-            self.injected.lock().expect("mock injector poisoned").clone()
+            self.injected
+                .lock()
+                .expect("mock injector poisoned")
+                .clone()
         }
     }
 
     impl TextInjector for MockInjector {
-        fn inject(&self, text: &str) -> InjectionOutcome {
-            if let Some(gate) = &self.gate {
-                gate.mark_entered();
-                // Deliberately a blocking wait: the real injector is blocking,
-                // and the pipeline calls it via `spawn_blocking`.
-                while !gate.is_open() {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-            if !self.available {
-                return InjectionOutcome::Unavailable {
-                    backend: "none".into(),
-                    reason: "mock injector is unavailable".into(),
-                };
-            }
-            if self.fail {
-                return InjectionOutcome::Failed {
+        fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+            let text = text.to_string();
+            let injected = self.injected.clone();
+            let gate = self.gate.clone();
+            let available = self.available;
+            let fail = self.fail;
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(gate) = &gate {
+                        gate.mark_entered();
+                        while !gate.is_open() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+                    if !available {
+                        return InjectionOutcome::Unavailable {
+                            backend: "none".into(),
+                            reason: "mock injector is unavailable".into(),
+                        };
+                    }
+                    if fail {
+                        return InjectionOutcome::Failed {
+                            error: dictate_proto::ProtoError::new(
+                                dictate_proto::ErrorCode::InjectionFailed,
+                                "mock injection failure",
+                            ),
+                        };
+                    }
+                    injected
+                        .lock()
+                        .expect("mock injector poisoned")
+                        .push(text.to_string());
+                    InjectionOutcome::Injected {
+                        method: InjectMethod::Paste,
+                        chars: text.trim().chars().count() as u32,
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| InjectionOutcome::Failed {
                     error: dictate_proto::ProtoError::new(
                         dictate_proto::ErrorCode::InjectionFailed,
-                        "mock injection failure",
+                        format!("mock injection task failed: {e}"),
                     ),
-                };
-            }
-            self.injected
-                .lock()
-                .expect("mock injector poisoned")
-                .push(text.to_string());
-            InjectionOutcome::Injected {
-                method: InjectMethod::Paste,
-                chars: text.trim().chars().count() as u32,
-            }
+                })
+            })
         }
 
         fn is_available(&self) -> bool {
@@ -1052,8 +1136,44 @@ pub mod mock {
     pub struct NullMedia;
 
     impl MediaController for NullMedia {
-        fn pause_if_playing(&self) {}
-        fn resume_if_needed(&self) {}
+        fn pause_if_playing(&self) -> bool {
+            false
+        }
+        fn resume_if_needed(&self) -> bool {
+            false
+        }
+    }
+
+    /// Earcons disabled for deterministic tests.
+    #[derive(Debug, Default)]
+    pub struct NullEarcons;
+
+    impl AudioFeedback for NullEarcons {
+        fn play(&self, _: EarconCue) -> bool {
+            false
+        }
+    }
+
+    /// Deterministic side effects for daemon event-stream tests.
+    #[derive(Debug, Default)]
+    pub struct ActiveMedia;
+
+    impl MediaController for ActiveMedia {
+        fn pause_if_playing(&self) -> bool {
+            true
+        }
+        fn resume_if_needed(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct RecordingEarcons;
+
+    impl AudioFeedback for RecordingEarcons {
+        fn play(&self, _: EarconCue) -> bool {
+            true
+        }
     }
 }
 
@@ -1100,12 +1220,12 @@ mod tests {
         assert!(out.duration_s > 0.0, "burned time must still be reported");
     }
 
-    #[test]
-    fn mock_injector_records_what_it_typed() {
+    #[tokio::test]
+    async fn mock_injector_records_what_it_typed() {
         use mock::MockInjector;
         let i = MockInjector::new();
         assert!(i.injected().is_empty());
-        let outcome = i.inject("hello there");
+        let outcome = i.inject("hello there").await;
         assert!(matches!(outcome, InjectionOutcome::Injected { .. }));
         assert_eq!(i.injected(), vec!["hello there".to_string()]);
     }

@@ -113,6 +113,7 @@ unrecognized flag means "not permitted", which is the fail-safe direction.
 | `partial_transcripts` | server emits `partial` events (currently always `false`) |
 | `audio_level_events` | server emits `audio_level` events |
 | `history_read` | may query history |
+| `history_write` | may purge history |
 | `dictionary_read` / `dictionary_write` | may read / modify the dictionary |
 | `snippets_read` / `snippets_write` | may read / modify snippets |
 | `config_read` / `config_write` | may read / modify configuration |
@@ -181,6 +182,7 @@ All commands are objects tagged with `type`.
 |---|---|---|
 | `handshake` | *(Hello, flattened)* | — |
 | `start_dictation` | `mode`, `options?` | `host_capture` |
+| `toggle` | — | `host_capture` |
 | `stop` | — | any session capability |
 | `cancel` | — | any session capability |
 | `get_status` | — | — |
@@ -195,6 +197,8 @@ All commands are objects tagged with `type`.
 | `upsert_snippet` | `snippet` | `snippets_write` |
 | `delete_snippet` | `id` | `snippets_write` |
 | `query_history` | `query` | `history_read` |
+| `get_history_analytics` | — | `history_read` |
+| `purge_history` | — | `history_write` |
 | `transcribe_audio` | `audio`, `options?` | `transcribe_upload` |
 | `begin_audio_stream` | `format`, `options?` | `streaming_audio` |
 | `end_audio_stream` | `stream_id` | `streaming_audio` |
@@ -204,6 +208,12 @@ they are how a client discovers everything else. A command whose feature is not
 granted must be answered `forbidden`.
 
 `mode` ∈ `toggle` | `push_to_talk` | `one_shot` | `wake_word` (default `toggle`).
+
+`toggle` atomically starts a toggle-mode session when idle, or stops the
+active recording session. The daemon resolves that branch in its single-writer
+engine actor; clients MUST use it for toggle controls rather than reading
+`get_status` and then sending `start_dictation` or `stop`. A toggle during a
+later pipeline stage is answered `busy`.
 
 ### `options` (SessionOptions)
 
@@ -444,6 +454,7 @@ the protocol crate — bearer-token auth is S33's mechanism.
 | `dictionary_entry` / `snippet` | the stored record, with server-assigned `id` |
 | `deleted` | `id` |
 | `history` | `items[]`, `total?`, `next_offset?` |
+| `history_analytics` | `overall_wpm?`, `words_today`, `words_by_day[]`, streaks |
 | `transcript` | Transcript |
 | `audio_stream_opened` | `stream_id`, `session_id` |
 
@@ -457,6 +468,11 @@ is not comparable to a CUDA one.
 A history entry's `text` being **absent** (privacy mode, or a session that
 failed before producing text) is distinct from an **empty string** (the user
 said nothing). Do not conflate them.
+
+`purge_history` removes every persisted interaction (and its FTS index entry)
+while keeping the daemon's SQLite connection open. A daemon in global privacy
+mode, or a `start_dictation` request with `options.privacy: true`, stores no
+row at all; this is stronger than masking transcript text after the fact.
 
 ---
 
@@ -474,7 +490,7 @@ them is worth showing the user a setting for.
 
 Two rules the daemon enforces that the wire format does not carry:
 
-- **Session ownership.** `stop` and `cancel` carry no session id, so the daemon
+- **Session ownership.** `toggle`, `stop`, and `cancel` carry no session id, so the daemon
   decides: a connection may control the session it started, a trusted-local
   connection may also control an unowned host session (which is what lets one
   `dictate` invocation start a session and the next one stop it), and a signal

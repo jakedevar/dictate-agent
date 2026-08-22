@@ -253,6 +253,9 @@ pub struct Features {
     /// History may be queried.
     #[serde(default)]
     pub history_read: bool,
+    /// History may be purged by this trusted connection.
+    #[serde(default)]
+    pub history_write: bool,
 
     /// The personal dictionary may be read.
     #[serde(default)]
@@ -302,6 +305,7 @@ impl Features {
             transcribe_upload: true,
             host_capture: true,
             history_read: true,
+            history_write: true,
             dictionary_read: true,
             dictionary_write: true,
             snippets_read: true,

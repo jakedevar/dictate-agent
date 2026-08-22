@@ -1,30 +1,19 @@
 //! `dictate` — the control client.
 //!
-//! Speaks the protocol and nothing else. It has no pipeline, no state machine,
-//! and deliberately no dependency on `dictate-core`: a keybinding runs this
-//! binary on every dictation, and linking whisper.cpp into it would trade real
-//! startup latency for a little shared code.
+//! Speaks the protocol for daemon control. `model` is deliberately local: it
+//! can establish a verified first-run model before a daemon exists.
 //!
-//! # Toggle is resolved here, and that is a compromise
+//! # Toggle is one atomic protocol request
 //!
-//! The protocol has no `toggle` command — it has `start_dictation` and `stop`.
-//! So `dictate toggle` reads the state and then acts on it, which leaves a
-//! window where another actor can move first. The daemon closes that window
-//! for itself (SIGUSR1 toggles *inside* the engine task, atomically), but a
-//! socket client cannot borrow that guarantee without a protocol change.
-//!
-//! The consequence is bounded and honest: if the CLI loses the race it is told
-//! `busy` or `no_active_session`, and it reports that rather than retrying into
-//! a second session. Jake's hotkey path goes through the signal shim and is not
-//! affected. Adding a `toggle` command would be an additive protocol change —
-//! flagged for the Epic-lead rather than taken unilaterally, since S32 and S33
-//! share this contract.
+//! `dictate toggle` sends protocol `toggle` once. The daemon resolves whether
+//! to start or stop inside its single-writer engine actor, sharing the same
+//! operation used by SIGUSR1 and avoiding a `get_status`-then-act race.
 
 mod client;
 mod render;
 
 use anyhow::{bail, Result};
-use dictate_proto::{Command, CommandResult, DictationMode, Event, HistoryQuery, State};
+use dictate_proto::{Command, DictationMode, Event, HistoryQuery};
 
 use crate::client::Client;
 
@@ -41,13 +30,17 @@ COMMANDS:
     cancel              Abandon the current session, injecting nothing
     status              Show daemon and session state
     tail                Stream events until interrupted
-    history             List past dictations
+    history             List past dictations, or purge with --purge
     dict                Personal dictionary (not implemented until S22)
+    model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
+    model list          List catalog models and local verification state
 
 OPTIONS:
     --limit <N>         history: rows to return (default 20)
     --text <QUERY>      history: substring to match
     --errors            history: only sessions that failed
+    --purge             history: permanently delete all stored dictations
+    --analytics         history: show WPM, daily words, and streaks
     --events <A,B>      tail: only these event types
     --json              print raw protocol JSON instead of a summary
     --socket <PATH>     override the control socket
@@ -90,6 +83,9 @@ async fn run() -> Result<i32> {
         // SAFETY: single-threaded runtime, set before any concurrent access.
         unsafe { std::env::set_var(client::SOCKET_ENV, path) };
     }
+    if command == "model" {
+        return model(&args);
+    }
     let mut client = Client::connect_default().await?;
 
     match command.as_str() {
@@ -130,39 +126,15 @@ async fn run() -> Result<i32> {
     }
 }
 
-/// Start if idle, stop if recording.
-///
-/// See the module docs for why this is two round trips and what happens when
-/// it loses the race.
+/// Atomically start if idle, or stop if recording.
 async fn toggle(client: &mut Client, args: &Args) -> Result<i32> {
-    let CommandResult::Status(status) = client.request(Command::GetStatus).await? else {
-        bail!("the daemon did not answer get_status with a status");
-    };
-
-    let command = match status.state {
-        State::Recording => Command::Stop,
-        s if s.is_terminal() || s == State::Idle => Command::StartDictation {
-            mode: DictationMode::Toggle,
-            options: None,
-        },
-        // Mid-pipeline: neither verb applies. Saying so beats queueing a
-        // second session behind one the user cannot see.
-        other => {
-            eprintln!(
-                "dictate: session is {}; wait for it to finish, or `dictate cancel`",
-                other.as_str()
-            );
-            return Ok(1);
-        }
-    };
-
-    match client.try_request(command).await? {
+    match client.try_request(Command::Toggle).await? {
         Ok(result) => {
             render::result(&result, args.json);
             Ok(0)
         }
-        // Lost the race with another actor. Report it; do not retry into a
-        // state the user did not ask for.
+        // Do not retry: a busy result describes the state observed atomically
+        // by the engine, and a retry could become a different user action.
         Err(e) => {
             eprintln!("dictate: {} ({})", e.message, e.code.as_str());
             Ok(1)
@@ -179,7 +151,10 @@ async fn tail(client: &mut Client, args: &Args) -> Result<i32> {
     client.request(Command::Subscribe { events }).await?;
 
     if !args.json {
-        eprintln!("watching {} — ctrl-c to stop", client::socket_path().display());
+        eprintln!(
+            "watching {} — ctrl-c to stop",
+            client::socket_path().display()
+        );
     }
     loop {
         let event = client.next_event().await?;
@@ -193,6 +168,30 @@ async fn tail(client: &mut Client, args: &Args) -> Result<i32> {
 }
 
 async fn history(client: &mut Client, args: &Args) -> Result<i32> {
+    if args.analytics {
+        return match client.try_request(Command::GetHistoryAnalytics).await? {
+            Ok(result) => {
+                render::result(&result, args.json);
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                Ok(1)
+            }
+        };
+    }
+    if args.purge {
+        return match client.try_request(Command::PurgeHistory).await? {
+            Ok(result) => {
+                render::result(&result, args.json);
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                Ok(1)
+            }
+        };
+    }
     let query = HistoryQuery {
         text: args.text.clone(),
         limit: Some(args.limit.unwrap_or(20)),
@@ -208,6 +207,50 @@ async fn history(client: &mut Client, args: &Args) -> Result<i32> {
             eprintln!("dictate: {} ({})", e.message, e.code.as_str());
             Ok(1)
         }
+    }
+}
+
+/// Manage pinned local Whisper models without requiring a running daemon.
+fn model(args: &Args) -> Result<i32> {
+    let action = args.model_action.as_deref().unwrap_or("list");
+    let config = dictate_stt::WhisperConfig::default();
+    let cache_dir = dictate_stt::config::expand_tilde(&config.model_path)
+        .parent()
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("default Whisper model path has no parent"))?;
+    let manager = dictate_stt::ModelManager::new(cache_dir);
+    match action {
+        "pull" => {
+            let name = args.model_name.as_deref().unwrap_or("large-v3-turbo");
+            let path = manager.ensure(name)?;
+            let spec = dictate_stt::catalog_model(name).expect("ensure validated catalog name");
+            println!(
+                "pulled {} ({}, SHA-256 verified)\n{}",
+                spec.id,
+                spec.revision,
+                path.display()
+            );
+            Ok(0)
+        }
+        "list" => {
+            for item in manager.list()? {
+                let state = match (item.present, item.verified) {
+                    (false, _) => "missing",
+                    (true, true) => "verified",
+                    (true, false) => "CORRUPT",
+                };
+                println!(
+                    "{:<16} {:<8} {:>10}  {}\n  {}",
+                    item.spec.id,
+                    state,
+                    item.bytes_on_disk.unwrap_or(item.spec.bytes),
+                    item.spec.revision,
+                    item.path.display()
+                );
+            }
+            Ok(0)
+        }
+        other => bail!("model expects `pull [NAME]` or `list`, got '{other}'"),
     }
 }
 
@@ -247,11 +290,15 @@ async fn dict(client: &mut Client, args: &Args) -> Result<i32> {
 #[derive(Debug, Default, Clone)]
 struct Args {
     command: Option<String>,
+    model_action: Option<String>,
+    model_name: Option<String>,
     limit: Option<u32>,
     text: Option<String>,
     events: Option<String>,
     socket: Option<String>,
     errors: bool,
+    purge: bool,
+    analytics: bool,
     json: bool,
     help: bool,
     version: bool,
@@ -267,26 +314,42 @@ impl Args {
                 "-V" | "--version" => out.version = true,
                 "--json" => out.json = true,
                 "--errors" => out.errors = true,
+                "--purge" => out.purge = true,
+                "--analytics" => out.analytics = true,
                 "--limit" => {
-                    let raw = args.next().ok_or_else(|| anyhow::anyhow!("--limit needs a value"))?;
+                    let raw = args
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--limit needs a value"))?;
                     out.limit = Some(raw.parse().map_err(|_| {
                         anyhow::anyhow!("--limit must be a whole number, got '{raw}'")
                     })?);
                 }
                 "--text" => {
-                    out.text =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--text needs a value"))?)
+                    out.text = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--text needs a value"))?,
+                    )
                 }
                 "--events" => {
-                    out.events =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--events needs a value"))?)
+                    out.events = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--events needs a value"))?,
+                    )
                 }
                 "--socket" => {
-                    out.socket =
-                        Some(args.next().ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?)
+                    out.socket = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
+                    )
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),
                 other if out.command.is_none() => out.command = Some(other.to_string()),
+                other if out.command.as_deref() == Some("model") && out.model_action.is_none() => {
+                    out.model_action = Some(other.to_string())
+                }
+                other if out.command.as_deref() == Some("model") && out.model_name.is_none() => {
+                    out.model_name = Some(other.to_string())
+                }
                 other => bail!("unexpected argument '{other}'"),
             }
         }
@@ -350,6 +413,15 @@ mod tests {
     #[test]
     fn a_second_positional_argument_is_rejected() {
         assert!(parse(&["status", "extra"]).is_err());
+    }
+
+    #[test]
+    fn model_subcommands_accept_an_optional_model_name() {
+        let pull = parse(&["model", "pull", "tiny.en"]).unwrap();
+        assert_eq!(pull.model_action.as_deref(), Some("pull"));
+        assert_eq!(pull.model_name.as_deref(), Some("tiny.en"));
+        let list = parse(&["model", "list"]).unwrap();
+        assert_eq!(list.model_action.as_deref(), Some("list"));
     }
 
     #[test]
