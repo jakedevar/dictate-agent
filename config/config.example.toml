@@ -80,8 +80,44 @@ speech_pad_ms = 100
 trailing_silence_ms = 900
 poll_interval_ms = 32
 
+[format]
+# Deterministic text cleanup between transcription and routing: pure Rust,
+# well under a millisecond, no network. Off = the raw Whisper text is routed
+# and typed as-is. URLs, paths, slash commands and code identifiers stay
+# protected from the [grammar] LLM pass even when this is off.
+enabled = true
+
+[format.rules]
+# Historical Whisper fixes: cloud/clod/clawed -> Claude, .cloud/ -> .claude/,
+# and "create plan", "implement plan", "validate plan", "create handoff",
+# "research code base" -> /create_plan, /implement_plan, /validate_plan,
+# /create_handoff, /research_codebase. Whole words only ("cloudy" is safe).
+builtin_corrections = true
+# Drop whisper.cpp's [BLANK_AUDIO], a trailing /no_think, and a trailing
+# stand-alone "Thank you." (Whisper's silence hallucination); normalize spaces.
+hallucination_scrub = true
+# Remove um, uh, erm, hmm, mm. Never "like", "you know", "so", "actually".
+fillers = true
+# "the the" -> "the", "wh- what" -> "what". Keeps "that that", "very very".
+stutters = true
+# "twenty five" -> 25, "three point five percent" -> 3.5%, "ten dollars" -> $10,
+# "five thirty pm" -> 5:30 PM. A lone number below ten stays a word
+# ("two people") unless a unit, percent or currency follows.
+numbers = true
+# Capitalize sentence starts and the pronoun I (a loop variable i stays).
+casing = true
+# Collapse spaces; no space before , ; ! ? and sentence-ending . :
+spacing = true
+# End utterances of four or more words with "." (not after a path or command).
+terminal_punctuation = true
+# Off by default: in code prompts "period", "colon" and "new line" are often
+# literal words. Per-app profiles can turn these on.
+spoken_punctuation = false
+spoken_line_breaks = false
+
 [grammar]
-# Auto grammar correction (runs between transcription and routing)
+# LLM grammar pass: runs after routing, on the [format] output, for typed
+# (route = type) text only. Output that alters a protected span is rejected.
 enabled = false
 host = "http://localhost:11434"
 model = "qwen3:0.6b"

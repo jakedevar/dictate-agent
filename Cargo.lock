@@ -749,6 +749,7 @@ name = "dictate-fmt"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "dictate-proto",
  "ollama-rs",
  "serde",
  "tokio",
@@ -807,7 +808,6 @@ name = "dictate-stt"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "dictate-fmt",
  "reqwest",
  "serde",
  "sha2",

@@ -373,6 +373,7 @@ async fn a_broken_formatter_shows_up_in_get_status_and_in_the_report() {
         fn format<'a>(
             &'a self,
             text: &'a str,
+            _ctx: &'a dictate_core::ports::FormatContext,
         ) -> dictate_core::ports::BoxFuture<'a, dictate_core::ports::Formatted> {
             Box::pin(async move {
                 dictate_core::ports::Formatted {
@@ -383,7 +384,11 @@ async fn a_broken_formatter_shows_up_in_get_status_and_in_the_report() {
                 }
             })
         }
-        fn plan(&self, _: &str) -> dictate_core::ports::FormatPlan {
+        fn plan(
+            &self,
+            _: &str,
+            _: &dictate_core::ports::FormatContext,
+        ) -> dictate_core::ports::FormatPlan {
             dictate_core::ports::FormatPlan::Run
         }
         fn status(&self) -> Option<dictate_proto::FormatterStatus> {

@@ -472,6 +472,7 @@ mod tests {
                     trailing_trimmed_ms: 0.0,
                 },
             )),
+            text_chain: Arc::new(dictate_core::pipeline::TextChain::default()),
             formatter: Arc::new(MockFormatter::disabled()),
             injector: Arc::new(MockInjector::unavailable()),
             notifier: Arc::new(RecordingNotifier::default()),

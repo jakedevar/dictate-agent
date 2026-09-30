@@ -117,7 +117,7 @@ async fn the_response_to_an_upload_is_its_transcript() {
             .unwrap(),
     );
 
-    assert_eq!(t.text.as_str(), "hello there");
+    assert_eq!(t.text.as_str(), "Hello there");
     assert_eq!(t.route, dictate_proto::Route::Type);
     assert_eq!(t.word_count, Some(2));
     assert_eq!(
@@ -206,7 +206,7 @@ async fn raw_pcm_uploads_work_at_the_declared_layout() {
             .await
             .unwrap(),
     );
-    assert_eq!(t.text.as_str(), "hello there");
+    assert_eq!(t.text.as_str(), "Hello there");
     h.stop().await;
 }
 
@@ -319,7 +319,7 @@ async fn inject_true_types_when_the_connection_may() {
         "{:?}",
         t.injection
     );
-    assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    assert_eq!(h.injector.injected(), vec!["Hello there".to_string()]);
     h.stop().await;
 }
 
@@ -785,7 +785,7 @@ async fn a_private_upload_persists_nothing_and_a_normal_one_is_recorded() {
     );
     assert_eq!(
         t.text.as_str(),
-        "hello there",
+        "Hello there",
         "the caller still gets its text"
     );
     assert_eq!(

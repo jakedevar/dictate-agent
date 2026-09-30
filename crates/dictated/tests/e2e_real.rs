@@ -247,6 +247,8 @@ impl Real {
             // Isolated: never read the real desktop's focus from a test.
             context: Arc::new(dictate_core::ContextEngine::disabled()),
             dictionary: None,
+            // The real deterministic chain, exactly as the daemon builds it.
+            text_chain: Arc::new(dictate_fmt::TextChain::standard(&config.format)),
             audio: Arc::new(DisabledAudioSource::new(&config.audio)) as Arc<dyn AudioSource>,
             stt: stt.clone(),
             vad: Arc::new(dictate_vad::SileroVad::new(config.vad.clone()).unwrap()),

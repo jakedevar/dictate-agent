@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
+pub use dictate_fmt::FormatContext;
 use dictate_proto::{InjectMethod, InjectionOutcome};
 pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
 pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
@@ -372,12 +373,19 @@ pub enum FormatPlan {
 }
 
 /// The LLM formatting pass.
+///
+/// It runs after the deterministic chain and the router, and only for
+/// `Route::Type` (the pipeline skips it for every other route with
+/// `route_not_eligible`). `text` is the rules output with protected spans
+/// restored; the pipeline verifies the result against those spans and rejects
+/// any output that drops, duplicates or alters one, so an implementation
+/// cannot corrupt a slash command or path even if its model tries to.
 pub trait Formatter: Send + Sync + 'static {
     /// Format `text`, failing open.
-    fn format<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Formatted>;
+    fn format<'a>(&'a self, text: &'a str, ctx: &'a FormatContext) -> BoxFuture<'a, Formatted>;
 
     /// Whether this input would be formatted, and if not, why not.
-    fn plan(&self, text: &str) -> FormatPlan;
+    fn plan(&self, text: &str, ctx: &FormatContext) -> FormatPlan;
 
     /// The pass's *observed* health, for `get_status`. A formatter that fails
     /// open is otherwise invisible; `None` means this one does not report.
@@ -460,7 +468,9 @@ impl Formatter for GrammarFormatter {
         Box::pin(self.probe_ollama())
     }
 
-    fn format<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Formatted> {
+    // The Ollama grammar prompt is context-free; S21 replaces it with the
+    // context-aware layer that reads `ctx` (tone, app, language, vocabulary).
+    fn format<'a>(&'a self, text: &'a str, _ctx: &'a FormatContext) -> BoxFuture<'a, Formatted> {
         Box::pin(async move {
             let r = self.inner.correct(text).await;
             // A *real* attempt is the strongest evidence there is: the probe
@@ -480,7 +490,7 @@ impl Formatter for GrammarFormatter {
 
     /// Mirrors `GrammarCorrector::correct`'s own fast paths so the two cannot
     /// disagree about whether the pass ran.
-    fn plan(&self, text: &str) -> FormatPlan {
+    fn plan(&self, text: &str, _ctx: &FormatContext) -> FormatPlan {
         if !self.enabled {
             return FormatPlan::Skip(dictate_proto::SkipReason::Disabled);
         }
@@ -1048,13 +1058,16 @@ pub mod mock {
         }
     }
 
-    /// Formatter that passes text through, optionally uppercasing so a test
-    /// can prove the stage ran.
+    /// Formatter that passes text through, optionally appending or rewriting
+    /// so a test can prove the stage ran (or misbehaved).
     pub struct MockFormatter {
         enabled: bool,
         suffix: Option<String>,
         delay: std::time::Duration,
         error: Option<String>,
+        rewrite: Option<fn(&str) -> String>,
+        calls: AtomicUsize,
+        last_context: Mutex<Option<FormatContext>>,
     }
 
     impl Default for MockFormatter {
@@ -1064,6 +1077,9 @@ pub mod mock {
                 suffix: None,
                 delay: std::time::Duration::ZERO,
                 error: None,
+                rewrite: None,
+                calls: AtomicUsize::new(0),
+                last_context: Mutex::new(None),
             }
         }
     }
@@ -1103,20 +1119,47 @@ pub mod mock {
             self.delay = delay;
             self
         }
+
+        /// Return `rewrite(text)` — e.g. the production failure where the
+        /// model stripped the `/` from `/research_codebase`.
+        #[must_use]
+        pub fn rewriting(rewrite: fn(&str) -> String) -> Self {
+            Self {
+                rewrite: Some(rewrite),
+                ..Self::default()
+            }
+        }
+
+        /// How many times `format` was called.
+        #[must_use]
+        pub fn calls(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+
+        /// The context the last `format` call received.
+        #[must_use]
+        pub fn last_context(&self) -> Option<FormatContext> {
+            self.last_context.lock().ok().and_then(|c| c.clone())
+        }
     }
 
     impl Formatter for MockFormatter {
-        fn format<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Formatted> {
+        fn format<'a>(&'a self, text: &'a str, ctx: &'a FormatContext) -> BoxFuture<'a, Formatted> {
             Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                if let Ok(mut last) = self.last_context.lock() {
+                    *last = Some(ctx.clone());
+                }
                 let start = std::time::Instant::now();
                 if self.delay > std::time::Duration::ZERO {
                     tokio::time::sleep(self.delay).await;
                 }
-                let out = match (&self.error, &self.suffix) {
+                let out = match (&self.error, &self.suffix, self.rewrite) {
                     // Fail open: the input survives, and the time is still spent.
-                    (Some(_), _) => text.to_string(),
-                    (None, Some(s)) => format!("{text}{s}"),
-                    (None, None) => text.to_string(),
+                    (Some(_), _, _) => text.to_string(),
+                    (None, _, Some(rewrite)) => rewrite(text),
+                    (None, Some(s), None) => format!("{text}{s}"),
+                    (None, None, None) => text.to_string(),
                 };
                 Formatted {
                     changed: out != text,
@@ -1127,7 +1170,7 @@ pub mod mock {
             })
         }
 
-        fn plan(&self, _text: &str) -> FormatPlan {
+        fn plan(&self, _text: &str, _ctx: &FormatContext) -> FormatPlan {
             if self.enabled {
                 FormatPlan::Run
             } else {
@@ -1400,7 +1443,7 @@ mod tests {
     async fn mock_formatter_fails_open_preserving_input_and_time() {
         use mock::MockFormatter;
         let f = MockFormatter::failing_after(std::time::Duration::from_millis(5), "ollama down");
-        let out = f.format("hello").await;
+        let out = f.format("hello", &FormatContext::default()).await;
         assert_eq!(out.text, "hello", "a failed format pass must not lose text");
         assert!(out.error.is_some());
         assert!(out.duration_s > 0.0, "burned time must still be reported");

@@ -169,8 +169,9 @@ impl SttProvider for PromptStt {
 async fn recognizer_bias_scope_opt_out_and_private_hit_counts() {
     for (app, use_dictionary, privacy, expected, prompt, hits, global_privacy) in [
         (Some("slack"), true, false, "Kubernetes", true, 1, false),
-        (None, true, false, "kubernetties", false, 0, false),
-        (Some("slack"), false, false, "kubernetties", false, 0, false),
+        // Unreplaced text still passes through S20's rules (sentence casing).
+        (None, true, false, "Kubernetties", false, 0, false),
+        (Some("slack"), false, false, "Kubernetties", false, 0, false),
         (Some("slack"), true, true, "Kubernetes", true, 0, false),
         (Some("slack"), true, false, "Kubernetes", true, 0, true),
     ] {

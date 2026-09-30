@@ -67,6 +67,9 @@ pub struct Setup {
     pub injector: Arc<MockInjector>,
     pub audio: Arc<MockAudio>,
     pub formatter: Arc<dyn Formatter>,
+    /// Rules configuration; the harness assembles the same dictionary-aware
+    /// chain the daemon does.
+    pub format: dictate_fmt::FormatConfig,
     pub vad: Arc<dyn VoiceActivityGate>,
     pub capabilities: Capabilities,
     pub history_enabled: bool,
@@ -88,6 +91,9 @@ impl Default for Setup {
             audio: Arc::new(MockAudio::with_seconds(1.5)),
             // Appends nothing, but *runs*, so the formatting stage is exercised.
             formatter: Arc::new(MockFormatter::default()),
+            // The production chain at its defaults: the rules are pure, so
+            // there is nothing to mock.
+            format: dictate_fmt::FormatConfig::default(),
             vad: Arc::new(
                 dictate_vad::SileroVad::new(dictate_vad::VadConfig {
                     enabled: false,
@@ -121,6 +127,10 @@ impl Setup {
     }
     pub fn with_formatter(mut self, formatter: Arc<dyn Formatter>) -> Self {
         self.formatter = formatter;
+        self
+    }
+    pub fn with_format(mut self, format: dictate_fmt::FormatConfig) -> Self {
+        self.format = format;
         self
     }
     pub fn with_vad(mut self, vad: Arc<dyn VoiceActivityGate>) -> Self {
@@ -206,6 +216,10 @@ impl Harness {
                 .unwrap_or_else(|| setup.audio.clone() as Arc<dyn AudioSource>),
             stt: setup.stt.clone(),
             vad: setup.vad.clone(),
+            text_chain: Arc::new(dictate_core::dictionary_stage::assemble_text_chain(
+                &setup.format,
+                Some(&dictionary),
+            )),
             formatter: setup.formatter.clone(),
             injector: setup.injector.clone(),
             notifier: notifier.clone(),

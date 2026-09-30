@@ -46,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let pipeline = Arc::new(Pipeline {
         // Never read the real desktop from an example.
         context: Arc::new(dictate_core::ContextEngine::disabled()),
+        text_chain: Arc::new(dictate_fmt::TextChain::default()),
         audio: Arc::new(MockAudio::with_seconds(1.0)),
         stt: Arc::new(MockStt::returning("kubernetties")),
         dictionary: Some(dictionary),

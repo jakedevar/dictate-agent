@@ -28,6 +28,7 @@
 
 pub mod cancel;
 pub mod config;
+pub mod dictionary_stage;
 pub mod engine;
 pub mod event_bus;
 pub mod formatter_health;

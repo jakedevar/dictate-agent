@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+# FormatContext carries the protocol's AppContext/Tone/Route (contract §2).
+# dictate-proto depends on nothing in the workspace, so this adds no cycle.
+dictate-proto = { workspace = true }
 ollama-rs = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }

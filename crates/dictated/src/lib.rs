@@ -251,6 +251,11 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         )
         .context("opening the dictionary database")?,
     );
+    // The configured rules with the dictionary in its chain slot (S20 ← S22).
+    let text_chain = Arc::new(dictate_core::dictionary_stage::assemble_text_chain(
+        &config.format,
+        Some(&dictionary),
+    ));
     let pipeline = Arc::new(Pipeline {
         context: Arc::new(dictate_core::ContextEngine::from_config(
             config.context.clone(),
@@ -259,6 +264,7 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         audio,
         stt,
         vad,
+        text_chain,
         formatter,
         injector,
         notifier,

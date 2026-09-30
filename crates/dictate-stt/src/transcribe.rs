@@ -7,8 +7,6 @@ use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
 
-use dictate_fmt::text_cleanup::scrub_returned_text;
-
 use crate::{
     BoxFuture, ModelInfo, ModelManager, SttProvider, SttRequest, SttTimings, Transcription,
     WhisperConfig,
@@ -152,7 +150,10 @@ impl Transcriber {
         );
         let _ = queued_at; // retained as a clear boundary for future queue telemetry.
         Ok(output.text.map(|text| Transcription {
-            text: apply_corrections(&text),
+            // Raw Whisper text. Corrections and artifact scrubbing are the
+            // deterministic text chain's job (dictate-fmt, S20), where they
+            // are word-boundary aware, configurable, and timed as `fmt_rules`.
+            text,
             language: output.language,
             timings: SttTimings {
                 audio_ms,
@@ -353,57 +354,9 @@ impl SttProvider for WhisperStt {
     }
 }
 
-/// Hardcoded Whisper mis-transcription corrections. All 23 historical pairs
-/// are deliberately kept until S22's dictionary layer supersedes them.
-pub fn apply_corrections(text: &str) -> String {
-    const CORRECTIONS: [(&str, &str); 23] = [
-        (".clod", ".claude"),
-        (".cloud", ".claude"),
-        (".clawed", ".claude"),
-        (" clod", " claude"),
-        (" cloud", " claude"),
-        (" clawed", " claude"),
-        ("Clod", "Claude"),
-        ("Cloud", "Claude"),
-        ("Clawed", "Claude"),
-        ("research code base", "/research_codebase"),
-        ("research codebase", "/research_codebase"),
-        ("create plan", "/create_plan"),
-        ("implement plan", "/implement_plan"),
-        ("validate plan", "/validate_plan"),
-        ("create handoff", "/create_handoff"),
-        ("create hand off", "/create_handoff"),
-        ("Research code base", "/research_codebase"),
-        ("Research codebase", "/research_codebase"),
-        ("Create plan", "/create_plan"),
-        ("Implement plan", "/implement_plan"),
-        ("Validate plan", "/validate_plan"),
-        ("Create handoff", "/create_handoff"),
-        ("Create hand off", "/create_handoff"),
-    ];
-    let mut result = text.to_string();
-    for (from, to) in CORRECTIONS {
-        result = result.replace(from, to);
-    }
-    scrub_returned_text(&result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn all_23_corrections_are_retained() {
-        assert_eq!(
-            apply_corrections("Clod cloud clawed create plan"),
-            "Claude claude claude /create_plan"
-        );
-        assert_eq!(
-            apply_corrections("Research code base Create hand off"),
-            "/research_codebase /create_handoff"
-        );
-        assert_eq!(apply_corrections("plain text"), "plain text");
-    }
 
     #[test]
     fn auto_and_pinned_languages_normalize_as_expected() {
