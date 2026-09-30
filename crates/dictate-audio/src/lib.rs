@@ -1,9 +1,19 @@
 //! Local microphone capture primitives.
 //!
-//! The stream stays armed while the daemon is idle.  Its bounded ring buffer
-//! therefore contains the few hundred milliseconds before a hotkey reaches
-//! the engine, avoiding first-syllable clipping without making the engine a
-//! continuously-recording session.
+//! With a non-zero `pre_roll_ms` the stream stays armed while the daemon is
+//! idle.  Its bounded ring buffer therefore contains the few hundred
+//! milliseconds before a hotkey reaches the engine, avoiding first-syllable
+//! clipping without making the engine a continuously-recording session.
+//!
+//! **That is a privacy trade-off, not a free lunch:** an armed stream means the
+//! input device is open (and the desktop's "microphone in use" indicator is
+//! lit) around the clock, even though nothing is retained beyond the ring.
+//! `pre_roll_ms = 0` opts out — the device is opened only for the duration of
+//! a recording and closed again on stop/cancel — at the cost of clipping the
+//! first syllable when a hotkey lands late. `capture = false` opts out further:
+//! the daemon never opens an input device at all (uploads only).
+
+pub mod decode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -112,9 +122,14 @@ impl Default for GainConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
+    /// Whether this daemon may use the microphone at all. `false` starts it in
+    /// audio-less mode: no input device is ever opened, `start`/`toggle` fail
+    /// with a clear error, and only uploaded audio can be transcribed.
+    pub capture: bool,
     /// Exact CPAL input-device name. An empty value uses the system default.
     pub input_device: String,
-    /// Keep this much audio immediately before a hotkey.
+    /// Keep this much audio immediately before a hotkey. **`0` closes the
+    /// input device while idle** (see the crate docs for the trade-off).
     pub pre_roll_ms: u32,
     /// Preserve the legacy end-of-utterance grace period.
     pub trailing_capture_ms: u32,
@@ -131,6 +146,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
+            capture: true,
             input_device: String::new(),
             pre_roll_ms: 300,
             trailing_capture_ms: 500,
@@ -274,6 +290,13 @@ pub fn apply_gain(samples: &mut [f32], config: &GainConfig) -> f32 {
     gain
 }
 
+/// Whether the input stream should stay open between recordings. Only a
+/// pre-roll ring needs that; without one there is nothing to fill.
+#[must_use]
+fn idle_stream_wanted(pre_roll_ms: u32) -> bool {
+    pre_roll_ms > 0
+}
+
 #[must_use]
 fn recovery_required(has_stream: bool, stream_failed: bool) -> bool {
     !has_stream || stream_failed
@@ -316,14 +339,40 @@ impl AudioCapture {
             last_diagnostics: CaptureDiagnostics::default(),
         };
 
-        // Being armed is what makes pre-roll real. Failure is not fatal at
-        // daemon startup: a USB microphone may be plugged in later, and the
-        // next start synchronously reports an actionable device error if it
-        // still cannot recover.
-        if let Err(error) = capture.arm() {
-            warn!(%error, "audio input is not armed yet; start will retry");
+        // Being armed is what makes pre-roll real, so it is only done when
+        // pre-roll was asked for. With `pre_roll_ms = 0` the device stays
+        // closed until a recording starts. Failure is not fatal at daemon
+        // startup: a USB microphone may be plugged in later, and the next
+        // start synchronously reports an actionable device error if it still
+        // cannot recover.
+        if capture.keeps_armed() {
+            if let Err(error) = capture.arm() {
+                warn!(%error, "audio input is not armed yet; start will retry");
+            }
+        } else {
+            info!("pre-roll disabled; the input device stays closed while idle");
         }
         Ok(capture)
+    }
+
+    /// Whether the input stream is held open while idle (for pre-roll).
+    #[must_use]
+    pub fn keeps_armed(&self) -> bool {
+        idle_stream_wanted(self.config.pre_roll_ms)
+    }
+
+    /// Whether an input stream is open right now — i.e. whether the device is
+    /// in use. Always `false` while idle when pre-roll is disabled.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// Release the device unless pre-roll wants it kept open.
+    fn release_if_idle_closed(&mut self) {
+        if !self.keeps_armed() && self.stream.take().is_some() {
+            info!("input device closed");
+        }
     }
 
     fn device(&self, host: &cpal::Host) -> Result<cpal::Device> {
@@ -411,15 +460,18 @@ impl AudioCapture {
         if self.is_recording() {
             bail!("Already recording");
         }
-        let recovered = recovery_required(
+        let reopen = recovery_required(
             self.stream.is_some(),
             self.health.failed.load(Ordering::Acquire),
         );
-        if recovered {
-            if !self.config.hotplug_recovery {
+        // Opening on demand (pre-roll disabled) is the normal path, not a
+        // recovery, and must not be reported as one.
+        let recovered = reopen && self.keeps_armed();
+        if reopen {
+            if recovered && !self.config.hotplug_recovery {
                 bail!("audio input is unavailable and hotplug recovery is disabled");
             }
-            self.arm().context("recovering audio input device")?;
+            self.arm().context("opening the audio input device")?;
         }
         let mut state = self.state.lock().expect("audio capture state poisoned");
         state.samples = state.ring.snapshot();
@@ -450,6 +502,7 @@ impl AudioCapture {
             state.ring.clear();
             samples
         };
+        self.release_if_idle_closed();
         let input_rms = rms(&samples);
         let duration_ms = samples.len() as f32 / SAMPLE_RATE_HZ as f32 * 1_000.0;
         let applied_gain = apply_gain(&mut samples, &self.config.gain);
@@ -461,12 +514,16 @@ impl AudioCapture {
         (!samples.is_empty()).then_some(samples)
     }
 
-    /// Cancel recording while leaving the armed stream available for the next hotkey.
+    /// Cancel recording, leaving the armed stream available for the next
+    /// hotkey — or, with pre-roll disabled, closing the device.
     pub fn cancel(&mut self) {
-        let mut state = self.state.lock().expect("audio capture state poisoned");
-        state.recording = false;
-        state.samples.clear();
-        state.ring.clear();
+        {
+            let mut state = self.state.lock().expect("audio capture state poisoned");
+            state.recording = false;
+            state.samples.clear();
+            state.ring.clear();
+        }
+        self.release_if_idle_closed();
     }
 
     /// Copy samples collected so far without interrupting capture.
@@ -593,6 +650,44 @@ mod tests {
             "Laptop Mic"
         );
         assert!(choose_device_name(&devices, "Missing", Some("Laptop Mic")).is_err());
+    }
+
+    /// The privacy contract: no pre-roll means no armed stream. Asserting it
+    /// through the real constructor is deliberate — it is hardware-independent
+    /// precisely because the constructor must not touch the device at all in
+    /// this configuration, so this passes identically with or without a
+    /// microphone attached.
+    #[test]
+    fn zero_preroll_never_opens_the_device_while_idle() {
+        let capture = AudioCapture::new(AudioConfig {
+            pre_roll_ms: 0,
+            ..AudioConfig::default()
+        })
+        .unwrap();
+        assert!(!capture.keeps_armed());
+        assert!(
+            !capture.is_armed(),
+            "the input device must be closed while idle"
+        );
+        assert!(!idle_stream_wanted(0));
+        assert!(idle_stream_wanted(1));
+        assert!(idle_stream_wanted(300));
+    }
+
+    #[test]
+    fn cancelling_with_zero_preroll_leaves_the_device_closed() {
+        let mut capture = AudioCapture::new(AudioConfig {
+            pre_roll_ms: 0,
+            ..AudioConfig::default()
+        })
+        .unwrap();
+        capture.cancel();
+        assert!(!capture.is_armed());
+    }
+
+    #[test]
+    fn capture_is_enabled_unless_the_config_says_otherwise() {
+        assert!(AudioConfig::default().capture);
     }
 
     #[test]

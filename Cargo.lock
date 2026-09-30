@@ -667,6 +667,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",
+ "hound",
  "rodio",
  "serde",
  "tokio",

@@ -39,6 +39,8 @@ signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
 # Audio capture
 cpal = "0.15"
+# WAV decoding for uploaded audio (dictate-audio::decode)
+hound = "3"
 rodio = "0.20"
 
 # Whisper transcription
