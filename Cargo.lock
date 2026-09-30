@@ -691,6 +691,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "dictate-audio",
+ "dictate-dict",
  "dictate-fmt",
  "dictate-history",
  "dictate-inject",
@@ -722,6 +723,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "unicode-casefold",
 ]
 
 [[package]]
@@ -812,6 +814,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "dictate-core",
+ "dictate-dict",
  "dictate-fmt",
  "dictate-history",
  "dictate-hotkey",
@@ -3641,6 +3644,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unicode-casefold"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f66b1c8f8caa2ab31dc6d3f35386f16efdab89668f93411e565ac368908e8f"
 
 [[package]]
 name = "unicode-ident"

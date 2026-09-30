@@ -10,6 +10,7 @@ edition.workspace = true
 test-support = []
 
 [dependencies]
+dictate-dict = { workspace = true }
 anyhow = { workspace = true }
 arboard = { workspace = true }
 dictate-audio = { workspace = true }

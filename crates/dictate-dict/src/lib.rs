@@ -15,6 +15,15 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 use store::internal;
+use unicode_casefold::UnicodeCaseFold;
+
+pub(crate) fn fold(text: &str) -> String {
+    // Rust supplies current Unicode lowercase pairs; full folding then handles
+    // caseless expansions and forms such as sigma/ß without normalizing spelling.
+    text.chars()
+        .flat_map(|c| c.to_lowercase().flat_map(|c| c.case_fold()))
+        .collect()
+}
 
 pub struct Dictionary {
     pub config: DictionaryConfig,
@@ -53,15 +62,12 @@ impl Dictionary {
     }
     pub fn list(&self, query: Option<&str>, limit: Option<u32>) -> Vec<DictionaryEntry> {
         let snapshot = self.snapshot.read().expect("dictionary snapshot poisoned");
-        let q = query.map(str::to_lowercase);
+        let q = query.map(fold);
         snapshot
             .entries
             .iter()
-            .filter(|e| {
-                q.as_ref()
-                    .is_none_or(|q| e.entry.phrase.to_lowercase().contains(q))
-            })
-            .take(limit.map(|n| n.min(10_000) as usize).unwrap_or(10_000))
+            .filter(|e| q.as_ref().is_none_or(|q| fold(&e.entry.phrase).contains(q)))
+            .take(limit.map(|n| n.min(10_000) as usize).unwrap_or(usize::MAX))
             .map(|e| e.entry.clone())
             .collect()
     }

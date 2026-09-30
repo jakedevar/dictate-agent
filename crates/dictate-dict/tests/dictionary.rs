@@ -266,3 +266,68 @@ fn fuzzy_opt_in_single_token_threshold_and_ambiguity() {
     d.upsert(entry("Kuberneteq", &[])).unwrap();
     assert_eq!(d.apply("Kubernetez", None).text, "Kubernetez");
 }
+
+#[test]
+fn persistent_wal_store_reopens_without_losing_metadata() {
+    let path = std::env::temp_dir().join(format!("s22-dictionary-{}.db", std::process::id()));
+    let saved;
+    {
+        let mut store = DictionaryStore::open(&path).unwrap();
+        saved = store.upsert(entry("Tauri", &["tow ree"])).unwrap();
+        store
+            .increment_hits(&[(saved.id.unwrap(), 3)].into())
+            .unwrap();
+    }
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "wal"
+    );
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    drop(conn);
+    {
+        let store = DictionaryStore::open(&path).unwrap();
+        let e = &store.entries().unwrap()[0];
+        assert_eq!(e.entry.id, saved.id);
+        assert_eq!(e.entry.hit_count, Some(3));
+        assert!(e.created_at > 0);
+        assert!(e.updated_at >= e.created_at);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn case_sensitive_entries_can_explicitly_allow_multiple_case_variants() {
+    let d = dict(Default::default());
+    let mut e = entry("API", &["Apii", "APII"]);
+    e.case_sensitive = true;
+    d.upsert(e).unwrap();
+    assert_eq!(d.apply("Apii APII apii", None).text, "API API apii");
+}
+
+#[test]
+fn unicode_casefold_sigma_and_sharp_s_respect_boundaries_and_uniqueness() {
+    let d = dict(Default::default());
+    d.upsert(entry("GreekTerm", &["ΟΣ"])).unwrap();
+    d.upsert(entry("GermanTerm", &["STRASSE"])).unwrap();
+    assert_eq!(
+        d.apply("ος οσ ΟΣ Straße", None).text,
+        "GreekTerm GreekTerm GreekTerm GermanTerm"
+    );
+    d.upsert(entry("ΟΣ", &[])).unwrap();
+    assert_eq!(
+        d.upsert(entry("ος", &[])).unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    let d = dict(Default::default());
+    d.upsert(entry("S", &[])).unwrap();
+    assert_eq!(
+        d.apply("ß", None).text,
+        "ß",
+        "partial expanded character must not match"
+    );
+}

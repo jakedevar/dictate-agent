@@ -98,3 +98,17 @@ fn missing_disabled_and_readonly_history() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn quoted_sentence_initial_words_are_not_recurring_terms() {
+    let c = history();
+    for day in 1..=5 {
+        add(
+            &c,
+            day,
+            "\"Hello friend.\" 'Welcome back!'",
+            "\"Hello friend.\" 'Welcome back!'",
+        );
+    }
+    assert!(mine(&c, &[]).unwrap().is_empty());
+}

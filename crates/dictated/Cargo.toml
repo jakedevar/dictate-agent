@@ -12,6 +12,7 @@ name = "dictated"
 path = "src/main.rs"
 
 [dependencies]
+dictate-dict = { workspace = true }
 anyhow = { workspace = true }
 dictate-core = { workspace = true }
 dictate-vad = { workspace = true }

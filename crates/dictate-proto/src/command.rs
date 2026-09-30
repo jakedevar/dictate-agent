@@ -95,6 +95,13 @@ pub enum Command {
         limit: Option<u32>,
     },
 
+    /// Mine history for dictionary proposals. Never installs an entry.
+    ListDictionarySuggestions {
+        /// Maximum proposals to return (server bounded).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+
     /// Create or update a dictionary entry. Creates when
     /// [`DictionaryEntry::id`] is absent.
     UpsertDictionaryEntry {
@@ -200,6 +207,7 @@ impl Command {
             Self::GetConfig { .. } => "get_config",
             Self::SetConfig { .. } => "set_config",
             Self::ListDictionary { .. } => "list_dictionary",
+            Self::ListDictionarySuggestions { .. } => "list_dictionary_suggestions",
             Self::UpsertDictionaryEntry { .. } => "upsert_dictionary_entry",
             Self::DeleteDictionaryEntry { .. } => "delete_dictionary_entry",
             Self::ListSnippets { .. } => "list_snippets",
@@ -268,6 +276,9 @@ impl Command {
             Self::SetConfig { .. } => features.config_write,
 
             Self::ListDictionary { .. } => features.dictionary_read,
+            Self::ListDictionarySuggestions { .. } => {
+                features.dictionary_read && features.history_read
+            }
             Self::UpsertDictionaryEntry { .. } | Self::DeleteDictionaryEntry { .. } => {
                 features.dictionary_write
             }

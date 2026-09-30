@@ -155,6 +155,8 @@ pub struct ResolvedOptions {
     pub allowed_routes: Vec<Route>,
     /// Suppress persistence of transcript text for this session.
     pub privacy: bool,
+    /// Disable recognizer bias, replacements and formatter vocabulary together.
+    pub use_dictionary: bool,
     /// Caller-supplied app context; S23 will populate this from focus when it
     /// is absent, but remote clients may already know their target app.
     pub app: Option<String>,
@@ -167,6 +169,7 @@ impl Default for ResolvedOptions {
             forced_route: None,
             allowed_routes: Route::known().to_vec(),
             privacy: false,
+            use_dictionary: true,
             app: None,
         }
     }
@@ -175,6 +178,9 @@ impl Default for ResolvedOptions {
 /// What a finished session produced.
 #[derive(Debug, Clone)]
 pub struct PipelineOutcome {
+    /// Dictionary-stage output and ranges (before later formatting). S20/S21
+    /// consume these as protected spans when the text chain is integrated.
+    pub dictionary: Option<dictate_dict::Applied>,
     /// The terminal state reached: `done`, `error`, or `cancelled`.
     pub state: State,
     /// The transcript, when one was produced.
@@ -189,6 +195,8 @@ pub struct Pipeline {
     pub audio: Arc<dyn AudioSource>,
     /// Recognizer.
     pub stt: Arc<dyn SttProvider>,
+    /// Shared immutable matcher snapshots and control-plane dictionary store.
+    pub dictionary: Option<Arc<dictate_dict::Dictionary>>,
     /// Silero gate/trim and hands-free trailing-silence tracker.
     pub vad: Arc<dyn VoiceActivityGate>,
     /// LLM formatting pass.
@@ -415,10 +423,19 @@ impl Pipeline {
             }
         };
 
+        // --- S22 dictionary: bounded per-session vocabulary bias ------------
+        let dictionary_app = opts.app.as_ref().map(dictate_proto::AppContext::new);
+        let stt_request = SttRequest {
+            initial_prompt: self.dictionary.as_ref().and_then(|dictionary| {
+                dictionary.initial_prompt(dictionary_app.as_ref(), opts.use_dictionary)
+            }),
+            ..SttRequest::default()
+        };
+
         // --- Speech to text -------------------------------------------------
         let clock = StageClock::start();
         let transcribed = match self
-            .race(&token, self.stt.transcribe(&samples, SttRequest::default()))
+            .race(&token, self.stt.transcribe(&samples, stt_request))
             .await
         {
             Step::Cancelled => {
@@ -480,6 +497,28 @@ impl Pipeline {
         interaction.raw_transcription = Some(raw_text.clone());
         interaction.corrected_transcription = Some(raw_text.clone());
         info!("Transcribed: \"{}\"", raw_text);
+
+        // S22 stage 3: keep output byte ranges alongside the text. The integrator
+        // moves this call into S20's chain and marks these ranges protected.
+        let dictionary_applied = self
+            .dictionary
+            .as_ref()
+            .filter(|_| opts.use_dictionary)
+            .map(|dictionary| {
+                let applied = dictionary.apply(&raw_text, dictionary_app.as_ref());
+                let privacy = opts.privacy
+                    || self
+                        .history
+                        .lock()
+                        .map(|store| store.is_privacy_mode())
+                        .unwrap_or(true);
+                dictionary.record_hits(&applied.replacements, privacy);
+                applied
+            });
+        let raw_text = dictionary_applied
+            .as_ref()
+            .map(|a| a.text.clone())
+            .unwrap_or(raw_text);
 
         // --- Formatting -----------------------------------------------------
         if handle.advance_checked(State::Formatting).is_err() {
@@ -614,7 +653,11 @@ impl Pipeline {
         let word_count = final_text.split_whitespace().count() as u32;
         let transcript = Transcript {
             text: FinalText(final_text),
-            raw_text: if opts.privacy { None } else { Some(raw_text) },
+            raw_text: if opts.privacy {
+                None
+            } else {
+                interaction.raw_transcription.clone()
+            },
             route: resolved_route,
             timings: StageTimings::default(),
             injection,
@@ -623,13 +666,16 @@ impl Pipeline {
         };
 
         interaction.completed = true;
-        self.finish(
-            &handle,
-            stages,
-            Some(interaction),
-            Outcome::done(transcript).with_audio_ms(audio_len_ms),
-        )
-        .await
+        let mut outcome = self
+            .finish(
+                &handle,
+                stages,
+                Some(interaction),
+                Outcome::done(transcript).with_audio_ms(audio_len_ms),
+            )
+            .await;
+        outcome.dictionary = dictionary_applied;
+        outcome
     }
 
     /// Race a stage future against cancellation.
@@ -994,6 +1040,7 @@ impl Pipeline {
         );
 
         PipelineOutcome {
+            dictionary: None,
             state: outcome.state,
             transcript,
             error: outcome.error,

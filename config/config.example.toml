@@ -133,3 +133,17 @@ release_grace_ms = 45
 # daemon must know whether a second press is coming, a normal release is
 # deferred for this long (or release_grace_ms, whichever is greater).
 double_tap_ms = 320
+
+# Personal dictionary (empty until entries are added with `dictate dict add`).
+[dictionary]
+enabled = true
+# Empty uses $XDG_DATA_HOME/dictated/dictionary.db; ~/ paths are expanded.
+db_path = ""
+stt_bias = true
+# Static whisper.initial_prompt plus glossary: hard cap 400 chars/UTF-8 bytes.
+max_prompt_chars = 400
+recase_phrases = true
+# Exact aliases are conservative. Fuzzy matching is experimental, opt-in.
+fuzzy = false
+# Single-token edit similarity, 0.8..1.0; short words and ambiguous matches skip.
+fuzzy_threshold = 0.9

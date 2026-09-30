@@ -46,9 +46,9 @@ impl DictionaryStore {
             version <= SCHEMA_VERSION,
             "dictionary database is newer than this daemon"
         );
-        for v in version as usize..MIGRATIONS.len() {
+        for (v, migration) in MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = conn.transaction()?;
-            tx.execute_batch(MIGRATIONS[v])?;
+            tx.execute_batch(migration)?;
             tx.pragma_update(None, "user_version", v + 1)?;
             tx.commit()?;
         }
@@ -106,7 +106,7 @@ impl DictionaryStore {
         let aliases = serde_json::to_string(&entry.sounds_like).map_err(internal)?;
         let apps = serde_json::to_string(&entry.apps).map_err(internal)?;
         let tx = self.conn.transaction().map_err(internal)?;
-        let key = entry.phrase.to_lowercase();
+        let key = crate::fold(&entry.phrase);
         let conflicting: Option<i64> = tx
             .query_row("SELECT id FROM entries WHERE phrase_key=?1", [&key], |r| {
                 r.get(0)

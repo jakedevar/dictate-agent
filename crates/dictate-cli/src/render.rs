@@ -40,9 +40,39 @@ pub fn result(result: &CommandResult, json: bool) {
         }
         CommandResult::Dictionary { entries } => {
             for e in entries {
-                println!("{:<24} {}", e.phrase, e.sounds_like.join(", "));
+                println!(
+                    "{:<5} {:<24} {:<8} {}{}",
+                    e.id.map(|id| id.to_string()).unwrap_or_default(),
+                    e.phrase,
+                    if e.enabled { "enabled" } else { "disabled" },
+                    e.sounds_like.join(", "),
+                    if e.apps.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [apps: {}]", e.apps.join(", "))
+                    }
+                );
             }
         }
+        CommandResult::DictionaryEntry { entry } => println!(
+            "{} {}",
+            entry.id.map(|id| id.to_string()).unwrap_or_default(),
+            entry.phrase
+        ),
+        CommandResult::DictionarySuggestions { suggestions } => {
+            for s in suggestions {
+                println!(
+                    "{:<24} {} occurrences / {} days ({}) {} → {}",
+                    s.entry.phrase,
+                    s.count,
+                    s.days,
+                    s.reason,
+                    s.entry.sounds_like.join(", "),
+                    s.entry.phrase
+                );
+            }
+        }
+        CommandResult::Deleted { id } => println!("deleted {id}"),
         CommandResult::Snippets { snippets } => {
             println!("{} snippets", snippets.len());
         }

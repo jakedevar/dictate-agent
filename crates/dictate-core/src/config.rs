@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub use dictate_audio::AudioConfig;
+pub use dictate_dict::DictionaryConfig;
 pub use dictate_fmt::GrammarConfig;
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
@@ -27,6 +28,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub timer: TimerConfig,
     pub hotkey: HotkeyConfig,
+    pub dictionary: DictionaryConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -184,6 +186,27 @@ pub fn load_config(path: Option<&Path>) -> anyhow::Result<Config> {
         config.history.db_path = expand_tilde(&config.history.db_path)
             .to_string_lossy()
             .into_owned();
+    }
+    config.dictionary.validate()?;
+    if let Some(section) = toml::from_str::<toml::Value>(&contents)?
+        .get("dictionary")
+        .and_then(toml::Value::as_table)
+    {
+        for key in section.keys() {
+            if ![
+                "enabled",
+                "db_path",
+                "stt_bias",
+                "max_prompt_chars",
+                "recase_phrases",
+                "fuzzy",
+                "fuzzy_threshold",
+            ]
+            .contains(&key.as_str())
+            {
+                tracing::warn!(key, "unknown dictionary configuration key");
+            }
+        }
     }
     config.timer.sound_file = expand_tilde(&config.timer.sound_file)
         .to_string_lossy()

@@ -60,7 +60,7 @@ pub fn mine(
     if !exists {
         return Ok(Vec::new());
     }
-    let known: HashSet<_> = known.iter().map(|e| e.phrase.to_lowercase()).collect();
+    let known: HashSet<_> = known.iter().map(|e| crate::fold(&e.phrase)).collect();
     let word = Regex::new(r"[\p{L}\p{N}][\p{L}\p{M}\p{N}_]*")?;
     let mut rewrites: BTreeMap<(String, String), Evidence> = BTreeMap::new();
     let mut targets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -101,11 +101,11 @@ pub fn mine(
                     let y = after.join(" ");
                     if x != y && x.chars().count() <= 200 && y.chars().count() <= 200 {
                         targets
-                            .entry(x.to_lowercase())
+                            .entry(crate::fold(&x))
                             .or_default()
                             .insert(y.clone());
                         rewrites
-                            .entry((x.to_lowercase(), y))
+                            .entry((crate::fold(&x), y))
                             .or_default()
                             .observe(&timestamp);
                     }
@@ -118,9 +118,14 @@ pub fn mine(
             corrected.as_ref()
         };
         if let Some(text) = text {
+            let mut last_word_end = 0;
             for m in word.find_iter(text) {
+                let gap = &text[last_word_end..m.start()];
+                let initial =
+                    last_word_end == 0 || gap.chars().any(|c| matches!(c, '.' | '!' | '?' | '\n'));
+                last_word_end = m.end();
                 let token = m.as_str();
-                if known.contains(&token.to_lowercase()) {
+                if known.contains(&crate::fold(token)) {
                     continue;
                 }
                 let letters: Vec<_> = token.chars().filter(|c| c.is_alphabetic()).collect();
@@ -130,10 +135,6 @@ pub fn mine(
                 let camel = letters.iter().skip(1).any(|c| c.is_uppercase())
                     && letters.iter().any(|c| c.is_lowercase());
                 let acronym = letters.iter().all(|c| c.is_uppercase());
-                let prior = text[..m.start()].trim_end();
-                let initial = prior.is_empty()
-                    || prior.ends_with(['.', '!', '?'])
-                    || text[..m.start()].ends_with('\n');
                 let capital = letters[0].is_uppercase() && !initial;
                 if camel || acronym || capital {
                     terms.entry(token.into()).or_default().observe(&timestamp);
@@ -146,15 +147,15 @@ pub fn mine(
     for ((x, y), e) in rewrites {
         if e.count >= 3
             && e.days.len() >= 2
-            && !known.contains(&y.to_lowercase())
+            && !known.contains(&crate::fold(&y))
             && targets[&x].len() == 1
         {
-            proposed.insert(y.to_lowercase());
+            proposed.insert(crate::fold(&y));
             out.push(e.proposal(y, vec![x], "consistent_rewrite"));
         }
     }
     for (term, e) in terms {
-        if e.count >= 5 && !proposed.contains(&term.to_lowercase()) && term.chars().count() <= 200 {
+        if e.count >= 5 && !proposed.contains(&crate::fold(&term)) && term.chars().count() <= 200 {
             out.push(e.proposal(term, vec![], "recurring_term"));
         }
     }

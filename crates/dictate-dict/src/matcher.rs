@@ -1,8 +1,9 @@
-use crate::{DictionaryConfig, StoredEntry};
+use crate::{fold, DictionaryConfig, StoredEntry};
 use aho_corasick::AhoCorasick;
 use dictate_proto::AppContext;
 use regex::Regex;
 use std::{collections::HashSet, ops::Range};
+use unicode_casefold::UnicodeCaseFold;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replacement {
@@ -44,12 +45,16 @@ impl Matcher {
                 .iter()
                 .chain(cfg.recase_phrases.then_some(&e.entry.phrase))
             {
-                if seen.insert(a.to_lowercase()) {
+                if seen.insert(if e.entry.case_sensitive {
+                    a.clone()
+                } else {
+                    fold(a)
+                }) {
                     aliases.push((a.clone(), i));
                 }
             }
         }
-        let automaton = AhoCorasick::new(aliases.iter().map(|(a, _)| a.to_lowercase()))?;
+        let automaton = AhoCorasick::new(aliases.iter().map(|(a, _)| fold(a)))?;
         Ok(Self {
             entries,
             aliases,
@@ -64,19 +69,19 @@ impl Matcher {
         self.entries.iter().filter(move |e| scoped(e, app))
     }
     pub fn apply(&self, text: &str, app: Option<&AppContext>, cfg: &DictionaryConfig) -> Applied {
-        if !cfg.enabled || self.aliases.is_empty() || text.is_empty() {
+        if !cfg.enabled || (!cfg.fuzzy && self.aliases.is_empty()) || text.is_empty() {
             return Applied {
                 text: text.into(),
                 replacements: Vec::new(),
             };
         }
-        // Lowercasing can change UTF-8 width (İ -> i + combining dot). Map only
+        // Case folding can change UTF-8 width (İ -> i + combining dot). Map only
         // complete original character boundaries, never slice within an expansion.
         let mut folded = String::with_capacity(text.len());
         let mut offsets = vec![Some(0)];
         for (i, c) in text.char_indices() {
             let start = folded.len();
-            folded.extend(c.to_lowercase());
+            folded.extend(c.to_lowercase().flat_map(|c| c.case_fold()));
             offsets.resize(folded.len() + 1, None);
             offsets[start] = Some(i);
             offsets[folded.len()] = Some(i + c.len_utf8());
@@ -108,11 +113,11 @@ impl Matcher {
                 {
                     continue;
                 }
-                let folded_token = token.to_lowercase();
+                let folded_token = fold(token);
                 // A canonical term already present must never be fuzzy-corrected.
                 if self
                     .in_scope(app)
-                    .any(|e| e.entry.phrase.to_lowercase() == folded_token)
+                    .any(|e| fold(&e.entry.phrase) == folded_token)
                 {
                     continue;
                 }
@@ -122,7 +127,7 @@ impl Matcher {
                 for e in self.in_scope(app).filter(|e| {
                     !e.entry.case_sensitive && !e.entry.phrase.contains(char::is_whitespace)
                 }) {
-                    let candidate = e.entry.phrase.to_lowercase();
+                    let candidate = fold(&e.entry.phrase);
                     let n = candidate.chars().count().max(folded_token.chars().count());
                     let distance = levenshtein(&folded_token, &candidate);
                     if distance > 2 {
@@ -197,12 +202,7 @@ impl Matcher {
 fn scoped(e: &StoredEntry, app: Option<&AppContext>) -> bool {
     e.entry.enabled
         && (e.entry.apps.is_empty()
-            || app.is_some_and(|app| {
-                e.entry
-                    .apps
-                    .iter()
-                    .any(|a| a.to_lowercase() == app.app.to_lowercase())
-            }))
+            || app.is_some_and(|app| e.entry.apps.iter().any(|a| fold(a) == fold(&app.app))))
 }
 fn levenshtein(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();

@@ -55,6 +55,8 @@ pub struct ServerDeps {
     pub engine: EngineHandle,
     /// The interaction log, for `query_history`.
     pub history: Arc<Mutex<HistoryStore>>,
+    /// Shared with the transcription pipeline; edits publish a new snapshot.
+    pub dictionary: Option<Arc<dictate_dict::Dictionary>>,
     /// Source of per-connection identity.
     pub ids: Arc<ClientIdGen>,
     /// Capabilities handed to a connection on this transport.
@@ -80,8 +82,8 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     // HUD wait for events that are not coming.
     caps.features.partial_transcripts = false;
     // Not implemented in this slice — see `unsupported_command` in `dispatch`.
-    caps.features.dictionary_read = false;
-    caps.features.dictionary_write = false;
+    caps.features.dictionary_read = true;
+    caps.features.dictionary_write = true;
     caps.features.snippets_read = false;
     caps.features.snippets_write = false;
     caps.features.config_read = false;
@@ -489,6 +491,49 @@ async fn dispatch(
             Ok(CommandResult::Ack)
         }
 
+        // S22: the generic permission gate above enforces per-connection read
+        // and write capabilities before any store access or history mining.
+        Command::ListDictionary { query, limit } => {
+            let dictionary = dictionary(deps)?;
+            Ok(CommandResult::Dictionary {
+                entries: dictionary.list(query.as_deref(), limit),
+            })
+        }
+        Command::UpsertDictionaryEntry { entry } => {
+            let dictionary = dictionary(deps)?.clone();
+            let entry = tokio::task::spawn_blocking(move || dictionary.upsert(entry))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::DictionaryEntry { entry })
+        }
+        Command::DeleteDictionaryEntry { id } => {
+            let dictionary = dictionary(deps)?.clone();
+            tokio::task::spawn_blocking(move || dictionary.delete(id))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Deleted { id })
+        }
+        Command::ListDictionarySuggestions { limit } => {
+            let known = dictionary(deps)?.list(None, None);
+            let history = deps.history.clone();
+            let suggestions = tokio::task::spawn_blocking(move || {
+                let store = history
+                    .lock()
+                    .map_err(|_| "history store is poisoned".to_string())?;
+                dictate_dict::suggestions::mine(store.connection(), &known)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ProtoError::new(ErrorCode::HistoryError, e))?;
+            Ok(CommandResult::DictionarySuggestions {
+                suggestions: suggestions
+                    .into_iter()
+                    .take(limit.unwrap_or(500).min(500) as usize)
+                    .collect(),
+            })
+        }
+
         Command::QueryHistory { query } => {
             let history = deps.history.clone();
             // SQLite is blocking; a slow query must not stall the runtime.
@@ -537,8 +582,7 @@ async fn dispatch(
 /// Whether this build can actually perform a command, as distinct from whether
 /// this connection is allowed to ask for it.
 ///
-/// The unimplemented set is owned by later slices: S22 brings the dictionary,
-/// S24 snippets, S33 audio upload and streaming, and config CRUD needs the
+/// The unimplemented set is owned by later slices: S24 brings snippets, S33 audio upload and streaming, and config CRUD needs the
 /// validation layer that arrives with them. Until then the honest answer is
 /// `unsupported_command` — never a stub that returns an empty list, which a
 /// client would reasonably read as "you have no dictionary entries".
@@ -547,9 +591,6 @@ fn is_implemented(command: &Command) -> bool {
         command,
         Command::GetConfig { .. }
             | Command::SetConfig { .. }
-            | Command::ListDictionary { .. }
-            | Command::UpsertDictionaryEntry { .. }
-            | Command::DeleteDictionaryEntry { .. }
             | Command::ListSnippets { .. }
             | Command::UpsertSnippet { .. }
             | Command::DeleteSnippet { .. }
@@ -557,6 +598,15 @@ fn is_implemented(command: &Command) -> bool {
             | Command::BeginAudioStream { .. }
             | Command::EndAudioStream { .. }
     )
+}
+
+fn dictionary(deps: &ServerDeps) -> Result<&Arc<dictate_dict::Dictionary>, ProtoError> {
+    deps.dictionary.as_ref().ok_or_else(|| {
+        ProtoError::new(
+            ErrorCode::CapabilityUnavailable,
+            "dictionary store is unavailable",
+        )
+    })
 }
 
 fn handshake(
@@ -622,7 +672,8 @@ mod tests {
     #[test]
     fn unimplemented_features_are_advertised_as_absent() {
         let caps = local_capabilities(true);
-        assert!(!caps.features.dictionary_read);
+        assert!(caps.features.dictionary_read);
+        assert!(caps.features.dictionary_write);
         assert!(!caps.features.snippets_read);
         assert!(!caps.features.config_read);
         assert!(
@@ -644,7 +695,7 @@ mod tests {
     fn features_this_build_implements_are_separated_from_features_it_permits() {
         // The distinction a client acts on: `unsupported_command` means no
         // amount of permission will help, `forbidden` means ask for it.
-        assert!(!is_implemented(&Command::ListDictionary {
+        assert!(is_implemented(&Command::ListDictionary {
             query: None,
             limit: None
         }));
