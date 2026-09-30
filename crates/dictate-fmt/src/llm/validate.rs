@@ -56,6 +56,10 @@ pub enum Validator {
     NovelWords,
     /// Too much rewriting overall (reordering, summarizing, answering).
     EditDistance,
+    /// Dictated words deleted without a reason a formatter may delete words
+    /// for (filler, repeat, false start, retracted correction): dropping a
+    /// clause changes what was said as surely as adding one.
+    DroppedWords,
     /// Output length far outside the input's.
     LengthRatio,
 }
@@ -77,6 +81,7 @@ impl Validator {
             Self::Numbers => "numbers",
             Self::NovelWords => "novel_words",
             Self::EditDistance => "edit_distance",
+            Self::DroppedWords => "dropped_words",
             Self::LengthRatio => "length_ratio",
         }
     }
@@ -191,6 +196,7 @@ pub fn validate(c: &Check<'_>) -> Result<(), Rejection> {
     numbers(&input_words, &output_words)?;
     novel_words(c, &input_words, &output_words)?;
     edit_distance(c, &input_words, &output_words)?;
+    dropped_words(c, &input_words, &output_words)?;
     length_ratio(c)?;
     Ok(())
 }
@@ -300,11 +306,27 @@ fn preamble(c: &Check<'_>) -> Result<(), Rejection> {
     Ok(())
 }
 
+/// Characters a formatter has no business introducing: code operators,
+/// markup and identifiers ("x plus equals one" must not become `x += 1` —
+/// that is executing the dictation, not formatting it). `$`, `%`, `:` and
+/// `-` stay allowed: they are how numbers, times and compounds are written.
+const CODE_SYMBOLS: &[char] = &[
+    '=', '+', '*', '#', '@', '_', '{', '}', '[', ']', '|', '<', '>', '\\', '~', '^', '&', '/',
+];
+
 fn markup(c: &Check<'_>) -> Result<(), Rejection> {
     for m in ["```", "**", "__", "`"] {
         if c.output.contains(m) && !c.input.contains(m) {
             return Err(Rejection::new(Validator::Markup, format!("added {m:?}")));
         }
+    }
+    let input = strip_placeholders(c.input, c.mask);
+    let output = strip_placeholders(c.output, c.mask);
+    if let Some(sym) = CODE_SYMBOLS
+        .iter()
+        .find(|ch| output.contains(**ch) && !input.contains(**ch))
+    {
+        return Err(Rejection::new(Validator::Markup, format!("added symbol {sym:?}")));
     }
     static LINE_MARKUP: OnceLock<Regex> = OnceLock::new();
     let re = LINE_MARKUP.get_or_init(|| Regex::new(r"(?m)^\s*(#{1,6}\s|[-*•]\s|>\s|\|)").unwrap());
@@ -535,6 +557,8 @@ fn licensed_numbers(input: &[String]) -> HashSet<String> {
         }
         i = j.max(i + 1);
     }
+    // "nine am" → "9:00 AM": zero minutes are formatting, not information.
+    set.insert("00".into());
     for w in input {
         match w.as_str() {
             "hundred" => set.insert("100".into()),
@@ -820,6 +844,163 @@ fn lcs_len(a: &[&str], b: &[&str]) -> usize {
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]
+}
+
+/// Words a formatter may delete without explanation: fillers, discourse
+/// markers and correction cues.
+const DELETABLE: &[&str] = &[
+    "um", "uh", "er", "erm", "hmm", "mm", "like", "so", "basically", "actually", "just",
+    "really", "you", "know", "i", "mean", "okay", "ok", "oh", "well", "yeah", "anyway",
+    "literally", "right", "alright", "wait", "sorry", "scratch", "rather", "no",
+];
+/// Unit words a number's written form absorbs ("$25", "50%", "3.5").
+const UNIT_WORDS: &[&str] = &["dollars", "dollar", "cents", "percent", "point", "degrees"];
+const NEGATIONS: &[&str] = &["not", "never", "no", "nothing", "none", "nobody", "without"];
+const CUES: &[&str] = &["actually", "sorry", "wait", "rather", "scratch", "mean", "correction"];
+
+/// Input indices kept by a longest common subsequence alignment that
+/// prefers the *latest* occurrence of a repeated word — the speaker's last
+/// attempt is the one a correction or restart keeps.
+fn kept_indices(input: &[&str], output: &[&str]) -> Vec<bool> {
+    let (n, m) = (input.len(), output.len());
+    let mut dp = vec![vec![0u16; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if input[i] == output[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut kept = vec![false; n];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if dp[i + 1][j] == dp[i][j] {
+            // Skipping this input word loses nothing: a later copy matches.
+            i += 1;
+        } else if input[i] == output[j] {
+            kept[i] = true;
+            i += 1;
+            j += 1;
+        } else {
+            j += 1;
+        }
+    }
+    kept
+}
+
+fn is_cue_at(input: &[&str], k: usize) -> bool {
+    CUES.contains(&input[k])
+        || (input[k] == "no"
+            && input
+                .get(k + 1)
+                .is_some_and(|n| matches!(*n, "wait" | "sorry" | "actually" | "no" | "#")))
+        || (input[k] == "no" && k > 0 && input[k - 1] == "no")
+}
+
+fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(), Rejection> {
+    // Number runs are one token here: "twenty first" → "21st" deletes
+    // nothing. Numbers have their own validator.
+    let input = collapse_numbers(input);
+    let output = collapse_numbers(output);
+    let input = input.as_slice();
+    let kept = kept_indices(input, &output);
+    let in_output: HashSet<&str> = output.iter().copied().collect();
+    // "e mail" → "email": pieces of a compound the output kept joined.
+    let joined = |k: usize| {
+        (k > 0 && in_output.contains(format!("{}{}", input[k - 1], input[k]).as_str()))
+            || (k + 1 < input.len() && in_output.contains(format!("{}{}", input[k], input[k + 1]).as_str()))
+            || (k + 2 < input.len()
+                && in_output.contains(format!("{}{}{}", input[k], input[k + 1], input[k + 2]).as_str()))
+            || (k > 0
+                && k + 1 < input.len()
+                && in_output.contains(format!("{}{}{}", input[k - 1], input[k], input[k + 1]).as_str()))
+            || (k > 1 && in_output.contains(format!("{}{}{}", input[k - 2], input[k - 1], input[k]).as_str()))
+    };
+    // "on tuesday no wednesday": a bare "no" between a dropped word and a
+    // kept one is the classic "A, no, B" correction.
+    let cue = |k: usize| {
+        is_cue_at(input, k)
+            || (input[k] == "no" && k > 0 && !kept[k - 1] && kept.get(k + 1) == Some(&true))
+    };
+    let cue_near = |d: usize| {
+        let lo = d.saturating_sub(3);
+        let hi = (d + 7).min(input.len());
+        (lo..hi).any(cue)
+    };
+    // A numbered list absorbs the spoken enumerators ("first…", "two…",
+    // "finally…") into its markers.
+    let listed = c.policy.allows_new_lines() && c.output.contains('\n');
+    let enumerator = |w: &str| listed && matches!(w, "#" | "then" | "next" | "finally" | "lastly" | "last");
+    // "wifi" → "Wi-Fi": a word the output kept split into adjacent pieces.
+    let split_pairs: HashSet<String> = output.windows(2).map(|p| format!("{}{}", p[0], p[1])).collect();
+    // A vocabulary term replacing its mis-heard rendering ("cube control").
+    let vocabulary: Vec<String> = c
+        .vocabulary
+        .iter()
+        .flat_map(|v| words(v))
+        .filter(|v| in_output.contains(v.as_str()))
+        .collect();
+    let vocab_replaced = |k: usize| {
+        vocabulary.iter().any(|v| {
+            (1..=3).any(|n| {
+                (k.saturating_sub(n - 1)..=k)
+                    .filter(|s| s + n <= input.len())
+                    .any(|s| normalized_similarity(&input[s..s + n].concat(), v) >= 0.6)
+            })
+        })
+    };
+    // "twenty five dollars" → "$25", "fifty percent" → "50%".
+    let unit_of_number = |k: usize| {
+        UNIT_WORDS.contains(&input[k])
+            && ((k > 0 && input[k - 1] == "#") || input.get(k + 1) == Some(&"#"))
+    };
+    let mut unexplained = Vec::new();
+    let mut d = 0;
+    while d < input.len() {
+        if kept[d] {
+            d += 1;
+            continue;
+        }
+        // A deleted run; a false start is a run followed (soon) by a kept
+        // restart of its first word: "I want you to, I need you to…".
+        let start = d;
+        while d < input.len() && !kept[d] {
+            d += 1;
+        }
+        let restart = (d..(d + 6).min(input.len())).any(|j| kept[j] && input[j] == input[start]);
+        for k in start..d {
+            let w = input[k];
+            let negation = NEGATIONS.contains(&w);
+            let explained = if negation {
+                // Dropping a negation flips meaning unless it is itself the
+                // retracted part or the cue of a correction.
+                cue_near(k) || restart
+            } else {
+                DELETABLE.contains(&w)
+                    || PROSE_INSERTABLE.contains(&w)
+                    || in_output.contains(w)
+                    || joined(k)
+                    || split_pairs.contains(w)
+                    || unit_of_number(k)
+                    || enumerator(w)
+                    || vocab_replaced(k)
+                    || cue_near(k)
+                    || restart
+            };
+            if !explained {
+                unexplained.push(w.to_string());
+            }
+        }
+    }
+    if unexplained.is_empty() {
+        return Ok(());
+    }
+    Err(Rejection::new(
+        Validator::DroppedWords,
+        format!("dropped {}", quote_list(&unexplained)),
+    ))
 }
 
 fn length_ratio(c: &Check<'_>) -> Result<(), Rejection> {
@@ -1134,14 +1315,88 @@ mod tests {
     }
 
     #[test]
+    fn rejects_code_symbols_the_speaker_did_not_type() {
+        assert_eq!(
+            rejected_by(run(
+                "in the function change x equals x plus one to x plus equals one",
+                "In the function, change x equals x plus one to x += 1.",
+                "terminal"
+            )),
+            Validator::Markup
+        );
+        assert_eq!(
+            rejected_by(run("email me at sam at example dot com", "Email me at sam@example.com.", "chat")),
+            Validator::Markup
+        );
+        // Placeholders are not symbols, and dictated symbols may stay.
+        run("look at <k1/> and a + b", "Look at <k1/> and a + b.", "terminal").unwrap();
+    }
+
+    #[test]
+    fn rejects_dropping_what_was_said() {
+        // A clause silently deleted (gemma4:12b did this).
+        assert_eq!(
+            rejected_by(run(
+                "check if self config gets cloned on every request, I think it does",
+                "Check if self config gets cloned on every request.",
+                "terminal"
+            )),
+            Validator::DroppedWords
+        );
+        // A negation dropped with its clause.
+        assert_eq!(
+            rejected_by(run(
+                "that's not what I meant, I meant the other branch",
+                "I meant the other branch.",
+                "chat"
+            )),
+            Validator::DroppedWords
+        );
+        assert_eq!(
+            rejected_by(run("please don't push it yet", "Please push it yet.", "terminal")),
+            Validator::DroppedWords
+        );
+    }
+
+    #[test]
+    fn explained_deletions_pass() {
+        run(
+            "action items one sam updates the budget two alex books the venue",
+            "Action items:\n1. Sam updates the budget.\n2. Alex books the venue.",
+            "document",
+        )
+        .unwrap();
+        run("the flight is at nine am", "The flight is at 9:00 AM.", "chat").unwrap();
+        for (input, output) in [
+            ("follow up on our call on tuesday no wednesday about pricing", "Follow up on our call on Wednesday about pricing."),
+            ("search for flights in may, no, june", "Search for flights in June."),
+            ("set the timeout to thirty seconds actually no make it sixty", "Set the timeout to sixty seconds."),
+            ("I want you to I need you to add a flag", "I need you to add a flag."),
+            ("so like basically it um works you know", "So basically it works."),
+            ("the bug is in the the lexer, no, the parser", "The bug is in the parser."),
+            ("returns none if the key is missing actually no returns an error if the key is missing", "Returns an error if the key is missing."),
+            ("can you, could you check the logs", "Could you check the logs?"),
+        ] {
+            run(input, output, "terminal").unwrap_or_else(|r| panic!("{input:?}: {r}"));
+        }
+    }
+
+    #[test]
     fn rejects_gross_length_changes() {
-        // Pure deletion passes every lexical check and is cheap in the edit
-        // distance, so length is what catches a model that drops most of
-        // the dictation.
+        // Dropping most of the dictation is named for what it drops…
         let input = "okay so I would like you to refactor the parser module and also update the tests \
                      and then make sure the documentation reflects the new behavior thanks";
         assert_eq!(
             rejected_by(run(input, "Refactor the parser.", "terminal")),
+            Validator::DroppedWords
+        );
+        // …and padding that no lexical check sees is caught by length.
+        assert_eq!(
+            rejected_by(run(
+                "please fix the bug in the parser now",
+                "Please... fix... the... bug... in... the... parser... now!!!",
+                "terminal"
+            )),
             Validator::LengthRatio
         );
     }

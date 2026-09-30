@@ -414,7 +414,21 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::EditDistance,
         ),
-        (long, Terminal, Box::new(|_| chat("Refactor the parser.")), false, Validator::LengthRatio),
+        (long, Terminal, Box::new(|_| chat("Refactor the parser.")), false, Validator::DroppedWords),
+        (
+            "please fix the bug in the parser now",
+            Terminal,
+            Box::new(|_| chat("Please... fix... the... bug... in... the... parser... now!!!")),
+            false,
+            Validator::LengthRatio,
+        ),
+        (
+            "in the function change x equals x plus one to x plus equals one",
+            Terminal,
+            Box::new(|_| chat("In the function, change x equals x plus one to x += 1.")),
+            false,
+            Validator::Markup,
+        ),
     ];
     for (input, category, reply, loosen, want) in cases {
         let got = rejected_by(input, category, reply, loosen).await;

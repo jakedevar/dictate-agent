@@ -44,6 +44,9 @@ struct Args {
     keep_alive: String,
     unload: bool,
     verbose: bool,
+    max_single_words: Option<usize>,
+    chunk_words: Option<usize>,
+    concurrency: Option<usize>,
 }
 
 fn crate_dir() -> PathBuf {
@@ -83,6 +86,9 @@ fn parse_args() -> Args {
             "--history-db" => a.history_db = Some(PathBuf::from(val())),
             "--keep-alive" => a.keep_alive = val(),
             "--unload" => a.unload = true,
+            "--max-single-words" => a.max_single_words = Some(val().parse().expect("N")),
+            "--chunk-words" => a.chunk_words = Some(val().parse().expect("N")),
+            "--concurrency" => a.concurrency = Some(val().parse().expect("N")),
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
                 println!("{}", include_str!("eval_llm.rs").lines().take(20).collect::<Vec<_>>().join("\n"));
@@ -95,13 +101,22 @@ fn parse_args() -> Args {
 }
 
 fn formatter(args: &Args, model: &str, backend: Arc<dyn ChatBackend>, mask: MaskStyle) -> LlmFormatter {
-    let config = LlmConfig {
+    let mut config = LlmConfig {
         enabled: true,
         host: args.host.clone(),
         models: vec![model.to_string()],
         keep_alive: args.keep_alive.clone(),
         ..LlmConfig::default()
     };
+    if let Some(n) = args.max_single_words {
+        config.chunking.max_single_words = n;
+    }
+    if let Some(n) = args.chunk_words {
+        config.chunking.chunk_words = n;
+    }
+    if let Some(n) = args.concurrency {
+        config.chunking.concurrency = n;
+    }
     LlmFormatter::with_backend(config, backend).with_mask_style(mask)
 }
 
@@ -192,12 +207,23 @@ const SENTENCES: &[&str] = &[
 ];
 
 /// A synthetic dictation of exactly `words` words, varied by `seed` so the
-/// final turn is never a cache hit.
+/// final turn is never a cache hit. Sentences are capitalized and end with a
+/// period, as Whisper emits them, so the chunker has boundaries to use.
 fn synthetic(words: usize, seed: usize) -> String {
-    let mut out: Vec<&str> = Vec::with_capacity(words);
+    let mut out: Vec<String> = Vec::with_capacity(words + 16);
     let mut i = seed;
     while out.len() < words {
-        out.extend(SENTENCES[i % SENTENCES.len()].split_whitespace());
+        let sentence: Vec<&str> = SENTENCES[i % SENTENCES.len()].split_whitespace().collect();
+        for (k, w) in sentence.iter().enumerate() {
+            let mut w = (*w).to_string();
+            if k == 0 {
+                w = w[..1].to_uppercase() + &w[1..];
+            }
+            if k + 1 == sentence.len() {
+                w.push('.');
+            }
+            out.push(w);
+        }
         i += 3;
     }
     out.truncate(words);
@@ -507,8 +533,16 @@ async fn main() {
             write_json(&out, &serde_json::json!({"report": report, "results": results}));
             if args.record {
                 let path = eval::recordings_path(&crate_dir().join("tests/eval/recordings"), &model);
-                eval::save_recordings(&path, &recordings).expect("save recordings");
-                println!("recorded {} replies to {}", recordings.len(), path.display());
+                // Merge: replace this run's cases, keep other corpora's.
+                let ran: std::collections::HashSet<&str> = cases.iter().map(|c| c.id.as_str()).collect();
+                let mut all: Vec<eval::Recording> = eval::load_recordings(&path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| !ran.contains(r.case_id.as_str()))
+                    .collect();
+                all.extend(recordings.iter().cloned());
+                eval::save_recordings(&path, &all).expect("save recordings");
+                println!("recorded {} replies ({} total) to {}", recordings.len(), all.len(), path.display());
             }
         }
     }
