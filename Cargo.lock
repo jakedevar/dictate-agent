@@ -774,7 +774,6 @@ name = "dictate-stt"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "dictate-fmt",
  "reqwest",
  "serde",
  "sha2",

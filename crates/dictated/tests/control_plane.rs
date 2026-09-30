@@ -60,7 +60,7 @@ async fn a_full_dictation_runs_the_protocols_state_machine_over_the_socket() {
     }
 
     let transcript = client.wait_for_final().await;
-    assert_eq!(transcript.text.as_str(), "hello there");
+    assert_eq!(transcript.text.as_str(), "Hello there");
     assert_eq!(transcript.route, dictate_proto::Route::Type);
     assert!(matches!(
         transcript.injection,
@@ -70,7 +70,7 @@ async fn a_full_dictation_runs_the_protocols_state_machine_over_the_socket() {
 
     assert_eq!(
         h.injector.injected(),
-        vec!["hello there".to_string()],
+        vec!["Hello there".to_string()],
         "the transcript must reach the injector exactly once"
     );
 
@@ -215,7 +215,7 @@ async fn one_shot_session_auto_stops_after_vad_trailing_silence() {
         .await
         .unwrap();
     assert_eq!(client.wait_for_terminal().await, State::Done);
-    assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    assert_eq!(h.injector.injected(), vec!["Hello there".to_string()]);
     h.stop().await;
 }
 
@@ -447,7 +447,7 @@ async fn cancel_after_the_commit_point_is_refused_rather_than_lying() {
     assert_eq!(client.wait_for_terminal().await, State::Done);
     assert_eq!(
         h.injector.injected(),
-        vec!["hello there".to_string()],
+        vec!["Hello there".to_string()],
         "the injection that beat the cancel must have completed, not been torn in half"
     );
     h.stop().await;
@@ -745,8 +745,8 @@ async fn a_disconnect_orphans_the_session_so_the_next_invocation_can_finish_it()
         .expect("an orphaned session must be stoppable by the next trusted client");
 
     let transcript = stopper.wait_for_final().await;
-    assert_eq!(transcript.text.as_str(), "hello there");
-    assert_eq!(h.injector.injected(), vec!["hello there".to_string()]);
+    assert_eq!(transcript.text.as_str(), "Hello there");
+    assert_eq!(h.injector.injected(), vec!["Hello there".to_string()]);
     h.stop().await;
 }
 
@@ -1177,10 +1177,10 @@ async fn two_subscribers_both_see_the_whole_session() {
     b.wait_for_state(State::Recording).await;
 
     a.request(Command::Stop).await.expect("stop");
-    assert_eq!(a.wait_for_final().await.text.as_str(), "hello there");
+    assert_eq!(a.wait_for_final().await.text.as_str(), "Hello there");
     assert_eq!(
         b.wait_for_final().await.text.as_str(),
-        "hello there",
+        "Hello there",
         "a second subscriber must receive the same final event"
     );
     h.stop().await;
@@ -1247,7 +1247,7 @@ async fn a_client_that_takes_delivery_gets_text_and_the_host_types_nothing() {
     client.request(Command::Stop).await.expect("stop");
 
     let transcript = client.wait_for_final().await;
-    assert_eq!(transcript.text.as_str(), "hello there");
+    assert_eq!(transcript.text.as_str(), "Hello there");
     assert_eq!(
         transcript.injection,
         InjectionOutcome::Delivered,
@@ -1312,10 +1312,10 @@ async fn per_stage_timings_distinguish_ran_skipped_and_absent() {
         StageTiming::skipped(SkipReason::Disabled),
         "a stage skipped by a rule must say `skipped`, never `ran{{0.0}}`"
     );
-    assert_eq!(
-        t.fmt_rules,
-        StageTiming::NotReported,
-        "the rules pass is accounted inside `stt` and has no separate measurement"
+    assert!(
+        matches!(t.fmt_rules, StageTiming::Ran { .. }),
+        "the deterministic text chain is its own measured stage (S20): {:?}",
+        t.fmt_rules
     );
 
     let total = t.total_ms.expect("total_ms is reported, not derived");
@@ -1361,7 +1361,7 @@ async fn a_formatting_pass_that_burns_time_and_fails_reports_failed_not_ran() {
     }
     assert_eq!(
         transcript.text.as_str(),
-        "hello there",
+        "Hello there",
         "the pass fails open: the text survives"
     );
     h.stop().await;
@@ -1400,7 +1400,7 @@ async fn query_history_returns_the_session_that_just_ran() {
     };
 
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].text.as_deref(), Some("hello there"));
+    assert_eq!(page.items[0].text.as_deref(), Some("Hello there"));
     assert_eq!(page.items[0].route, dictate_proto::Route::Type);
     h.stop().await;
 }

@@ -65,6 +65,7 @@ pub struct Setup {
     pub injector: Arc<MockInjector>,
     pub audio: Arc<MockAudio>,
     pub formatter: Arc<dyn Formatter>,
+    pub text_chain: Arc<dictate_fmt::TextChain>,
     pub vad: Arc<dyn VoiceActivityGate>,
     pub capabilities: Capabilities,
     pub history_enabled: bool,
@@ -80,6 +81,9 @@ impl Default for Setup {
             audio: Arc::new(MockAudio::with_seconds(1.5)),
             // Appends nothing, but *runs*, so the formatting stage is exercised.
             formatter: Arc::new(MockFormatter::default()),
+            // The production chain at its defaults: the rules are pure, so
+            // there is nothing to mock.
+            text_chain: Arc::new(dictate_fmt::TextChain::default()),
             vad: Arc::new(
                 dictate_vad::SileroVad::new(dictate_vad::VadConfig {
                     enabled: false,
@@ -110,6 +114,10 @@ impl Setup {
     }
     pub fn with_formatter(mut self, formatter: Arc<dyn Formatter>) -> Self {
         self.formatter = formatter;
+        self
+    }
+    pub fn with_text_chain(mut self, chain: dictate_fmt::TextChain) -> Self {
+        self.text_chain = Arc::new(chain);
         self
     }
     pub fn with_vad(mut self, vad: Arc<dyn VoiceActivityGate>) -> Self {
@@ -179,6 +187,7 @@ impl Harness {
             audio: setup.audio.clone(),
             stt: setup.stt.clone(),
             vad: setup.vad.clone(),
+            text_chain: setup.text_chain.clone(),
             formatter: setup.formatter.clone(),
             injector: setup.injector.clone(),
             notifier: notifier.clone(),

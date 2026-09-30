@@ -29,14 +29,17 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// Re-exported: the type of [`Pipeline::text_chain`].
+pub use dictate_fmt::TextChain;
+use dictate_fmt::{FormatContext, TextDoc};
 use dictate_history::history::Interaction;
 use dictate_history::HistoryStore;
 use dictate_proto::{
-    AudioActivity, DictationMode, ErrorCode, Event, FinalText, InjectionOutcome, ProtoError, Route,
-    SkipReason, StageTiming, StageTimings, State, Transcript,
+    AppContext, AudioActivity, DictationMode, ErrorCode, Event, FinalText, InjectionOutcome,
+    ProtoError, Route, SkipReason, StageTiming, StageTimings, State, Tone, Transcript,
 };
 use tokio::sync::Notify;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cancel::CancelToken;
 use crate::local_executor::LocalExecutor;
@@ -89,16 +92,10 @@ impl Stages {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            timings: StageTimings {
-                // The pure-Rust corrections pass currently executes *inside*
-                // `dictate-stt::transcribe`, so its cost is already counted
-                // in `stt` and it has no separately measured duration of its
-                // own. Reporting `Ran{0.0}` here would invent a measurement;
-                // `not_reported` says exactly what is true. S20 lifts the
-                // rules layer into its own stage.
-                fmt_rules: StageTiming::NotReported,
-                ..StageTimings::default()
-            },
+            // Every stage — including the deterministic text chain, which
+            // reports its own measured `fmt_rules` since S20 — starts as
+            // `not_reported` and is filled in only when it actually runs.
+            timings: StageTimings::default(),
             started: Instant::now(),
         }
     }
@@ -191,6 +188,8 @@ pub struct Pipeline {
     pub stt: Arc<dyn SttProvider>,
     /// Silero gate/trim and hands-free trailing-silence tracker.
     pub vad: Arc<dyn VoiceActivityGate>,
+    /// Deterministic text chain (S20): scrub, protect, corrections, rules.
+    pub text_chain: Arc<TextChain>,
     /// LLM formatting pass.
     pub formatter: Arc<dyn Formatter>,
     /// Text injection.
@@ -493,14 +492,75 @@ impl Pipeline {
                 .await;
         }
 
-        let text = match self.formatter.plan(&raw_text) {
+        // Deterministic chain (S20). Synchronous and sub-millisecond, so it
+        // runs inline: there is no await here for a cancel to race.
+        let mut ctx = FormatContext {
+            // S23 resolves a full AppContext from focus; until then the
+            // caller-supplied app name is the whole context.
+            app: opts.app.as_deref().map(AppContext::new),
+            tone: Tone::default(),
+            // Provisional inside the chain: routing runs on its output.
+            route: opts.forced_route.clone().unwrap_or_default(),
+            language: transcribed.language.clone(),
+            vocabulary: Vec::new(),
+        };
+        let doc = if self.text_chain.is_enabled() {
+            let clock = StageClock::start();
+            let run = self.text_chain.run(&raw_text, &ctx);
+            stages.timings.fmt_rules = clock.ran();
+            debug!(stages = %run.timings, "text chain");
+            run.doc
+        } else {
+            stages.timings.fmt_rules = StageTiming::skipped(SkipReason::Disabled);
+            // No rewriting rules, but the LLM guard below still needs to know
+            // which spans it must not let the model touch.
+            TextDoc::protected(&raw_text)
+        };
+        let rules_text = doc.restore();
+        // Logs reach the journal: in privacy mode they carry no text.
+        if rules_text != raw_text && !opts.privacy {
+            info!("Formatted: \"{}\"", rules_text);
+        }
+        interaction.grammar_input = Some(rules_text.clone());
+        interaction.corrected_transcription = Some(rules_text.clone());
+
+        // --- Route ----------------------------------------------------------
+        // On the rules output and before the LLM pass, so a trigger word
+        // ("timer", "easy", "edit:") is never at the mercy of a model, and a
+        // non-`type` route never pays for one.
+        let routed = router::route(&rules_text);
+        let resolved_route = opts
+            .forced_route
+            .clone()
+            .unwrap_or_else(|| route_to_proto(routed.route.clone()));
+        ctx.route = resolved_route.clone();
+        if opts.privacy {
+            info!("Routed to {:?}", resolved_route);
+        } else {
+            info!("Routed to {:?}: \"{}\"", resolved_route, routed.text);
+        }
+
+        interaction.route_type = Some(format!("{:?}", routed.route).to_lowercase());
+        interaction.route_model = Some(routed.model.clone());
+        interaction.route_confidence = Some(routed.confidence);
+
+        // --- LLM formatting pass (`type` prose only) ------------------------
+        let plan = if resolved_route == Route::Type {
+            self.formatter.plan(&rules_text, &ctx)
+        } else {
+            FormatPlan::Skip(SkipReason::RouteNotEligible)
+        };
+        let text = match plan {
             FormatPlan::Skip(reason) => {
                 stages.timings.fmt_llm = StageTiming::skipped(reason);
-                raw_text.clone()
+                rules_text.clone()
             }
             FormatPlan::Run => {
                 let clock = StageClock::start();
-                match self.race(&token, self.formatter.format(&raw_text)).await {
+                match self
+                    .race(&token, self.formatter.format(&rules_text, &ctx))
+                    .await
+                {
                     Step::Cancelled => {
                         stages.timings.fmt_llm = clock.failed("cancelled during formatting");
                         return self
@@ -513,42 +573,54 @@ impl Pipeline {
                             .await;
                     }
                     Step::Continue(formatted) => {
+                        // Protected spans must come back byte-for-byte. An
+                        // output that drops, duplicates or edits one (the
+                        // production model stripped `/research_codebase` to
+                        // `research_codebase`) is rejected, and the session
+                        // keeps the rules output.
+                        let rejected = match &formatted.error {
+                            Some(_) => None,
+                            None => doc
+                                .verify_output(&formatted.text)
+                                .err()
+                                .map(|v| format!("formatter output rejected: {v}")),
+                        };
+                        let error = formatted.error.clone().or_else(|| rejected.clone());
                         // A pass that burned time and then fell back is
                         // `Failed`, not `Ran` — that time is in the user's
                         // latency budget and must not vanish from accounting.
-                        stages.timings.fmt_llm = match &formatted.error {
+                        stages.timings.fmt_llm = match &error {
                             Some(e) => clock.failed(e.clone()),
                             None => clock.ran(),
                         };
-                        interaction.grammar_input = Some(raw_text.clone());
                         interaction.grammar_output = Some(formatted.text.clone());
-                        interaction.grammar_changed = formatted.changed;
-                        interaction.grammar_error = formatted.error.clone();
+                        interaction.grammar_changed = formatted.changed && error.is_none();
+                        interaction.grammar_error = error.clone();
                         interaction.grammar_duration_s = Some(formatted.duration_s);
-                        if formatted.changed {
+                        if let Some(reason) = &rejected {
+                            if opts.privacy {
+                                warn!(
+                                    "formatter altered a protected span; keeping the rules output"
+                                );
+                            } else {
+                                warn!("{reason}; keeping the rules output");
+                            }
+                        } else if formatted.changed && error.is_none() && !opts.privacy {
                             info!(
                                 "Grammar corrected: \"{}\" → \"{}\"",
-                                raw_text, formatted.text
+                                rules_text, formatted.text
                             );
                         }
-                        formatted.text
+                        if error.is_some() {
+                            rules_text.clone()
+                        } else {
+                            formatted.text
+                        }
                     }
                 }
             }
         };
         interaction.corrected_transcription = Some(text.clone());
-
-        // --- Route ----------------------------------------------------------
-        let routed = router::route(&text);
-        let resolved_route = opts
-            .forced_route
-            .clone()
-            .unwrap_or_else(|| route_to_proto(routed.route.clone()));
-        info!("Routed to {:?}: \"{}\"", resolved_route, routed.text);
-
-        interaction.route_type = Some(format!("{:?}", routed.route).to_lowercase());
-        interaction.route_model = Some(routed.model.clone());
-        interaction.route_confidence = Some(routed.confidence);
 
         // Deny-by-default route gating (S01 item 2, per the Epic-lead overrule).
         // The router can land on `timer`, which runs `systemd-run` on this
@@ -1145,6 +1217,52 @@ mod tests {
             "empty means the user said nothing; absent would mean privacy mode"
         );
         assert_eq!(t.word_count, Some(0));
+    }
+
+    /// The router runs on the rules output (S20), so every trigger must
+    /// survive casing, numbers and terminal punctuation.
+    fn route_rules_output(raw: &str) -> router::RouteResult {
+        let rules = TextChain::default().format(raw, &FormatContext::default());
+        router::route(&rules)
+    }
+
+    #[test]
+    fn a_timer_utterance_routes_and_parses_after_the_rules() {
+        let r = route_rules_output("um timer ten minutes");
+        assert_eq!(r.route, RouteType::Timer);
+        assert_eq!(r.text, "10 minutes");
+        assert_eq!(crate::timer::parse_duration(&r.text).0, Some(600));
+
+        let r = route_rules_output("timer twenty five minutes for the tea");
+        assert_eq!(r.route, RouteType::Timer);
+        let (secs, label) = crate::timer::parse_duration(&r.text);
+        assert_eq!(secs, Some(25 * 60), "`twenty five` used to parse as 5");
+        assert_eq!(label, "for the tea.");
+
+        let r = route_rules_output("timer one and a half hours");
+        assert_eq!(r.route, RouteType::Timer);
+        assert_eq!(crate::timer::parse_duration(&r.text).0, Some(5400));
+    }
+
+    #[test]
+    fn edit_triggers_keep_their_colon_and_local_triggers_still_route() {
+        let r = route_rules_output("edit: make this more formal");
+        assert_eq!(r.route, RouteType::Edit);
+        assert_eq!(r.text, "make this more formal.");
+
+        let r = route_rules_output("um, fix: the typo");
+        assert_eq!(r.route, RouteType::Edit);
+
+        let r = route_rules_output("easy what is the capital of France");
+        assert_eq!(r.route, RouteType::Local);
+        assert_eq!(r.text, "what is the capital of France.");
+
+        let r = route_rules_output("hard, explain monads");
+        assert_eq!(r.route, RouteType::Local);
+
+        let r = route_rules_output("research code base for the retry logic");
+        assert_eq!(r.route, RouteType::Type);
+        assert_eq!(r.text, "/research_codebase for the retry logic.");
     }
 
     #[test]

@@ -7,7 +7,7 @@ edition.workspace = true
 default = ["cuda"]
 # Provider/decode support is optional so the tiny control CLI can manage the
 # model catalog without linking whisper.cpp or CUDA.
-transcribe = ["dep:dictate-fmt", "dep:tokio", "dep:tracing", "dep:whisper-rs"]
+transcribe = ["dep:tokio", "dep:tracing", "dep:whisper-rs"]
 # Production default: whisper.cpp CUDA on the RTX 5080.
 cuda = ["transcribe", "whisper-rs/cuda"]
 # CI/runtime fallback: selects tiny.en + CPU defaults. Combine with
@@ -16,7 +16,6 @@ cpu-tiny-ci = ["transcribe"]
 
 [dependencies]
 anyhow = { workspace = true }
-dictate-fmt = { workspace = true, optional = true }
 serde = { workspace = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

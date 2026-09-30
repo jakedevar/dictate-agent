@@ -141,6 +141,7 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     let vad = Arc::new(
         dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
     );
+    let text_chain = Arc::new(dictate_fmt::TextChain::standard(&config.format));
     let formatter = Arc::new(GrammarFormatter::new(&config.grammar));
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
@@ -162,6 +163,7 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         audio,
         stt,
         vad,
+        text_chain,
         formatter,
         injector,
         notifier,

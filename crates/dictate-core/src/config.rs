@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub use dictate_audio::AudioConfig;
-pub use dictate_fmt::GrammarConfig;
+pub use dictate_fmt::{FormatConfig, GrammarConfig, RulesConfig};
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
 pub use dictate_stt::WhisperConfig;
@@ -20,6 +20,8 @@ pub struct Config {
     pub audio: AudioConfig,
     pub whisper: WhisperConfig,
     pub vad: VadConfig,
+    /// `[format]`: the deterministic text chain (S20).
+    pub format: FormatConfig,
     pub grammar: GrammarConfig,
     pub local: LocalConfig,
     pub output: OutputConfig,
@@ -359,6 +361,41 @@ foo = "bar"
         // All defaults
         assert_eq!(config.whisper.device, "cuda");
         assert!(config.grammar.enabled);
+    }
+
+    #[test]
+    fn format_section_defaults_are_conservative_and_every_rule_toggles() {
+        let config = Config::default();
+        assert!(config.format.enabled);
+        let r = &config.format.rules;
+        assert!(r.builtin_corrections && r.hallucination_scrub && r.fillers && r.stutters);
+        assert!(r.numbers && r.casing && r.spacing && r.terminal_punctuation);
+        assert!(
+            !r.spoken_punctuation && !r.spoken_line_breaks,
+            "\"new line\" and \"period\" are often literal in code prompts"
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[format]
+enabled = false
+
+[format.rules]
+fillers = false
+numbers = false
+spoken_line_breaks = true
+"#,
+        )
+        .unwrap();
+        assert!(!config.format.enabled);
+        assert!(!config.format.rules.fillers);
+        assert!(!config.format.rules.numbers);
+        assert!(config.format.rules.spoken_line_breaks);
+        assert!(
+            config.format.rules.casing,
+            "unmentioned rules keep their defaults"
+        );
+        assert!(config.grammar.enabled, "[grammar] is untouched by [format]");
     }
 
     #[test]
