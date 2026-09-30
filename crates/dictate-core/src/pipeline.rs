@@ -504,19 +504,19 @@ impl Pipeline {
             language: transcribed.language.clone(),
             vocabulary: Vec::new(),
         };
-        let doc = if self.text_chain.is_enabled() {
+        let (doc, rules_text) = if self.text_chain.is_enabled() {
             let clock = StageClock::start();
             let run = self.text_chain.run(&raw_text, &ctx);
+            let rules_text = run.doc.restore();
             stages.timings.fmt_rules = clock.ran();
             debug!(stages = %run.timings, "text chain");
-            run.doc
+            (run.doc, rules_text)
         } else {
             stages.timings.fmt_rules = StageTiming::skipped(SkipReason::Disabled);
             // No rewriting rules, but the LLM guard below still needs to know
             // which spans it must not let the model touch.
-            TextDoc::protected(&raw_text)
+            (TextDoc::protected(&raw_text), raw_text.clone())
         };
-        let rules_text = doc.restore();
         // Logs reach the journal: in privacy mode they carry no text.
         if rules_text != raw_text && !opts.privacy {
             info!("Formatted: \"{}\"", rules_text);
