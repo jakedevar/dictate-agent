@@ -324,6 +324,7 @@ fn golden_command_crud() {
                 enabled: true,
                 source: EntrySource::Manual,
                 hit_count: Some(12),
+                apps: Vec::new(),
             },
         },
         json!({

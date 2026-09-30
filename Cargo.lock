@@ -711,6 +711,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-dict"
+version = "0.2.0"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "chrono",
+ "dictate-proto",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dictate-fmt"
 version = "0.2.0"
 dependencies = [
