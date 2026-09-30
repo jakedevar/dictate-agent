@@ -291,6 +291,12 @@ pub struct Features {
     /// history queries will return nothing for affected sessions.
     #[serde(default)]
     pub privacy_mode: bool,
+
+    /// The connection may run [`Command::Diagnose`](crate::Command::Diagnose).
+    /// Diagnostics name host paths, installed models and permission problems,
+    /// so a remote client does not get them.
+    #[serde(default)]
+    pub diagnostics: bool,
 }
 
 impl Features {
@@ -315,6 +321,7 @@ impl Features {
             wake_word: false,
             headless: false,
             privacy_mode: false,
+            diagnostics: true,
         }
     }
 

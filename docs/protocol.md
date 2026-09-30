@@ -120,6 +120,7 @@ unrecognized flag means "not permitted", which is the fail-safe direction.
 | `wake_word` | wake-word listener exists in this build |
 | `headless` | no desktop session attached; injection can never become available |
 | `privacy_mode` | transcripts are not being persisted |
+| `diagnostics` | may run `diagnose` (names host paths, installed models, permission problems) |
 
 `routes` restricts which routes the connection may invoke — a subset decision
 rather than an on/off one. A remote client may be allowed `type` (returned as
@@ -202,6 +203,7 @@ All commands are objects tagged with `type`.
 | `transcribe_audio` | `audio`, `options?` | `transcribe_upload` |
 | `begin_audio_stream` | `format`, `options?` | `streaming_audio` |
 | `end_audio_stream` | `stream_id` | `streaming_audio` |
+| `diagnose` | `quick?` | `diagnostics` |
 
 `handshake`, `get_status`, `subscribe`, and `unsubscribe` need no capabilities —
 they are how a client discovers everything else. A command whose feature is not
@@ -263,6 +265,45 @@ which describes itself. The pipeline's native format is 16 kHz mono
 
 Inline audio is base64 (standard alphabet, padded) and ~33% larger than the
 binary paths — honor `limits.max_message_bytes`.
+
+### `transcribe_audio` on the local socket (S03)
+
+The local daemon implements `transcribe_audio` for `source: "inline"`. The
+`stream` and `body` sources belong to the network transports (S33) and are
+answered `capability_unavailable` here.
+
+- **Formats.** `wav` (RIFF; PCM 8/16/24/32-bit or 32-bit float, 4–192 kHz,
+  1–8 channels), or raw `pcm_s16le` / `pcm_f32le` whose `format` must declare
+  `sample_rate_hz` and `channels` (a missing one is `invalid_params`). The
+  daemon downmixes to mono and resamples to 16 kHz with a band-limited
+  (Kaiser-windowed sinc) resampler — never by dropping samples, which would
+  alias.
+- **Limits.** `limits.max_audio_ms` bounds the clip (checked from the WAV
+  header before any sample is decoded) and `limits.max_message_bytes` bounds
+  the request. Exceeding either is `payload_too_large` with `detail`
+  `{limit, actual}`. Undecodable audio — bad header, truncated data, a partial
+  final frame, NaN samples, an out-of-range rate or channel count — is
+  `audio_format_unsupported`.
+- **Session semantics.** The upload runs as an ordinary session in the
+  engine's single slot: `busy` when one is already running, cancellable with
+  `cancel` (from the uploading connection, from another connection with
+  `host_capture`, or by SIGUSR2), and cancelled automatically if the uploading
+  connection goes away. It never touches the microphone, media players or
+  earcons, and it skips the `recording` state (`idle → transcribing → …`).
+  `stop` on it is `invalid_state`.
+- **Delivery.** The response to the request **is** the transcript
+  (`result.type = "transcript"`); it is held until the pipeline settles, so a
+  client must not apply a short read timeout. `session_started`-style events are
+  published to subscribers as usual (the uploading connection receives its own
+  events after the response, because it is busy waiting for it).
+- **Injection.** Off unless `options.inject` is `true` *and* the connection has
+  `text_injection` (`forbidden` otherwise). Unlike `start_dictation`, an
+  omitted `inject` never means "the connection's default": an upload delivers
+  text to its caller unless told otherwise.
+- **Timings.** For an upload the `capture` stage reports the decode + resample
+  time (`ran`), since acquiring the audio is what that stage measures.
+- **Privacy.** `options.privacy: true` (or a daemon in privacy mode) persists
+  nothing about the session, exactly as for a live dictation.
 
 ---
 
@@ -457,11 +498,26 @@ the protocol crate — bearer-token auth is S33's mechanism.
 | `history_analytics` | `overall_wpm?`, `words_today`, `words_by_day[]`, streaks |
 | `transcript` | Transcript |
 | `audio_stream_opened` | `stream_id`, `session_id` |
+| `diagnostics` | `checks[]` (see §12b) |
 
 `status` reports `state`, `session?`, `daemon{name,version,protocol_version,pid?,uptime_ms?}`,
 `model{name,loaded,backend?}`, and this connection's `capabilities`.
 `model.backend` (`cuda` / `cpu`) is load-bearing: a CPU-fallback latency number
 is not comparable to a CUDA one.
+
+Two further **optional** fields exist because a silently failing dependency is
+invisible everywhere else:
+
+- `formatter{enabled, model?, health, detail?}` — the formatting pass's
+  *observed* health: `disabled` | `unchecked` | `ok` | `model_missing` |
+  `unreachable` | `failing`. The pass fails open, so a formatter whose model is
+  not installed looks exactly like one with nothing to fix; `model_missing` is
+  how a client tells them apart.
+- `audio{capture_enabled, input_open, pre_roll_ms?}` — `input_open: true` while
+  idle means the microphone is held open for pre-roll; `pre_roll_ms = 0` keeps it
+  `false` between recordings; `capture_enabled: false` means audio-less mode.
+
+An absent field means "this daemon does not report it", never "healthy".
 
 ### History records
 
@@ -542,6 +598,36 @@ Errors return the error object with the HTTP status from §10.
 → <binary frame kind=2 stream=3 seq=N flags=LAST>     (or {"type":"end_audio_stream","stream_id":3})
 ← {"kind":"event",...,"event":{"type":"final","session_id":"s2","text":"...", "injection":{"status":"delivered"}}}
 ```
+
+---
+
+## 12b. Diagnostics
+
+`diagnose` (`quick?: true` skips the slow checks) answers
+`{"type":"diagnostics","checks":[…]}`. Each check is
+`{id, title, status, detail, fix?}`; `status` ∈ `ok` | `warn` | `fail` |
+`skipped`, and `fix` — a one-line remedy — is present for every `warn` and
+`fail`. Warnings describe a working daemon the user may want to adjust; only
+`fail` makes a report unhealthy (`dictate doctor` exits non-zero on it).
+
+Stable check `id`s (order is the order to read them):
+
+| `id` | Verifies |
+|---|---|
+| `daemon` | reachable, version, pid (added by the client) |
+| `config` | the config file parsed; lists unknown keys and mapped legacy values |
+| `stt_model` | the model file exists and, for catalog models, matches the pinned SHA-256 |
+| `stt_backend` | the loaded backend is what the config asked for (CUDA verified against the GPU's process list when `nvidia-smi` is available) |
+| `formatter` | the formatting pass's observed health (see `status.formatter`) |
+| `ollama` | the Ollama server answers |
+| `grammar_model` | the configured formatter model is installed; lists installed alternatives when it is not |
+| `local_model` | the `local` route's model is installed |
+| `injection` | a display is present and an injection backend is available |
+| `hotkeys` | every configured input device is readable, when hotkeys are enabled |
+| `audio_input` | capture mode, and whether the microphone is held open while idle |
+| `notifications` | a desktop session bus is reachable |
+| `tools` | external programs the daemon shells out to |
+| `legacy_pid` | who holds the legacy `dictate.pid` that `scripts/dictate-toggle` signals |
 
 ---
 

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capabilities, ServerHello};
+use crate::diagnostics::{AudioStatus, DiagnosticsReport, FormatterStatus};
 use crate::event::FinalText;
 use crate::records::{ConfigSnapshot, DictionaryEntry, HistoryAnalytics, HistoryPage, Snippet};
 use crate::state::{DictationMode, InjectionOutcome, Route, SessionId, State};
@@ -170,6 +171,11 @@ pub enum CommandResult {
     /// Boxed for layout only; invisible on the wire.
     Transcript(Box<Transcript>),
 
+    /// Answer to [`Command::Diagnose`](crate::Command::Diagnose).
+    ///
+    /// Boxed for layout only; invisible on the wire.
+    Diagnostics(Box<DiagnosticsReport>),
+
     /// A binary audio stream was opened.
     AudioStreamOpened {
         /// Put this in every [`AudioFrame::stream_id`](crate::AudioFrame::stream_id).
@@ -203,6 +209,7 @@ impl CommandResult {
             Self::History(_) => "history",
             Self::HistoryAnalytics(_) => "history_analytics",
             Self::Transcript(_) => "transcript",
+            Self::Diagnostics(_) => "diagnostics",
             Self::AudioStreamOpened { .. } => "audio_stream_opened",
             Self::Unknown => "unknown",
         }
@@ -231,6 +238,16 @@ pub struct Status {
     /// that skipped the handshake can still discover its own limits.
     #[serde(default)]
     pub capabilities: Capabilities,
+
+    /// The formatting pass's *observed* health. Absent on a daemon that does
+    /// not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatter: Option<FormatterStatus>,
+
+    /// The microphone's state, including whether an input device is open while
+    /// idle. Absent on a daemon that does not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioStatus>,
 }
 
 /// Daemon identity and health.
@@ -306,6 +323,8 @@ mod tests {
                 backend: Some("cuda".into()),
             }),
             capabilities: Capabilities::local_trusted(),
+            formatter: None,
+            audio: None,
         }
     }
 
@@ -350,6 +369,7 @@ mod tests {
             CommandResult::Deleted { id: 9 },
             CommandResult::History(HistoryPage::default()),
             CommandResult::Transcript(Box::new(Transcript::delivered("hello"))),
+            CommandResult::Diagnostics(Box::new(DiagnosticsReport::default())),
             CommandResult::AudioStreamOpened {
                 stream_id: 3,
                 session_id: "s1".into(),
