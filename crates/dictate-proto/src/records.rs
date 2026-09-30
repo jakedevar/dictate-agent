@@ -42,11 +42,15 @@ impl ConfigEntry {
     }
 }
 
-/// A configuration read result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A configuration read (or write) result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigSnapshot {
     /// The requested subtree, or the whole configuration when no path was
-    /// given.
+    /// given: every key with the value the configuration file resolves to,
+    /// built-in defaults included. This is what the daemon runs after a
+    /// restart; keys listed in `restart_required` differ from what it runs now.
+    /// When the file on disk cannot be resolved (see `errors`) this is the
+    /// configuration the daemon is running instead.
     pub values: serde_json::Value,
     /// The path this snapshot is rooted at; absent means the root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +62,34 @@ pub struct ConfigSnapshot {
     /// Paths that require a daemon restart before they take effect.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restart_required: Vec<String>,
+    /// The user's configuration file as written, comments included. Present on
+    /// whole-tree reads and on writes; absent on subtree reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<ConfigFile>,
+    /// What the loader had to say about the file: unknown keys, mapped legacy
+    /// spellings. The same list `dictated --check-config` prints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Why the file on disk cannot be used, when it cannot. Empty for a valid
+    /// file; a write that would produce errors is refused as `config_invalid`
+    /// instead of being reported here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+    /// This snapshot describes a validated write that was not performed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+}
+
+/// The configuration file behind a [`ConfigSnapshot`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfigFile {
+    /// Where the daemon reads its configuration from.
+    pub path: String,
+    /// Whether that file exists. A missing file means built-in defaults.
+    pub exists: bool,
+    /// The file's contents; empty when it does not exist.
+    #[serde(default)]
+    pub document: String,
 }
 
 // ---------------------------------------------------------------------------

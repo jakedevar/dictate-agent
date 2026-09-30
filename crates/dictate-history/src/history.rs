@@ -158,6 +158,19 @@ impl HistoryStore {
         self.privacy_mode
     }
 
+    /// Switch global no-store mode on a running daemon.
+    ///
+    /// Takes effect for the next [`HistoryStore::commit`]. A disabled store
+    /// stays in privacy mode whatever is asked: it has nowhere to persist to,
+    /// and reporting otherwise would misstate what is recorded. Returns the
+    /// mode now in force.
+    pub fn set_privacy_mode(&mut self, on: bool) -> bool {
+        if self.enabled {
+            self.privacy_mode = on;
+        }
+        self.privacy_mode
+    }
+
     /// Run a [`dictate_proto::HistoryQuery`] against the log.
     ///
     /// # Errors
@@ -682,6 +695,40 @@ mod tests {
         assert_eq!(analytics.words_by_day.len(), 2);
         assert!((analytics.overall_wpm.unwrap() - 90.0).abs() < f64::EPSILON);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn privacy_mode_switches_live_and_a_disabled_store_stays_private() {
+        let path = temp_db("live-privacy");
+        let mut store = HistoryStore::new(&config(path.clone())).unwrap();
+        let rows = |store: &HistoryStore| -> i64 {
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert!(store.set_privacy_mode(true));
+        store.commit(&Interaction {
+            corrected_transcription: Some("synthetic private text".into()),
+            completed: true,
+            ..store.begin()
+        });
+        assert_eq!(rows(&store), 0, "privacy mode must stop the next commit");
+        assert!(!store.set_privacy_mode(false));
+        store.commit(&Interaction {
+            corrected_transcription: Some("synthetic public text".into()),
+            completed: true,
+            ..store.begin()
+        });
+        assert_eq!(rows(&store), 1);
+
+        let mut settings = config(path);
+        settings.enabled = false;
+        let mut disabled = HistoryStore::new(&settings).unwrap();
+        assert!(
+            disabled.set_privacy_mode(false),
+            "a store with nowhere to persist must not claim to be recording"
+        );
     }
 
     #[test]

@@ -77,6 +77,9 @@ pub struct Setup {
     pub audio_source: Option<Arc<dyn AudioSource>>,
     /// When set, the daemon gets a real `Doctor` built from this config.
     pub doctor: Option<(Config, ConfigReport)>,
+    /// When set, the daemon serves `get_config`/`set_config` for this file,
+    /// running whatever it resolves to at start (defaults if it is missing).
+    pub config_file: Option<PathBuf>,
 }
 
 impl Default for Setup {
@@ -102,6 +105,7 @@ impl Default for Setup {
             earcons: Arc::new(NullEarcons),
             audio_source: None,
             doctor: None,
+            config_file: None,
         }
     }
 }
@@ -141,6 +145,10 @@ impl Setup {
     }
     pub fn with_doctor(mut self, config: Config, report: ConfigReport) -> Self {
         self.doctor = Some((config, report));
+        self
+    }
+    pub fn with_config_file(mut self, path: PathBuf) -> Self {
+        self.config_file = Some(path);
         self
     }
 
@@ -230,13 +238,24 @@ impl Harness {
                 pipeline.clone(),
             )) as Arc<dyn dictated::server::DiagnosticsProvider>
         });
+        let config = setup.config_file.map(|path| {
+            let (running, _) = dictate_core::config::load_config_with_report(Some(&path))
+                .expect("the fixture config must parse");
+            Arc::new(
+                dictated::config_rpc::ConfigService::new(path, &running)
+                    .with_history(history.clone()),
+            )
+        });
         let daemon = Daemon::start_with(
             pipeline,
             history.clone(),
             &runtime,
             setup.capabilities,
             None,
-            dictated::DaemonExtras { diagnostics },
+            dictated::DaemonExtras {
+                diagnostics,
+                config,
+            },
         )
         .await
         .expect("daemon must start");

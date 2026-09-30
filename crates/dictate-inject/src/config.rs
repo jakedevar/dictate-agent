@@ -12,7 +12,7 @@ pub enum InjectionPolicy {
     Off,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct OutputConfig {
     pub auto_type: bool,

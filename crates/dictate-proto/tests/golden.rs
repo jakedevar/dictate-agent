@@ -307,10 +307,27 @@ fn golden_command_crud() {
         "set_config",
         Command::SetConfig {
             entries: vec![ConfigEntry::new("whisper.model", json!("large-v3-turbo"))],
+            document: None,
+            dry_run: false,
         },
         json!({
             "type": "set_config",
             "entries": [{"path": "whisper.model", "value": "large-v3-turbo"}]
+        }),
+    );
+    // The raw-editor path: a whole replacement document, validated only.
+    pin(
+        "set_config_document_dry_run",
+        Command::SetConfig {
+            entries: vec![],
+            document: Some("[grammar]\nenabled = true\n".into()),
+            dry_run: true,
+        },
+        json!({
+            "type": "set_config",
+            "entries": [],
+            "document": "[grammar]\nenabled = true\n",
+            "dry_run": true
         }),
     );
     pin(
@@ -1073,4 +1090,60 @@ fn diagnostics_is_a_local_only_capability() {
         !Command::Diagnose { quick: false }.is_permitted(&Features::remote_transcription_only())
     );
     assert!(!Command::Diagnose { quick: false }.mutates());
+}
+
+#[test]
+fn golden_config_snapshot() {
+    pin(
+        "config_snapshot_minimal",
+        CommandResult::Config(ConfigSnapshot {
+            values: json!({"grammar": {"enabled": false}}),
+            ..Default::default()
+        }),
+        json!({"type": "config", "values": {"grammar": {"enabled": false}}}),
+    );
+    pin(
+        "config_snapshot_full",
+        CommandResult::Config(ConfigSnapshot {
+            values: json!({"grammar": {"enabled": true}}),
+            path: None,
+            applied: vec!["grammar.enabled".into(), "history.privacy_mode".into()],
+            restart_required: vec!["grammar.enabled".into()],
+            file: Some(ConfigFile {
+                path: "/home/user/.config/dictate-agent/config.toml".into(),
+                exists: true,
+                document: "# mine\n[grammar]\nenabled = true\n".into(),
+            }),
+            warnings: vec!["unknown section [editor] ignored".into()],
+            errors: vec![],
+            dry_run: true,
+        }),
+        json!({
+            "type": "config",
+            "values": {"grammar": {"enabled": true}},
+            "applied": ["grammar.enabled", "history.privacy_mode"],
+            "restart_required": ["grammar.enabled"],
+            "file": {
+                "path": "/home/user/.config/dictate-agent/config.toml",
+                "exists": true,
+                "document": "# mine\n[grammar]\nenabled = true\n"
+            },
+            "warnings": ["unknown section [editor] ignored"],
+            "dry_run": true
+        }),
+    );
+    // A file that cannot be resolved is reported, not hidden.
+    pin(
+        "config_snapshot_errors",
+        CommandResult::Config(ConfigSnapshot {
+            values: json!({}),
+            errors: vec!["grammar.timeout_s must be a positive number of seconds, got 0".into()],
+            ..Default::default()
+        }),
+        json!({
+            "type": "config",
+            "values": {},
+            "errors": ["grammar.timeout_s must be a positive number of seconds, got 0"]
+        }),
+    );
 }

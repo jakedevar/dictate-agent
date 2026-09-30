@@ -1100,7 +1100,7 @@ async fn commands_whose_backing_feature_does_not_exist_answer_unsupported_comman
             query: None,
             limit: None,
         },
-        Command::GetConfig { path: None },
+        Command::DeleteSnippet { id: 1 },
     ] {
         let name = command.name();
         let err = client.request(command).await.unwrap_err();

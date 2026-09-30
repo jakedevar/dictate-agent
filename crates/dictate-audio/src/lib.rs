@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, SampleRate, StreamConfig};
 use rodio::{source::SineWave, OutputStream, Sink, Source};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,7 +90,7 @@ impl SampleRing {
 
 /// Software gain controls.  The limiter is deliberately simple: it is a
 /// fail-safe for quiet speech, not S11's VAD/noise-suppression work.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GainConfig {
     /// Apply RMS-normalizing gain after capture.
@@ -119,7 +119,7 @@ impl Default for GainConfig {
 
 /// Capture behavior kept independent of the daemon so fixture tests do not
 /// need a microphone or PipeWire.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AudioConfig {
     /// Whether this daemon may use the microphone at all. `false` starts it in
@@ -163,7 +163,7 @@ impl Default for AudioConfig {
 
 /// Optional Wispr-style chimes.  They are non-blocking and never affect a
 /// recording or a pipeline result when the audio output is unavailable.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EarconConfig {
     pub enabled: bool,

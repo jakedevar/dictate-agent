@@ -84,9 +84,21 @@ pub enum Command {
 
     /// Write configuration. Applied atomically: either every entry validates
     /// and is written, or none is.
+    ///
+    /// `document` and `dry_run` were added before any daemon implemented
+    /// `set_config` (every earlier daemon answers `unsupported_command`), so no
+    /// server exists that would silently ignore them and write anyway.
     SetConfig {
-        /// The settings to write.
+        /// The settings to write. A `null` value removes the key from the
+        /// file, so its built-in default applies again.
         entries: Vec<ConfigEntry>,
+        /// A complete replacement for the configuration file, in TOML — the
+        /// raw-editor path. Mutually exclusive with a non-empty `entries`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        document: Option<String>,
+        /// Validate and report what would change without writing anything.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dry_run: bool,
     },
 
     /// List personal-dictionary entries.
@@ -470,7 +482,12 @@ mod tests {
         .is_permitted(&remote));
         assert!(!Command::Toggle.is_permitted(&remote));
         // ...rewrite the host's config,
-        assert!(!Command::SetConfig { entries: vec![] }.is_permitted(&remote));
+        assert!(!Command::SetConfig {
+            entries: vec![],
+            document: None,
+            dry_run: false,
+        }
+        .is_permitted(&remote));
         // ...or read the host's dictation history.
         assert!(!Command::QueryHistory {
             query: HistoryQuery::default()
@@ -490,7 +507,11 @@ mod tests {
             Command::Stop,
             Command::Cancel,
             Command::GetStatus,
-            Command::SetConfig { entries: vec![] },
+            Command::SetConfig {
+                entries: vec![],
+                document: None,
+                dry_run: false,
+            },
             Command::QueryHistory {
                 query: HistoryQuery::default(),
             },
@@ -520,7 +541,12 @@ mod tests {
 
     #[test]
     fn mutating_commands_are_identified() {
-        assert!(Command::SetConfig { entries: vec![] }.mutates());
+        assert!(Command::SetConfig {
+            entries: vec![],
+            document: None,
+            dry_run: false,
+        }
+        .mutates());
         assert!(Command::DeleteSnippet { id: 3 }.mutates());
         assert!(!Command::GetStatus.mutates());
         assert!(!Command::QueryHistory {
@@ -540,7 +566,11 @@ mod tests {
             Command::GetStatus,
             Command::Unsubscribe,
             Command::GetConfig { path: None },
-            Command::SetConfig { entries: vec![] },
+            Command::SetConfig {
+                entries: vec![],
+                document: None,
+                dry_run: false,
+            },
             Command::DeleteSnippet { id: 1 },
             Command::EndAudioStream { stream_id: 1 },
         ];

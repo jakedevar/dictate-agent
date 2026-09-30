@@ -20,6 +20,7 @@
 //! `tests/control_plane.rs` exercises the same [`Daemon::start`] the binary
 //! calls; nothing about the concurrency behavior is re-implemented for tests.
 
+pub mod config_rpc;
 pub mod doctor;
 pub mod paths;
 pub mod server;
@@ -51,6 +52,9 @@ use crate::server::{local_capabilities, DiagnosticsProvider, Server, ServerDeps}
 pub struct DaemonExtras {
     /// Answers `diagnose`. Without one the command is `capability_unavailable`.
     pub diagnostics: Option<Arc<dyn DiagnosticsProvider>>,
+    /// Answers `get_config` / `set_config`. Without one the `config_read` and
+    /// `config_write` capabilities are withdrawn.
+    pub config: Option<Arc<config_rpc::ConfigService>>,
 }
 
 /// A daemon that has bound its socket and is serving.
@@ -112,6 +116,10 @@ impl Daemon {
             capabilities.features.dictionary_read = false;
             capabilities.features.dictionary_write = false;
         }
+        if extras.config.is_none() {
+            capabilities.features.config_read = false;
+            capabilities.features.config_write = false;
+        }
         let bus = EventBus::default();
         let (engine, handle) = Engine::new(pipeline, bus, DaemonIdentity::default());
         let engine_task = tokio::spawn(engine.run());
@@ -126,6 +134,7 @@ impl Daemon {
             ids: Arc::new(ClientIdGen::default()),
             capabilities,
             diagnostics: extras.diagnostics,
+            config: extras.config,
         });
 
         let shutdown = Arc::new(Notify::new());
@@ -337,6 +346,9 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         ..Default::default()
     };
 
+    let config_service = Arc::new(
+        config_rpc::ConfigService::new(report.path.clone(), &config).with_history(history.clone()),
+    );
     let doctor = Arc::new(doctor::Doctor::new(
         config.clone(),
         report,
@@ -351,6 +363,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         Some(pid),
         DaemonExtras {
             diagnostics: Some(doctor),
+            config: Some(config_service),
         },
     )
     .await?;
