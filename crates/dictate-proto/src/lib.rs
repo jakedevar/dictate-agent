@@ -93,6 +93,7 @@ mod macros;
 pub mod audio;
 pub mod capability;
 pub mod command;
+pub mod context;
 pub mod envelope;
 pub mod error;
 pub mod event;
@@ -107,6 +108,7 @@ pub use capability::{
     Capabilities, ClientInfo, ClientKind, Features, Hello, Limits, ServerHello, ServerInfo,
 };
 pub use command::{Command, SessionOptions};
+pub use context::{AppCategory, AppContext, Tone};
 pub use envelope::{EventEnvelope, Message, Outcome, Request, RequestId, Response};
 pub use error::{ErrorCode, ProtoError};
 pub use event::{AudioActivity, Event, FinalText, Hypothesis};

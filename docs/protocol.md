@@ -545,6 +545,33 @@ Errors return the error object with the HTTP status from §10.
 
 ---
 
+## 12a. Application context
+
+`AppContext` names where a session's text is going. The context engine (S23)
+resolves it from the focused window at session start; a network client names
+its target through `options.app` instead.
+
+```json
+{"app": "slack", "title": "#eng - Slack", "category": "chat", "profile": "work-chat"}
+```
+
+| Field | Meaning |
+|---|---|
+| `app` | Stable identifier: lowercased X11 `WM_CLASS` class, or the client-supplied name |
+| `title` | Window title at session start. Optional; privacy-sensitive, never persisted in privacy mode |
+| `category` | Open enum: `terminal`, `editor`, `browser`, `chat`, `email`, `document`, `other` (default) |
+| `profile` | Name of the configured profile that matched, if any |
+
+`Tone` is the register the formatting pass aims for — open enum `formal`,
+`neutral` (default), `casual`, `very_casual`. Neutral cleans text up without
+shifting register; the others are opt-in per category or profile.
+
+**Absence is normal.** A headless host, the network API, and GNOME/Wayland
+without a Shell extension have no window context. Every consumer must treat a
+missing context as an ordinary input with a defined default, never as an error.
+
+---
+
 ## 13. Implementation checklist
 
 **Any client**

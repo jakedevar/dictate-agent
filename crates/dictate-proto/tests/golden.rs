@@ -799,3 +799,50 @@ fn golden_binary_frame_layout() {
     assert_eq!(dictate_proto::frame::FRAME_VERSION, 1);
     assert_eq!(PROTOCOL_VERSION, 1);
 }
+
+#[test]
+fn golden_app_context() {
+    pin(
+        "app context, full",
+        AppContext {
+            app: "slack".into(),
+            title: Some("#eng - Slack".into()),
+            category: AppCategory::Chat,
+            profile: Some("work-chat".into()),
+        },
+        json!({
+            "app": "slack",
+            "title": "#eng - Slack",
+            "category": "chat",
+            "profile": "work-chat"
+        }),
+    );
+    pin(
+        "app context, minimal",
+        AppContext::new("ghostty"),
+        json!({"app": "ghostty", "category": "other"}),
+    );
+}
+
+#[test]
+fn golden_context_enums() {
+    for (category, wire) in [
+        (AppCategory::Terminal, "terminal"),
+        (AppCategory::Editor, "editor"),
+        (AppCategory::Browser, "browser"),
+        (AppCategory::Chat, "chat"),
+        (AppCategory::Email, "email"),
+        (AppCategory::Document, "document"),
+        (AppCategory::Other, "other"),
+    ] {
+        pin(wire, category, json!(wire));
+    }
+    for (tone, wire) in [
+        (Tone::Formal, "formal"),
+        (Tone::Neutral, "neutral"),
+        (Tone::Casual, "casual"),
+        (Tone::VeryCasual, "very_casual"),
+    ] {
+        pin(wire, tone, json!(wire));
+    }
+}
