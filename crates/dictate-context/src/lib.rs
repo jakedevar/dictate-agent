@@ -81,7 +81,15 @@ impl ContextEngine {
     /// Uploads/remote callers must pass `live = false`, even on an X11 host.
     pub fn resolve(&self, app: Option<&str>, live: bool) -> ResolvedProfile {
         if !self.config.enabled {
-            return ResolvedProfile::default();
+            // Detection and profiles are off, but an app the caller named is
+            // still this session's identity: app-scoped dictionary entries
+            // and history must keep working without host focus discovery.
+            return ResolvedProfile {
+                context: app
+                    .filter(|app| !app.is_empty())
+                    .map(|app| dictate_proto::AppContext::new(app.to_lowercase())),
+                ..ResolvedProfile::default()
+            };
         }
         let window = match app {
             Some(app) => Some(WindowInfo {

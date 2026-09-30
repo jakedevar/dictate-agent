@@ -190,8 +190,18 @@ fn absent_disabled_and_partial_context_have_a_defined_default_path() {
         ..Default::default()
     }));
     assert_eq!(p.context.unwrap().app, "ghostty");
+    // Disabling detection drops profiles and host discovery, but an app the
+    // caller named explicitly remains the session's identity (dictionary
+    // scope and history depend on it).
     assert_eq!(
-        ContextEngine::disabled().resolve(Some("slack"), true),
+        ContextEngine::disabled().resolve(Some("Slack"), true),
+        dictate_proto::ResolvedProfile {
+            context: Some(dictate_proto::AppContext::new("slack")),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        ContextEngine::disabled().resolve(None, true),
         Default::default()
     );
 }

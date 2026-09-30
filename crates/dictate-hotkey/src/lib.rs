@@ -462,6 +462,7 @@ mod tests {
         ));
         let pipeline = Arc::new(Pipeline {
             context: Arc::new(dictate_core::ContextEngine::disabled()),
+            dictionary: None,
             audio: Arc::new(MockAudio::with_seconds(0.1)),
             stt: Arc::new(MockStt::returning("hotkey transition")),
             vad: Arc::new(MockVad::returning(

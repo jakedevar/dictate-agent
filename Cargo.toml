@@ -85,6 +85,7 @@ dictate-stt = { path = "crates/dictate-stt", default-features = false }
 dictate-vad = { path = "crates/dictate-vad" }
 dictate-hotkey = { path = "crates/dictate-hotkey" }
 dictated = { path = "crates/dictated" }
+dictate-dict = { path = "crates/dictate-dict" }
 
 [profile.release]
 opt-level = 3

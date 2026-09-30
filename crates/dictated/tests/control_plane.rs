@@ -1096,10 +1096,6 @@ async fn commands_whose_backing_feature_does_not_exist_answer_unsupported_comman
     let mut client = h.client().await;
 
     for command in [
-        Command::ListDictionary {
-            query: None,
-            limit: None,
-        },
         Command::ListSnippets {
             query: None,
             limit: None,

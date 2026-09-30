@@ -324,6 +324,7 @@ fn golden_command_crud() {
                 enabled: true,
                 source: EntrySource::Manual,
                 hit_count: Some(12),
+                apps: Vec::new(),
             },
         },
         json!({
@@ -902,4 +903,45 @@ fn context_discovery_is_deny_by_default_and_remote_connections_are_denied() {
     assert!(!Command::GetContext.is_permitted(&Features::default()));
     assert!(!Command::GetContext.is_permitted(&Features::remote_transcription_only()));
     assert!(Command::GetContext.is_permitted(&Features::local_trusted()));
+}
+
+#[test]
+fn golden_dictionary_scope_and_suggestions() {
+    let mut entry = DictionaryEntry::new("Tauri");
+    entry.apps = vec!["slack".into()];
+    pin(
+        "dictionary apps",
+        entry,
+        json!({"phrase":"Tauri","apps":["slack"],"case_sensitive":false,"enabled":true,"source":"manual"}),
+    );
+    pin(
+        "dictionary suggestions request",
+        Command::ListDictionarySuggestions { limit: Some(20) },
+        json!({"type":"list_dictionary_suggestions","limit":20}),
+    );
+    pin(
+        "dictionary suggestions default",
+        Command::ListDictionarySuggestions { limit: None },
+        json!({"type":"list_dictionary_suggestions"}),
+    );
+    let mut entry = DictionaryEntry::new("Kubernetes");
+    entry.sounds_like = vec!["kubernetties".into()];
+    entry.source = EntrySource::AutoLearned;
+    pin(
+        "dictionary suggestions result",
+        CommandResult::DictionarySuggestions {
+            suggestions: vec![DictionarySuggestion {
+                entry,
+                reason: "consistent_rewrite".into(),
+                count: 3,
+                days: 2,
+                first_seen: "2026-09-01T12:00:00+00:00".into(),
+                last_seen: "2026-09-02T12:00:00+00:00".into(),
+            }],
+        },
+        json!({"type":"dictionary_suggestions","suggestions":[{
+            "entry":{"phrase":"Kubernetes","sounds_like":["kubernetties"],"case_sensitive":false,"enabled":true,"source":"auto_learned"},
+            "reason":"consistent_rewrite","count":3,"days":2,"first_seen":"2026-09-01T12:00:00+00:00","last_seen":"2026-09-02T12:00:00+00:00"
+        }]}),
+    );
 }

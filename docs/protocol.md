@@ -193,6 +193,7 @@ All commands are objects tagged with `type`.
 | `list_dictionary` | `query?`, `limit?` | `dictionary_read` |
 | `upsert_dictionary_entry` | `entry` | `dictionary_write` |
 | `delete_dictionary_entry` | `id` | `dictionary_write` |
+| `list_dictionary_suggestions` | `limit?` | `dictionary_read` + `history_read` |
 | `list_snippets` | `query?`, `limit?` | `snippets_read` |
 | `upsert_snippet` | `snippet` | `snippets_write` |
 | `delete_snippet` | `id` | `snippets_write` |
@@ -483,7 +484,7 @@ row at all; this is stronger than masking transcript text after the fact.
 Served by `dictated` over `$XDG_RUNTIME_DIR/dictate-agent/dictated.sock`.
 Connections there are granted `Capabilities::local_trusted`, minus anything the
 host cannot actually do (no display server withdraws `text_injection` and sets
-`headless`) and minus features this build does not have (dictionary, snippets,
+`headless`) and minus features this build does not have (snippets,
 config). Those last are answered `unsupported_command` rather than `forbidden`
 — "this build cannot" is a different fact from "you may not", and only one of
 them is worth showing the user a setting for.
@@ -623,3 +624,45 @@ window title; uploads and remote clients must never query host focus.
 sensitive. History stores only the stable app ID; privacy mode persists no
 context. Wayland compositor adapters are deferred; absent context follows the
 same default path as headless operation.
+
+### Personal dictionary (S22)
+
+`list_dictionary`, `upsert_dictionary_entry`, and `delete_dictionary_entry` are
+implemented. `DictionaryEntry.apps` is an optional JSON array of application
+identifiers, matched case-insensitively against `AppContext.app`; omitted/empty
+means global. No context uses only global entries. Entries retain `id`, `phrase`,
+`sounds_like`, `case_sensitive`, `enabled`, `source`, and server-owned `hit_count`.
+Creates omit `id`; updates require an existing positive id. A duplicate canonical
+phrase (Unicode default case-fold comparison) returns `conflict`, invalid strings return
+`invalid_params`, and absent ids return `not_found`. Hit counts supplied by clients
+are ignored. Lists include disabled entries; `query` filters canonical phrases and
+`limit` bounds the result (up to 10,000 entries); omitted means all entries,
+so JSONL export cannot silently truncate the dictionary.
+
+`list_dictionary_suggestions` returns `dictionary_suggestions` with a
+`suggestions` array. Each item contains a proposed `entry` (no id), `reason`
+(`consistent_rewrite` or `recurring_term`), `count`, `days`, `first_seen`, and
+`last_seen` (UTC RFC3339). `limit` defaults to 500 and is capped at 500. Mining
+only reads history; requesting suggestions never inserts an entry. Explicit
+acceptance is an `upsert_dictionary_entry` using the proposed entry, and requires
+`dictionary_write`. Mining also requires `history_read`, since proposed terms
+are derived from private history. Missing capabilities return `forbidden` before
+store access.
+
+Dictionary storage defaults to `$XDG_DATA_HOME/dictated/dictionary.db`, supports
+`[dictionary] db_path`, and uses WAL with ordered `PRAGMA user_version`
+migrations. Default matching rewrites only complete explicit aliases and re-cases
+canonical phrases. Optional fuzzy single-token matching is disabled by default.
+Recognizer bias merges a ranked natural glossary with `whisper.initial_prompt`,
+hard capped at 400 characters/UTF-8 bytes. `SessionOptions.use_dictionary=false`
+disables dictionary bias, replacement, and vocabulary access for that session.
+Privacy sessions never increment dictionary hit counts.
+
+The CLI supports `dictate dict list|add|rm|enable|disable|suggest|accept|import|export`.
+Example: `dictate dict add "Kubernetes" --sounds-like "cube ernetties,kubernetties"
+--app slack`. `rm`, `enable`, and `disable` take a canonical phrase or id;
+`accept` takes a suggestion's canonical phrase. `import`/`export` accept a JSONL
+file path or `-` (default stdin/stdout). Import remaps ids by phrase and leaves hit
+counts server-owned. Import validates JSON before sending requests; record-level
+validation/database failures are reported and earlier successful records remain
+installed. `--case-sensitive` on `add` preserves alias case.

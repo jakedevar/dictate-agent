@@ -10,6 +10,7 @@
 //! operation used by SIGUSR1 and avoiding a `get_status`-then-act race.
 
 mod client;
+mod dict;
 mod render;
 
 use anyhow::{bail, Result};
@@ -32,7 +33,9 @@ COMMANDS:
     context             Discover the focused app and resolved profile
     tail                Stream events until interrupted
     history             List past dictations, or purge with --purge
-    dict                Personal dictionary (not implemented until S22)
+    dict <ACTION>       list|add|rm|enable|disable|suggest|accept|import|export
+                        add PHRASE --sounds-like ALIASES --app APP
+                        import/export [FILE|-] (JSON lines; default stdin/stdout)
     model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
     model list          List catalog models and local verification state
 
@@ -123,7 +126,7 @@ async fn run() -> Result<i32> {
         }
         "tail" => tail(&mut client, &args).await,
         "history" => history(&mut client, &args).await,
-        "dict" => dict(&mut client, &args).await,
+        "dict" => dict::run(&mut client, &args.dict_args, args.json).await,
         other => {
             eprintln!("dictate: unknown command '{other}'\n");
             eprint!("{USAGE}");
@@ -265,30 +268,6 @@ fn model(args: &Args) -> Result<i32> {
 /// The command is sent for real rather than short-circuited locally, so what
 /// the user sees is the daemon's own answer — and the day S22 lands, this
 /// starts working with no change here.
-async fn dict(client: &mut Client, args: &Args) -> Result<i32> {
-    match client
-        .try_request(Command::ListDictionary {
-            query: args.text.clone(),
-            limit: args.limit,
-        })
-        .await?
-    {
-        Ok(result) => {
-            render::result(&result, args.json);
-            Ok(0)
-        }
-        Err(e) => {
-            eprintln!(
-                "dictate: the personal dictionary is not available in this build \
-                 — {} ({})",
-                e.message,
-                e.code.as_str()
-            );
-            Ok(1)
-        }
-    }
-}
-
 /// Hand-rolled argument parsing.
 ///
 /// A dependency-free parse keeps this binary small and its startup short; the
@@ -298,6 +277,7 @@ struct Args {
     command: Option<String>,
     model_action: Option<String>,
     model_name: Option<String>,
+    dict_args: Vec<String>,
     limit: Option<u32>,
     text: Option<String>,
     events: Option<String>,
@@ -347,6 +327,9 @@ impl Args {
                         args.next()
                             .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
                     )
+                }
+                other if out.command.as_deref() == Some("dict") => {
+                    out.dict_args.push(other.to_string())
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),
                 other if out.command.is_none() => out.command = Some(other.to_string()),

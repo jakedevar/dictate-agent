@@ -148,6 +148,7 @@ pub struct Harness {
     pub injector: Arc<MockInjector>,
     pub notifier: Arc<RecordingNotifier>,
     pub history: Arc<Mutex<HistoryStore>>,
+    pub dictionary: Arc<dictate_dict::Dictionary>,
     dir: PathBuf,
 }
 
@@ -180,8 +181,10 @@ impl Harness {
         ));
         let notifier = Arc::new(RecordingNotifier::default());
 
+        let dictionary = Arc::new(dictate_dict::Dictionary::in_memory().unwrap());
         let pipeline = Arc::new(Pipeline {
             context: setup.context,
+            dictionary: Some(dictionary.clone()),
             audio: setup.audio.clone(),
             stt: setup.stt.clone(),
             vad: setup.vad.clone(),
@@ -218,6 +221,7 @@ impl Harness {
             injector: setup.injector,
             notifier,
             history,
+            dictionary,
             dir,
         }
     }

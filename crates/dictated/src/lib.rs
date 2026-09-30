@@ -51,6 +51,8 @@ pub struct Daemon {
     shutdown: Arc<Notify>,
     server: tokio::task::JoinHandle<()>,
     engine_task: tokio::task::JoinHandle<()>,
+    dictionary_flush: Option<tokio::task::JoinHandle<()>>,
+    dictionary: Option<Arc<dictate_dict::Dictionary>>,
     /// Held for the daemon's lifetime; released on drop.
     _pid: Option<PidFile>,
 }
@@ -69,9 +71,14 @@ impl Daemon {
         pipeline: Arc<Pipeline>,
         history: Arc<Mutex<HistoryStore>>,
         runtime: &RuntimePaths,
-        capabilities: Capabilities,
+        mut capabilities: Capabilities,
         pid: Option<PidFile>,
     ) -> Result<Self> {
+        let dictionary = pipeline.dictionary.clone();
+        if dictionary.is_none() {
+            capabilities.features.dictionary_read = false;
+            capabilities.features.dictionary_write = false;
+        }
         let bus = EventBus::default();
         let (engine, handle) = Engine::new(pipeline, bus, DaemonIdentity::default());
         let engine_task = tokio::spawn(engine.run());
@@ -82,6 +89,7 @@ impl Daemon {
         let deps = Arc::new(ServerDeps {
             engine: handle.clone(),
             history,
+            dictionary: dictionary.clone(),
             ids: Arc::new(ClientIdGen::default()),
             capabilities,
         });
@@ -94,7 +102,26 @@ impl Daemon {
                 .await;
         });
 
+        // Hit batches run off the transcription hot path. Shutdown flushes the
+        // last batch too; failures remain queued and are visible in diagnostics.
+        let dictionary_flush = dictionary.clone().map(|dictionary| {
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                loop {
+                    tick.tick().await;
+                    let dictionary = dictionary.clone();
+                    match tokio::task::spawn_blocking(move || dictionary.flush_hits()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => warn!("dictionary hit flush failed: {e}"),
+                        Err(e) => warn!("dictionary hit worker failed: {e}"),
+                    }
+                }
+            })
+        });
+
         Ok(Self {
+            dictionary_flush,
+            dictionary,
             socket,
             engine: handle,
             shutdown,
@@ -125,6 +152,17 @@ impl Daemon {
         self.engine.shutdown().await;
         let _ = self.server.await;
         let _ = self.engine_task.await;
+        if let Some(task) = self.dictionary_flush {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(dictionary) = self.dictionary {
+            match tokio::task::spawn_blocking(move || dictionary.flush_hits()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!("final dictionary hit flush failed: {e}"),
+                Err(e) => warn!("final dictionary hit worker failed: {e}"),
+            }
+        }
     }
 }
 
@@ -158,10 +196,18 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         HistoryStore::new(&history_config).context("opening the history database")?,
     ));
 
+    let dictionary = Arc::new(
+        dictate_dict::Dictionary::open(
+            config.dictionary.clone(),
+            config.whisper.initial_prompt.clone(),
+        )
+        .context("opening the dictionary database")?,
+    );
     let pipeline = Arc::new(Pipeline {
         context: Arc::new(dictate_core::ContextEngine::from_config(
             config.context.clone(),
         )),
+        dictionary: Some(dictionary),
         audio,
         stt,
         vad,
@@ -221,6 +267,7 @@ pub async fn run(config: Config) -> Result<()> {
         forced_route: None,
         allowed_routes: capabilities.routes.clone(),
         privacy: false,
+        use_dictionary: true,
         app: None,
         ..Default::default()
     };

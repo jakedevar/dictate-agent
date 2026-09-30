@@ -1,0 +1,15 @@
+[package]
+name = "dictate-dict"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+aho-corasick = "1"
+dictate-proto.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+unicode-casefold = "0.2"

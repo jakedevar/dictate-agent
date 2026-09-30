@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capabilities, ServerHello};
 use crate::event::FinalText;
-use crate::records::{ConfigSnapshot, DictionaryEntry, HistoryAnalytics, HistoryPage, Snippet};
+use crate::records::{
+    ConfigSnapshot, DictionaryEntry, DictionarySuggestion, HistoryAnalytics, HistoryPage, Snippet,
+};
 use crate::state::{DictationMode, InjectionOutcome, Route, SessionId, State};
 use crate::timings::StageTimings;
 
@@ -136,6 +138,12 @@ pub enum CommandResult {
         entries: Vec<DictionaryEntry>,
     },
 
+    /// Read-only dictionary proposals mined from history.
+    DictionarySuggestions {
+        /// The proposals, ordered by supporting count.
+        suggestions: Vec<DictionarySuggestion>,
+    },
+
     /// A single dictionary entry after creation or update, carrying the
     /// server-assigned [`DictionaryEntry::id`].
     DictionaryEntry {
@@ -200,6 +208,7 @@ impl CommandResult {
             Self::SessionCancelled { .. } => "session_cancelled",
             Self::Config(_) => "config",
             Self::Dictionary { .. } => "dictionary",
+            Self::DictionarySuggestions { .. } => "dictionary_suggestions",
             Self::DictionaryEntry { .. } => "dictionary_entry",
             Self::Snippets { .. } => "snippets",
             Self::Snippet { .. } => "snippet",

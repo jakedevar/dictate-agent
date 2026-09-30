@@ -694,6 +694,7 @@ pub fn resolve_options(
         forced_route: options.route.clone(),
         allowed_routes: capabilities.routes.clone(),
         privacy: options.privacy.unwrap_or(false),
+        use_dictionary: options.use_dictionary.unwrap_or(true),
         app: options.app.clone(),
         capture_context: capabilities.features.context_read && capabilities.features.host_capture,
         context: None,

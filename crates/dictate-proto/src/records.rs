@@ -95,6 +95,10 @@ pub struct DictionaryEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds_like: Vec<String>,
 
+    /// Application identifiers in scope (case-insensitive). Empty means global.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
+
     /// Whether matching against `sounds_like` respects case.
     #[serde(default)]
     pub case_sensitive: bool,
@@ -119,12 +123,30 @@ impl DictionaryEntry {
             id: None,
             phrase: phrase.into(),
             sounds_like: Vec::new(),
+            apps: Vec::new(),
             case_sensitive: false,
             enabled: true,
             source: EntrySource::Manual,
             hit_count: None,
         }
     }
+}
+
+/// A proposal mined from history; never applied until explicitly accepted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DictionarySuggestion {
+    /// Proposed entry, without an assigned id.
+    pub entry: DictionaryEntry,
+    /// `consistent_rewrite` or `recurring_term`.
+    pub reason: String,
+    /// Supporting occurrences.
+    pub count: u64,
+    /// Distinct UTC dates supporting the proposal.
+    pub days: u32,
+    /// First observation, RFC3339.
+    pub first_seen: String,
+    /// Last observation, RFC3339.
+    pub last_seen: String,
 }
 
 /// A text snippet expanded from a spoken trigger.
