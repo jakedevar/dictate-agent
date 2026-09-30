@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, Once};
 
 use anyhow::{anyhow, Context, Result};
 use arboard::Clipboard;
@@ -82,11 +82,13 @@ pub trait Injector: Send + Sync + 'static {
 
 /// X11 implementation. It has no user-consent flow, but shares the async
 /// contract required by Wayland portal backends.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct X11Injector {
     enabled: bool,
     default_policy: InjectionPolicy,
     chunk_chars: usize,
+    // Serialize transactions and keep restored X11 selection ownership alive.
+    clipboard: Arc<Mutex<Option<Clipboard>>>,
 }
 
 impl X11Injector {
@@ -96,6 +98,7 @@ impl X11Injector {
             enabled: config.auto_type,
             default_policy: config.policy,
             chunk_chars: config.type_chunk_chars.max(1),
+            clipboard: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -172,28 +175,30 @@ impl X11Injector {
         }
     }
 
-    /// Save text before changing it and restore it after both a successful and
-    /// a failed paste. A clipboard without textual content is not safe to
-    /// replace: it may contain an image or another format that arboard cannot
-    /// round-trip, so the caller falls back to direct typing instead.
+    /// Snapshot before taking ownership; serve the text until the application
+    /// requests it, then restore. A successful transfer must never be retried
+    /// through typing, even if restoration fails.
     fn paste_transaction(&self, text: &str) -> Result<()> {
-        let mut clipboard = Clipboard::new().context("opening clipboard")?;
-        let saved = clipboard
-            .get_text()
-            .context("saving textual clipboard before injection")?;
-        clipboard
-            .set_text(text.to_owned())
-            .context("setting dictation text on clipboard")?;
-        let paste_result = self.send_paste();
-        std::thread::sleep(Duration::from_millis(50));
-        let restore_result = clipboard
-            .set_text(saved)
-            .context("restoring clipboard text");
+        static FORMAT_WARNING: Once = Once::new();
+        FORMAT_WARNING.call_once(|| warn!(
+            "clipboard backup preserves text, HTML with text, or image pixels; arbitrary X11 targets (including file lists and mixed image/text) are not preserved"
+        ));
+        let mut guard = self
+            .clipboard
+            .lock()
+            .map_err(|_| anyhow!("clipboard lock poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(Clipboard::new().context("opening clipboard")?);
+        }
+        let clipboard = guard.as_mut().expect("initialized above");
+        let saved = crate::clipboard::Snapshot::capture(clipboard)?;
+        let paste = crate::clipboard::PasteSelection::new(text)?;
+        paste.claim()?;
+        let paste_result = self.send_paste().and_then(|()| paste.transfer(text));
+        let restore_result = saved.restore(clipboard);
         match (paste_result, restore_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Ok(()), Err(restore_error)) => {
-                // Delivery already happened. Retrying through direct typing
-                // would duplicate the transcript in the focused application.
                 warn!("text was pasted, but clipboard restoration failed: {restore_error}");
                 Ok(())
             }
@@ -211,7 +216,11 @@ impl X11Injector {
         // Always release Ctrl, including a failed click, to avoid a stuck modifier.
         let release = enigo.key(Key::Control, Direction::Release);
         result?;
-        release?;
+        if let Err(error) = release {
+            // The click may already have reached the application. Continue the
+            // selection handshake rather than risking duplicate delivery.
+            warn!("Ctrl+V was sent, but releasing Ctrl failed: {error}");
+        }
         Ok(())
     }
 

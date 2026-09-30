@@ -791,6 +791,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "x11rb",
 ]
 
 [[package]]
