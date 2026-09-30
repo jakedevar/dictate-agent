@@ -33,7 +33,10 @@ pub struct Config {
 #[serde(default)]
 pub struct LocalConfig {
     pub host: String,
+    /// Preferred model; the first rung of the ladder.
     pub model: String,
+    /// Fallbacks tried in order when `model` is not installed (S21).
+    pub models: Vec<String>,
     pub timeout_s: f64,
 }
 
@@ -79,6 +82,9 @@ impl Default for LocalConfig {
         Self {
             host: "http://localhost:11434".into(),
             model: "qwen3:14b".into(),
+            // Installed and measured on this machine (S21); 12b fits in VRAM
+            // alongside Whisper, e4b is the small fallback.
+            models: vec!["gemma4:12b".into(), "gemma4:e4b".into()],
             timeout_s: 120.0,
         }
     }
@@ -208,6 +214,7 @@ mod tests {
         assert!((config.grammar.timeout_s - 10.0).abs() < f64::EPSILON);
         assert_eq!(config.grammar.min_words, 3);
         assert_eq!(config.local.model, "qwen3:14b");
+        assert_eq!(config.local.models, ["gemma4:12b", "gemma4:e4b"]);
         assert!(config.output.auto_type);
         assert!(config.notifications.enabled);
         assert_eq!(config.notifications.timeout_ms, 1250);
