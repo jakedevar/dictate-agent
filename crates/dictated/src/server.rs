@@ -33,13 +33,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use dictate_core::engine::resolve_options;
+use dictate_core::engine::{resolve_options, resolve_upload_options};
+use dictate_core::ports::BoxFuture;
 use dictate_core::session::{Actor, ClientId, ClientIdGen};
+use dictate_core::upload::decode_upload;
 use dictate_core::EngineHandle;
 use dictate_history::HistoryStore;
 use dictate_proto::{
-    Capabilities, ClientKind, Command, CommandResult, ErrorCode, Event, Features, Message,
-    ProtoError, RequestId, ServerHello, ServerInfo,
+    Capabilities, ClientKind, Command, CommandResult, DiagnosticsReport, ErrorCode, Event,
+    Features, Message, ProtoError, RequestId, ServerHello, ServerInfo, State,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -48,6 +50,13 @@ use tracing::{debug, error, info, warn};
 
 /// Message ceiling applied before a connection has negotiated its own limits.
 const PRE_HANDSHAKE_MAX_BYTES: usize = 64 * 1024;
+
+/// Answers `diagnose`. A trait so the server does not depend on the daemon's
+/// configuration, and so tests can substitute a fixed report.
+pub trait DiagnosticsProvider: Send + Sync + 'static {
+    /// Run the checks. `quick` skips the slow ones (hashing the model file).
+    fn diagnose(&self, quick: bool) -> BoxFuture<'_, DiagnosticsReport>;
+}
 
 /// Shared state a connection needs.
 pub struct ServerDeps {
@@ -59,6 +68,8 @@ pub struct ServerDeps {
     pub ids: Arc<ClientIdGen>,
     /// Capabilities handed to a connection on this transport.
     pub capabilities: Capabilities,
+    /// The `diagnose` implementation, when this daemon has one.
+    pub diagnostics: Option<Arc<dyn DiagnosticsProvider>>,
 }
 
 /// Capabilities for a trusted local connection, adjusted for what this host
@@ -90,6 +101,9 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     // `routes` is populated explicitly: deny-by-default means an omitted list
     // permits nothing at all.
     caps.routes = dictate_core::engine::local_routes();
+    // Upload limits: the defaults here match `[upload]` in the config; the
+    // daemon overrides them from the file it actually loaded.
+    caps.limits = dictate_core::config::UploadConfig::default().limits();
     caps
 }
 
@@ -222,9 +236,30 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
         subscription: None,
     };
 
+    let result = connection_loop(&mut reader, &mut write_half, &mut events, &mut conn, &deps).await;
+
+    // Tell the engine before returning — on *every* exit path, including a
+    // failed write to a peer that has already gone. A session this connection
+    // owns has to be orphaned or cancelled, and nobody else can notice the
+    // socket closed.
+    deps.engine
+        .disconnected(id, conn.features().host_capture)
+        .await;
+    info!(%id, "control connection closed");
+    result
+}
+
+async fn connection_loop(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    conn: &mut Conn,
+    deps: &Arc<ServerDeps>,
+) -> Result<()> {
+    let id = conn.id;
     loop {
         tokio::select! {
-            line = read_line_bounded(&mut reader, conn.max_message_bytes()) => {
+            line = read_line_bounded(reader, conn.max_message_bytes()) => {
                 match line? {
                     Framed::Eof => break,
                     Framed::TooLarge(limit) => {
@@ -236,7 +271,7 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
                             ErrorCode::PayloadTooLarge,
                             format!("message exceeds the {limit}-byte limit for this connection"),
                         );
-                        write(&mut write_half, &Message::event(Event::Error {
+                        write(write_half, &Message::event(Event::Error {
                             session_id: None,
                             error: err,
                         })).await?;
@@ -246,15 +281,20 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
                         if line.trim().is_empty() {
                             continue;
                         }
-                        let reply = process(&line, &mut conn, &deps).await;
-                        write(&mut write_half, &reply).await?;
+                        // While a request is being answered, watch for the
+                        // peer hanging up: a long request (an upload) whose
+                        // caller has gone away must be cancelled, not finished.
+                        let mut hangup: Hangup<'_> = Box::pin(watch_for_hangup(reader));
+                        let reply = process(&line, conn, deps, &mut hangup).await;
+                        drop(hangup);
+                        write(write_half, &reply).await?;
                     }
                 }
             }
             event = events.recv() => match event {
                 Ok(event) => {
                     if conn.wants(&event) {
-                        write(&mut write_half, &Message::event(event)).await?;
+                        write(write_half, &Message::event(event)).await?;
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
@@ -267,14 +307,20 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
             },
         }
     }
-
-    // Tell the engine before returning: a session this connection owns has to
-    // be orphaned or cancelled, and nobody else can notice the socket closed.
-    deps.engine
-        .disconnected(id, conn.features().host_capture)
-        .await;
-    info!(%id, "control connection closed");
     Ok(())
+}
+
+/// Resolves when the peer closes its end of the connection. Pending forever
+/// while it is merely idle — or has pipelined more data, which is left in the
+/// buffer for the next read.
+type Hangup<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+async fn watch_for_hangup(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) {
+    match reader.fill_buf().await {
+        Ok(buffered) if !buffered.is_empty() => std::future::pending::<()>().await,
+        // EOF or a socket error: either way, nobody is waiting for an answer.
+        _ => {}
+    }
 }
 
 /// One NDJSON frame.
@@ -315,7 +361,12 @@ async fn write(sink: &mut (impl AsyncWriteExt + Unpin), message: &Message) -> Re
 }
 
 /// Parse one line and produce the message to send back.
-async fn process(line: &str, conn: &mut Conn, deps: &ServerDeps) -> Message {
+async fn process(
+    line: &str,
+    conn: &mut Conn,
+    deps: &ServerDeps,
+    hangup: &mut Hangup<'_>,
+) -> Message {
     let parsed = match Message::parse(line) {
         Ok(m) => m,
         Err(e) => return recover_parse_failure(line, e),
@@ -345,7 +396,7 @@ async fn process(line: &str, conn: &mut Conn, deps: &ServerDeps) -> Message {
     };
 
     let id = request.id.clone();
-    match dispatch(request.command, conn, deps).await {
+    match dispatch(request.command, conn, deps, hangup).await {
         Ok(result) => Message::ok(id, result),
         Err(error) => Message::err(id, error),
     }
@@ -398,6 +449,7 @@ async fn dispatch(
     command: Command,
     conn: &mut Conn,
     deps: &ServerDeps,
+    hangup: &mut Hangup<'_>,
 ) -> Result<CommandResult, ProtoError> {
     // The handshake is the only thing a fresh connection may do. Everything
     // else needs capabilities, and capabilities are what the handshake
@@ -489,6 +541,19 @@ async fn dispatch(
             Ok(CommandResult::Ack)
         }
 
+        Command::TranscribeAudio { audio, options } => {
+            transcribe_audio(audio, options, conn, &capabilities, deps, hangup).await
+        }
+
+        Command::Diagnose { quick } => match &deps.diagnostics {
+            Some(provider) => Ok(CommandResult::Diagnostics(Box::new(
+                provider.diagnose(quick).await,
+            ))),
+            None => Err(ProtoError::capability_unavailable(
+                "diagnostics are not configured on this daemon",
+            )),
+        },
+
         Command::QueryHistory { query } => {
             let history = deps.history.clone();
             // SQLite is blocking; a slow query must not stall the runtime.
@@ -534,11 +599,66 @@ async fn dispatch(
     }
 }
 
+/// Run an uploaded clip through the pipeline and answer with its transcript.
+///
+/// The order is deliberate: cheap refusals first (capabilities, options), then
+/// the CPU-bound decode on the blocking pool — *before* the engine's slot is
+/// touched, so a malformed or oversized upload is a request error and never
+/// makes a good dictation answer `busy` — then the session itself.
+async fn transcribe_audio(
+    audio: dictate_proto::AudioSource,
+    options: Option<dictate_proto::SessionOptions>,
+    conn: &Conn,
+    capabilities: &Capabilities,
+    deps: &ServerDeps,
+    hangup: &mut Hangup<'_>,
+) -> Result<CommandResult, ProtoError> {
+    let resolved = resolve_upload_options(options.as_ref(), capabilities)?;
+
+    let limits = capabilities.limits.clone();
+    let supplied = tokio::task::spawn_blocking(move || decode_upload(&audio, &limits))
+        .await
+        .map_err(|e| ProtoError::new(ErrorCode::Internal, format!("decoder failed: {e}")))??;
+
+    let ticket = deps
+        .engine
+        .transcribe(conn.actor(), supplied, resolved)
+        .await?;
+
+    let outcome = tokio::select! {
+        biased;
+        outcome = ticket.outcome => outcome.map_err(|_| {
+            ProtoError::new(ErrorCode::Internal, "the session ended without an outcome")
+        })?,
+        () = hangup => {
+            // The caller is gone. Cancel rather than finish: a transcript
+            // nobody will read must not be typed into a window, and the slot
+            // should free for the next request.
+            debug!(session = %ticket.session_id.as_str(), "uploader hung up; cancelling");
+            let _ = deps.engine.cancel(conn.actor()).await;
+            return Err(ProtoError::new(ErrorCode::Cancelled, "the client disconnected"));
+        }
+    };
+
+    match (outcome.state, outcome.transcript, outcome.error) {
+        (State::Done, Some(transcript), _) => Ok(CommandResult::Transcript(Box::new(transcript))),
+        (_, _, Some(error)) => Err(error),
+        (State::Cancelled, ..) => Err(ProtoError::new(
+            ErrorCode::Cancelled,
+            "the transcription was cancelled",
+        )),
+        (state, ..) => Err(ProtoError::new(
+            ErrorCode::Internal,
+            format!("the session ended {} without a transcript", state.as_str()),
+        )),
+    }
+}
+
 /// Whether this build can actually perform a command, as distinct from whether
 /// this connection is allowed to ask for it.
 ///
 /// The unimplemented set is owned by later slices: S22 brings the dictionary,
-/// S24 snippets, S33 audio upload and streaming, and config CRUD needs the
+/// S24 snippets, S33 audio streaming, and config CRUD needs the
 /// validation layer that arrives with them. Until then the honest answer is
 /// `unsupported_command` — never a stub that returns an empty list, which a
 /// client would reasonably read as "you have no dictionary entries".
@@ -553,7 +673,6 @@ fn is_implemented(command: &Command) -> bool {
             | Command::ListSnippets { .. }
             | Command::UpsertSnippet { .. }
             | Command::DeleteSnippet { .. }
-            | Command::TranscribeAudio { .. }
             | Command::BeginAudioStream { .. }
             | Command::EndAudioStream { .. }
     )

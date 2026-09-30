@@ -57,22 +57,12 @@ impl DiagnosticCheck {
     }
 
     /// A check that passes but deserves attention.
-    pub fn warn(
-        id: &str,
-        title: &str,
-        detail: impl Into<String>,
-        fix: impl Into<String>,
-    ) -> Self {
+    pub fn warn(id: &str, title: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
         Self::new(id, title, CheckStatus::Warn, detail, Some(fix.into()))
     }
 
     /// A failing check.
-    pub fn fail(
-        id: &str,
-        title: &str,
-        detail: impl Into<String>,
-        fix: impl Into<String>,
-    ) -> Self {
+    pub fn fail(id: &str, title: &str, detail: impl Into<String>, fix: impl Into<String>) -> Self {
         Self::new(id, title, CheckStatus::Fail, detail, Some(fix.into()))
     }
 
@@ -202,12 +192,17 @@ mod tests {
     fn overall_is_the_worst_verdict_and_warnings_do_not_fail_a_report() {
         let mut r = DiagnosticsReport::default();
         assert_eq!(r.overall(), CheckStatus::Skipped);
-        r.checks.push(DiagnosticCheck::skipped("hotkeys", "Hotkeys", "disabled"));
+        r.checks
+            .push(DiagnosticCheck::skipped("hotkeys", "Hotkeys", "disabled"));
         assert_eq!(r.overall(), CheckStatus::Skipped);
         r.checks.push(DiagnosticCheck::ok("daemon", "Daemon", "up"));
         assert_eq!(r.overall(), CheckStatus::Ok);
-        r.checks
-            .push(DiagnosticCheck::warn("legacy_pid", "PID file", "held", "stop it"));
+        r.checks.push(DiagnosticCheck::warn(
+            "legacy_pid",
+            "PID file",
+            "held",
+            "stop it",
+        ));
         assert_eq!(r.overall(), CheckStatus::Warn);
         assert!(r.is_healthy());
         r.checks.push(DiagnosticCheck::fail(

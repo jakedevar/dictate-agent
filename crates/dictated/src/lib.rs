@@ -20,6 +20,7 @@
 //! `tests/control_plane.rs` exercises the same [`Daemon::start`] the binary
 //! calls; nothing about the concurrency behavior is re-implemented for tests.
 
+pub mod doctor;
 pub mod paths;
 pub mod server;
 pub mod signals;
@@ -28,11 +29,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use dictate_core::config::Config;
+use dictate_core::config::{Config, ConfigReport};
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    DesktopNotifier, GrammarFormatter, HostAudioSource, HostEarcons, HostInjector, PlayerctlMedia,
-    TextInjector, WhisperStt,
+    AudioSource, DesktopNotifier, DisabledAudioSource, GrammarFormatter, HostAudioSource,
+    HostEarcons, HostInjector, PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
 use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
@@ -42,7 +43,15 @@ use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::paths::{PidFile, RuntimePaths};
-use crate::server::{local_capabilities, Server, ServerDeps};
+use crate::server::{local_capabilities, DiagnosticsProvider, Server, ServerDeps};
+
+/// Optional collaborators of a daemon, so `Daemon::start`'s signature stays
+/// stable as capabilities are added.
+#[derive(Default)]
+pub struct DaemonExtras {
+    /// Answers `diagnose`. Without one the command is `capability_unavailable`.
+    pub diagnostics: Option<Arc<dyn DiagnosticsProvider>>,
+}
 
 /// A daemon that has bound its socket and is serving.
 pub struct Daemon {
@@ -72,6 +81,30 @@ impl Daemon {
         capabilities: Capabilities,
         pid: Option<PidFile>,
     ) -> Result<Self> {
+        Self::start_with(
+            pipeline,
+            history,
+            runtime,
+            capabilities,
+            pid,
+            DaemonExtras::default(),
+        )
+        .await
+    }
+
+    /// As [`Daemon::start`], with optional collaborators.
+    ///
+    /// # Errors
+    ///
+    /// If the socket cannot be bound.
+    pub async fn start_with(
+        pipeline: Arc<Pipeline>,
+        history: Arc<Mutex<HistoryStore>>,
+        runtime: &RuntimePaths,
+        capabilities: Capabilities,
+        pid: Option<PidFile>,
+        extras: DaemonExtras,
+    ) -> Result<Self> {
         let bus = EventBus::default();
         let (engine, handle) = Engine::new(pipeline, bus, DaemonIdentity::default());
         let engine_task = tokio::spawn(engine.run());
@@ -84,6 +117,7 @@ impl Daemon {
             history,
             ids: Arc::new(ClientIdGen::default()),
             capabilities,
+            diagnostics: extras.diagnostics,
         });
 
         let shutdown = Arc::new(Notify::new());
@@ -134,17 +168,31 @@ impl Daemon {
 ///
 /// If the audio device or the history database cannot be opened.
 pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<HistoryStore>>, bool)> {
-    let audio = Arc::new(
-        HostAudioSource::new(config.audio.clone()).context("opening the audio capture device")?,
-    );
+    // Audio-less mode wires in a source that *cannot* open a device, so the
+    // guarantee that no microphone is touched does not depend on every code
+    // path remembering to check a flag.
+    let audio: Arc<dyn AudioSource> = if config.audio.capture {
+        Arc::new(
+            HostAudioSource::new(config.audio.clone())
+                .context("opening the audio capture device")?,
+        )
+    } else {
+        info!("audio capture disabled ([audio] capture = false): no input device will be opened");
+        Arc::new(DisabledAudioSource::new(&config.audio))
+    };
     let stt = Arc::new(WhisperStt::new(&config.whisper));
     let vad = Arc::new(
         dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
     );
-    let formatter = Arc::new(GrammarFormatter::new(&config.grammar));
+    let notifier = Arc::new(DesktopNotifier::new(&config.notifications));
+    // The formatter announces its own failure (one desktop notification) through
+    // the same notifier the pipeline uses.
+    let formatter = Arc::new(
+        GrammarFormatter::new(&config.grammar)
+            .with_notifier(notifier.clone() as Arc<dyn StatusNotifier>),
+    );
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
-    let notifier = Arc::new(DesktopNotifier::new(&config.notifications));
     let media = Arc::new(PlayerctlMedia);
     let earcons = Arc::new(HostEarcons::new(config.audio.earcons.clone()));
 
@@ -185,6 +233,16 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
 /// If the PID file is held by a live daemon, the socket cannot be bound, or a
 /// device cannot be opened.
 pub async fn run(config: Config) -> Result<()> {
+    run_with_report(config, ConfigReport::default()).await
+}
+
+/// As [`run`], keeping what loading the config file found so `dictate doctor`
+/// can show it.
+///
+/// # Errors
+///
+/// As [`run`].
+pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()> {
     let runtime = RuntimePaths::from_env();
     runtime.ensure_dirs()?;
 
@@ -200,15 +258,22 @@ pub async fn run(config: Config) -> Result<()> {
 
     let (pipeline, history, injection_available) = build_pipeline(&config)?;
     // Best-effort, matching today's startup: the LLM pass fails open, so a
-    // missing Ollama must not stop the daemon from starting.
+    // missing Ollama must not stop the daemon from starting. But failing open
+    // must not mean failing *silently*: once Ollama is (or is not) up, ask it
+    // whether the configured model exists, and say so — in the log, in
+    // `get_status`, and with one desktop notification — before the first
+    // dictation rather than never.
     {
         let (host, port) = dictate_fmt::grammar::parse_host_port(&config.grammar.host);
+        let formatter = pipeline.formatter.clone();
         tokio::spawn(async move {
             dictate_core::local_executor::ensure_ollama_running(&host, port, 10).await;
+            formatter.probe().await;
         });
     }
 
     let mut capabilities = local_capabilities(injection_available);
+    capabilities.limits = config.upload.limits();
     capabilities.features.privacy_mode = history
         .lock()
         .map(|store| store.is_privacy_mode())
@@ -221,7 +286,23 @@ pub async fn run(config: Config) -> Result<()> {
         app: None,
     };
 
-    let daemon = Daemon::start(pipeline, history, &runtime, capabilities, Some(pid)).await?;
+    let doctor = Arc::new(doctor::Doctor::new(
+        config.clone(),
+        report,
+        runtime.clone(),
+        pipeline.clone(),
+    ));
+    let daemon = Daemon::start_with(
+        pipeline,
+        history,
+        &runtime,
+        capabilities,
+        Some(pid),
+        DaemonExtras {
+            diagnostics: Some(doctor),
+        },
+    )
+    .await?;
     info!(
         socket = %daemon.socket().display(),
         pid = std::process::id(),

@@ -1,0 +1,45 @@
+# Synthetic stand-in for a config file written for the Python-era daemon and
+# still in use by the June Rust binary. It reproduces the *shape* of that file
+# (section names, key names, value formats) with invented values, so
+# `load_config` compatibility is tested without committing anyone's real config.
+
+[whisper]
+# HuggingFace model id (the Python daemon's spelling)
+model = "openai/whisper-large-v3-turbo"
+assistant_model = "distil-whisper/distil-large-v3"
+device = "cuda"
+compute_type = "float16"
+use_speculative_decoding = true
+chunk_length_s = 30
+batch_size = 1
+no_speech_threshold = 0.6
+
+[router]
+ollama_host = "http://localhost:11434"
+ollama_model = "example-local:7b"
+ollama_timeout_s = 120.0
+
+[editor]
+enabled = true
+triggers = ["edit:", "fix:", "change:", "rewrite:", "transform:"]
+
+[commands]
+enabled = true
+fuzzy_threshold = 0.8
+confirm_destructive = true
+destructive_patterns = ["kill", "close", "exit", "shutdown", "restart"]
+
+[output]
+typing_delay_ms = 10
+use_clipboard = false
+auto_type = true
+
+[grammar]
+enabled = true
+model = "example-grammar:14b"
+timeout_s = 10.0
+min_words = 3
+
+[notifications]
+enabled = true
+timeout_ms = 1250

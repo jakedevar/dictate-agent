@@ -69,6 +69,76 @@ pub trait AudioSource: Send + Sync + 'static {
     fn diagnostics(&self) -> CaptureDiagnostics {
         CaptureDiagnostics::default()
     }
+
+    /// Why this source can never record — a configuration choice, such as
+    /// audio-less mode — or `None` when it can. Checked before a session is
+    /// created, so the caller gets a clear reason instead of a device error.
+    fn unavailable_reason(&self) -> Option<String> {
+        None
+    }
+
+    /// The microphone's state for `get_status`, including whether an input
+    /// device is open *right now*. `None` when the source does not report it.
+    fn input_status(&self) -> Option<dictate_proto::AudioStatus> {
+        None
+    }
+}
+
+/// The capture source of a daemon started with `[audio] capture = false`.
+///
+/// It exists so that audio-less mode is a property of the pipeline's wiring
+/// rather than a flag every stage has to remember: nothing here can open an
+/// input device, because nothing here knows how to.
+#[derive(Debug, Clone)]
+pub struct DisabledAudioSource {
+    pre_roll_ms: u32,
+}
+
+impl DisabledAudioSource {
+    /// The reason reported to a client that tries to record.
+    pub const REASON: &'static str =
+        "audio capture is disabled on this daemon ([audio] capture = false); \
+         transcribe a file with `dictate transcribe <file.wav>`, or set capture = true and restart";
+
+    /// Build from the (otherwise unused) audio config.
+    #[must_use]
+    pub fn new(config: &crate::config::AudioConfig) -> Self {
+        Self {
+            pre_roll_ms: config.pre_roll_ms,
+        }
+    }
+}
+
+impl AudioSource for DisabledAudioSource {
+    fn start(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Err(anyhow::anyhow!(Self::REASON)) })
+    }
+
+    fn stop(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+        Box::pin(async { None })
+    }
+
+    fn cancel(&self) {}
+
+    fn is_recording(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&self) -> BoxFuture<'_, Option<Vec<f32>>> {
+        Box::pin(async { None })
+    }
+
+    fn unavailable_reason(&self) -> Option<String> {
+        Some(Self::REASON.to_string())
+    }
+
+    fn input_status(&self) -> Option<dictate_proto::AudioStatus> {
+        Some(dictate_proto::AudioStatus {
+            capture_enabled: false,
+            input_open: false,
+            pre_roll_ms: Some(self.pre_roll_ms),
+        })
+    }
 }
 
 /// Sample rate the pipeline captures and transcribes at.
@@ -92,6 +162,9 @@ enum AudioCmd {
 pub struct HostAudioSource {
     tx: std::sync::mpsc::Sender<AudioCmd>,
     recording: Arc<AtomicBool>,
+    /// Whether the capture thread currently holds an input device open.
+    input_open: Arc<AtomicBool>,
+    pre_roll_ms: u32,
     diagnostics: Arc<Mutex<CaptureDiagnostics>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -107,6 +180,9 @@ impl HostAudioSource {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
         let recording = Arc::new(AtomicBool::new(false));
         let flag = recording.clone();
+        let input_open = Arc::new(AtomicBool::new(false));
+        let open_flag = input_open.clone();
+        let pre_roll_ms = config.pre_roll_ms;
         let diagnostics = Arc::new(Mutex::new(CaptureDiagnostics::default()));
         let diagnostics_for_thread = diagnostics.clone();
 
@@ -115,6 +191,7 @@ impl HostAudioSource {
             .spawn(move || {
                 let mut capture = match AudioCapture::new(config) {
                     Ok(c) => {
+                        open_flag.store(c.is_armed(), Ordering::Release);
                         let _ = ready_tx.send(Ok(()));
                         c
                     }
@@ -140,6 +217,7 @@ impl HostAudioSource {
                         AudioCmd::Start(reply) => {
                             let r = capture.start();
                             flag.store(r.is_ok(), Ordering::Release);
+                            open_flag.store(capture.is_armed(), Ordering::Release);
                             let _ = reply.send(r);
                         }
                         AudioCmd::Stop(reply) => {
@@ -148,6 +226,7 @@ impl HostAudioSource {
                                 *last = capture.diagnostics();
                             }
                             flag.store(false, Ordering::Release);
+                            open_flag.store(capture.is_armed(), Ordering::Release);
                             let _ = reply.send(samples);
                         }
                         AudioCmd::Snapshot(reply) => {
@@ -157,6 +236,7 @@ impl HostAudioSource {
                         AudioCmd::Cancel => {
                             capture.cancel();
                             flag.store(false, Ordering::Release);
+                            open_flag.store(capture.is_armed(), Ordering::Release);
                         }
                         AudioCmd::Shutdown => break,
                     }
@@ -171,6 +251,8 @@ impl HostAudioSource {
         Ok(Self {
             tx,
             recording,
+            input_open,
+            pre_roll_ms,
             diagnostics,
             thread: Mutex::new(Some(thread)),
         })
@@ -237,6 +319,14 @@ impl AudioSource for HostAudioSource {
             .map(|last| *last)
             .unwrap_or_default()
     }
+
+    fn input_status(&self) -> Option<dictate_proto::AudioStatus> {
+        Some(dictate_proto::AudioStatus {
+            capture_enabled: true,
+            input_open: self.input_open.load(Ordering::Acquire),
+            pre_roll_ms: Some(self.pre_roll_ms),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +378,19 @@ pub trait Formatter: Send + Sync + 'static {
 
     /// Whether this input would be formatted, and if not, why not.
     fn plan(&self, text: &str) -> FormatPlan;
+
+    /// The pass's *observed* health, for `get_status`. A formatter that fails
+    /// open is otherwise invisible; `None` means this one does not report.
+    fn status(&self) -> Option<dictate_proto::FormatterStatus> {
+        None
+    }
+
+    /// Check the formatter's backend once, at startup, and record the answer —
+    /// so a missing model is reported before the first dictation instead of
+    /// being discovered by nobody. Never fails; the default does nothing.
+    fn probe(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// Ollama-backed grammar correction behind the trait.
@@ -295,6 +398,9 @@ pub struct GrammarFormatter {
     inner: dictate_fmt::GrammarCorrector,
     enabled: bool,
     min_words: usize,
+    host: String,
+    model: String,
+    health: Arc<crate::formatter_health::HealthTracker>,
 }
 
 impl GrammarFormatter {
@@ -305,14 +411,64 @@ impl GrammarFormatter {
             inner: dictate_fmt::GrammarCorrector::new(config),
             enabled: config.enabled,
             min_words: config.min_words,
+            host: config.host.clone(),
+            model: config.model.clone(),
+            health: Arc::new(crate::formatter_health::HealthTracker::new(
+                config.enabled,
+                config.model.clone(),
+            )),
+        }
+    }
+
+    /// Announce a failing formatter through `notifier` (one desktop
+    /// notification per journey into failure). Call before sharing the value.
+    #[must_use]
+    pub fn with_notifier(mut self, notifier: Arc<dyn StatusNotifier>) -> Self {
+        let health = crate::formatter_health::HealthTracker::new(self.enabled, self.model.clone())
+            .with_notifier(notifier);
+        self.health = Arc::new(health);
+        self
+    }
+
+    /// Ask Ollama whether it has the configured model, and record the answer.
+    ///
+    /// Run once at startup so a missing model is reported *before* the first
+    /// dictation rather than being discovered by nobody. Never fails: an
+    /// unreachable server is itself a health state.
+    pub async fn probe_ollama(&self) {
+        if !self.enabled {
+            return;
+        }
+        let found = crate::ollama::probe(&self.host, std::time::Duration::from_secs(5)).await;
+        if !found.reachable {
+            self.health
+                .observe_unreachable(found.error.as_deref().unwrap_or("no answer"));
+        } else if found.has_model(&self.model) {
+            self.health.observe_ok();
+        } else {
+            self.health.observe_model_missing(&found.models);
         }
     }
 }
 
 impl Formatter for GrammarFormatter {
+    fn status(&self) -> Option<dictate_proto::FormatterStatus> {
+        Some(self.health.status())
+    }
+
+    fn probe(&self) -> BoxFuture<'_, ()> {
+        Box::pin(self.probe_ollama())
+    }
+
     fn format<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Formatted> {
         Box::pin(async move {
             let r = self.inner.correct(text).await;
+            // A *real* attempt is the strongest evidence there is: the probe
+            // can say a model is installed, only a run can say it works.
+            match &r.error {
+                Some(error) => self.health.observe_error(error),
+                None => self.health.observe_ok(),
+            }
             Formatted {
                 changed: r.corrected != r.original,
                 text: r.corrected,

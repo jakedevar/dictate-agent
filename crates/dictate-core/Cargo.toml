@@ -24,6 +24,8 @@ notify-rust = { workspace = true }
 ollama-rs = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+serde_ignored = { workspace = true }
 signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 tokio = { workspace = true }

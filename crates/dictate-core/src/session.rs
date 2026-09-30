@@ -39,9 +39,17 @@
 //! So a host-local session **survives** its owner disconnecting and becomes
 //! [`SessionOwner::Host`], controllable by any trusted-local actor. A session
 //! owned by a connection that lacks `host_capture` has no such fallback — no
-//! one else can take delivery of its result — so it is cancelled. That branch
-//! is unreachable today (starting a session *requires* `host_capture`) and
-//! exists for S33's upload sessions.
+//! one else can take delivery of its result — so it is cancelled.
+//!
+//! # Uploads are the opposite case
+//!
+//! A [`SessionOwner::Upload`] session (`transcribe_audio`) exists to answer *one
+//! connection's* request: the transcript is the response. If that connection
+//! goes away there is nobody to answer, so the session is cancelled — and
+//! crucially, a half-finished `dictate transcribe --inject` that was
+//! interrupted with Ctrl-C must not type its text into the focused window a
+//! second later. Other trusted-local connections (`dictate cancel` from a second
+//! terminal) may cancel it; untrusted ones may only control their own.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -117,6 +125,16 @@ impl Actor {
             Self::Connection { id, .. } => SessionOwner::Connection(*id),
         }
     }
+
+    /// The owner recorded for an uploaded-audio session this actor starts.
+    #[must_use]
+    pub fn as_upload_owner(&self) -> SessionOwner {
+        match self {
+            // Signals never upload; if one ever does, the host owns the result.
+            Self::Signal => SessionOwner::Host,
+            Self::Connection { id, .. } => SessionOwner::Upload(*id),
+        }
+    }
 }
 
 /// Who is entitled to stop or cancel a session.
@@ -127,6 +145,9 @@ pub enum SessionOwner {
     /// Belongs to the host rather than to any connection — started by a signal,
     /// or orphaned when its owning connection went away.
     Host,
+    /// An uploaded-audio session: answers one connection's request, and dies
+    /// with that connection.
+    Upload(ClientId),
 }
 
 impl SessionOwner {
@@ -144,6 +165,11 @@ impl SessionOwner {
             // An unowned host session may be driven by any trusted-local peer
             // — this is what makes two separate `dictate` invocations work.
             (Self::Host, Actor::Connection { host_capture, .. }) => *host_capture,
+            // An upload belongs to its uploader, but a trusted-local peer may
+            // still cancel it (`dictate cancel` from another terminal).
+            (Self::Upload(owner), Actor::Connection { id, host_capture }) => {
+                owner == id || *host_capture
+            }
         }
     }
 
@@ -158,6 +184,7 @@ impl SessionOwner {
                     DisconnectAction::Cancel
                 }
             }
+            Self::Upload(owner) if *owner == client => DisconnectAction::Cancel,
             _ => DisconnectAction::Ignore,
         }
     }
@@ -204,6 +231,22 @@ pub struct SessionHandle {
     state: Arc<Mutex<State>>,
     token: CancelToken,
     bus: EventBus,
+    supplied: Option<Arc<SuppliedAudio>>,
+}
+
+/// Audio a session was handed instead of capturing it.
+///
+/// Its presence is what makes a session an *upload*: the pipeline takes these
+/// samples where it would otherwise flush the microphone, and skips every
+/// side effect that only makes sense around a live recording (the recording
+/// notice, media pause/resume, earcons, capture diagnostics).
+#[derive(Debug)]
+pub struct SuppliedAudio {
+    /// 16 kHz mono samples, already decoded and resampled.
+    pub samples: Vec<f32>,
+    /// What decoding and resampling cost. Reported as the session's `capture`
+    /// stage, since obtaining the audio is what that stage measures.
+    pub prepare_ms: f64,
 }
 
 impl SessionHandle {
@@ -217,7 +260,34 @@ impl SessionHandle {
             state: Arc::new(Mutex::new(State::Idle)),
             token,
             bus,
+            supplied: None,
         }
+    }
+
+    /// Create a handle for a session that transcribes `audio` rather than
+    /// capturing from the microphone.
+    #[must_use]
+    pub fn new_upload(
+        id: SessionId,
+        token: CancelToken,
+        bus: EventBus,
+        audio: SuppliedAudio,
+    ) -> Self {
+        let mut handle = Self::new(id, DictationMode::Toggle, token, bus);
+        handle.supplied = Some(Arc::new(audio));
+        handle
+    }
+
+    /// The audio this session was handed, when it is an upload.
+    #[must_use]
+    pub fn supplied_audio(&self) -> Option<&SuppliedAudio> {
+        self.supplied.as_deref()
+    }
+
+    /// Whether this session transcribes supplied audio instead of capturing.
+    #[must_use]
+    pub fn is_upload(&self) -> bool {
+        self.supplied.is_some()
     }
 
     /// This session's id.
@@ -425,6 +495,62 @@ mod tests {
             SessionOwner::Host.on_disconnect(ClientId(2), true),
             DisconnectAction::Ignore
         );
+    }
+
+    #[test]
+    fn an_upload_dies_with_its_connection_even_a_trusted_one() {
+        // Unlike a `dictate toggle` session, nobody else can take delivery of
+        // an upload's transcript: it is the response to one request.
+        let owner = SessionOwner::Upload(ClientId(1));
+        assert_eq!(
+            owner.on_disconnect(ClientId(1), true),
+            DisconnectAction::Cancel
+        );
+        assert_eq!(
+            owner.on_disconnect(ClientId(2), true),
+            DisconnectAction::Ignore
+        );
+    }
+
+    #[test]
+    fn an_upload_may_be_cancelled_by_its_uploader_a_trusted_peer_or_a_signal_only() {
+        let owner = SessionOwner::Upload(ClientId(1));
+        assert!(owner.may_control(&conn(1, false)), "the uploader itself");
+        assert!(
+            owner.may_control(&conn(2, true)),
+            "`dictate cancel` elsewhere"
+        );
+        assert!(owner.may_control(&Actor::Signal));
+        assert!(
+            !owner.may_control(&conn(3, false)),
+            "an untrusted peer must not cancel someone else's upload"
+        );
+        assert_eq!(conn(1, true).as_upload_owner(), owner);
+    }
+
+    #[test]
+    fn a_handle_knows_whether_it_is_an_upload() {
+        let bus = EventBus::new(4);
+        let live = SessionHandle::new(
+            new_session_id(),
+            DictationMode::Toggle,
+            CancelToken::new(),
+            bus.clone(),
+        );
+        assert!(!live.is_upload());
+        assert!(live.supplied_audio().is_none());
+
+        let up = SessionHandle::new_upload(
+            new_session_id(),
+            CancelToken::new(),
+            bus,
+            SuppliedAudio {
+                samples: vec![0.0; 8],
+                prepare_ms: 1.5,
+            },
+        );
+        assert!(up.is_upload());
+        assert_eq!(up.supplied_audio().unwrap().samples.len(), 8);
     }
 
     #[test]

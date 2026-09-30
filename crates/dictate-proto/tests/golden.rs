@@ -956,14 +956,22 @@ fn golden_diagnostics_vocabularies() {
         .collect();
     assert_eq!(
         health,
-        ["disabled", "unchecked", "ok", "model_missing", "unreachable", "failing"]
+        [
+            "disabled",
+            "unchecked",
+            "ok",
+            "model_missing",
+            "unreachable",
+            "failing"
+        ]
     );
 }
 
 #[test]
 fn diagnostics_is_a_local_only_capability() {
     assert!(Command::Diagnose { quick: false }.is_permitted(&Features::local_trusted()));
-    assert!(!Command::Diagnose { quick: false }
-        .is_permitted(&Features::remote_transcription_only()));
+    assert!(
+        !Command::Diagnose { quick: false }.is_permitted(&Features::remote_transcription_only())
+    );
     assert!(!Command::Diagnose { quick: false }.mutates());
 }

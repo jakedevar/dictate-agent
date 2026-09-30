@@ -232,12 +232,19 @@ impl Pipeline {
     ) -> PipelineOutcome {
         let mut stages = Stages::new();
         let token = handle.token().clone();
+        // An upload transcribes audio it was handed: there is no microphone,
+        // so no "recording" notice, media pause, or earcon around it. The
+        // engine has already stored the stop permit, so the wait below passes
+        // straight through (still losing to a cancel).
+        let upload = handle.is_upload();
 
-        self.notifier.notify(Notice::Recording);
+        if !upload {
+            self.notifier.notify(Notice::Recording);
+        }
         self.earcon(&handle, EarconCue::Start, AudioActivity::EarconStart);
         // Best-effort and slow (a `playerctl` subprocess), so it runs off the
         // engine's thread and is not allowed to delay the state machine.
-        {
+        if !upload {
             let media = self.media.clone();
             let paused = tokio::task::spawn_blocking(move || media.pause_if_playing())
                 .await
@@ -281,7 +288,7 @@ impl Pipeline {
         }
 
         let clock = StageClock::start();
-        let samples = match self.race(&token, self.audio.stop()).await {
+        let samples = match self.race(&token, self.take_audio(&handle)).await {
             Step::Cancelled => {
                 stages.timings.capture = clock.failed("cancelled during capture flush");
                 return self
@@ -290,10 +297,16 @@ impl Pipeline {
             }
             Step::Continue(s) => s,
         };
-        stages.timings.capture = clock.ran();
+        stages.timings.capture = handle
+            .supplied_audio()
+            .map_or_else(|| clock.ran(), |a| StageTiming::ran(a.prepare_ms));
 
         self.earcon(&handle, EarconCue::Stop, AudioActivity::EarconStop);
-        let diagnostics = self.audio.diagnostics();
+        let diagnostics = if upload {
+            dictate_audio::CaptureDiagnostics::default()
+        } else {
+            self.audio.diagnostics()
+        };
         if diagnostics.recovered_device {
             handle.publish(Event::AudioActivity {
                 session_id: handle.id().clone(),
@@ -632,6 +645,16 @@ impl Pipeline {
         .await
     }
 
+    /// The session's samples: the microphone flush for a live session, or the
+    /// audio an upload was handed. `None` means there was nothing.
+    async fn take_audio(&self, handle: &SessionHandle) -> Option<Vec<f32>> {
+        match handle.supplied_audio() {
+            Some(audio) if audio.samples.is_empty() => None,
+            Some(audio) => Some(audio.samples.clone()),
+            None => self.audio.stop().await,
+        }
+    }
+
     /// Race a stage future against cancellation.
     ///
     /// Losing the race drops the stage future, which is why every port is
@@ -898,8 +921,10 @@ impl Pipeline {
         // Idempotent, and unconditional on purpose: reaching a terminal state
         // with a live capture stream is the "dangling stream" bug, and the
         // cheapest way to make it impossible is to never rely on having
-        // stopped it on the happy path.
-        self.audio.cancel();
+        // stopped it on the happy path. An upload never touched the device.
+        if !handle.is_upload() {
+            self.audio.cancel();
+        }
 
         match &outcome.state {
             State::Cancelled => self.earcon(handle, EarconCue::Cancel, AudioActivity::EarconCancel),
@@ -919,7 +944,7 @@ impl Pipeline {
             _ => self.notifier.notify(Notice::Clear),
         }
 
-        {
+        if !handle.is_upload() {
             let media = self.media.clone();
             let resumed = tokio::task::spawn_blocking(move || media.resume_if_needed())
                 .await
@@ -1004,7 +1029,8 @@ impl Pipeline {
     /// session. The paired event makes successful configured feedback visible
     /// to `dictate tail` and future HUDs.
     fn earcon(&self, handle: &SessionHandle, cue: EarconCue, activity: AudioActivity) {
-        if self.earcons.play(cue) {
+        // Chimes mark a live recording; an upload has none to mark.
+        if !handle.is_upload() && self.earcons.play(cue) {
             handle.publish(Event::AudioActivity {
                 session_id: handle.id().clone(),
                 activity,

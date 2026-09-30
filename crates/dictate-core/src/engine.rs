@@ -43,6 +43,7 @@ use crate::event_bus::EventBus;
 use crate::pipeline::{Pipeline, PipelineOutcome, ResolvedOptions};
 use crate::session::{
     new_session_id, now_ms, Actor, ClientId, DisconnectAction, SessionHandle, SessionOwner,
+    SuppliedAudio,
 };
 
 /// Depth of the engine mailbox. Commands are handled in microseconds unless a
@@ -58,6 +59,20 @@ pub enum ToggleOutcome {
     Stopped(SessionId),
 }
 
+/// The claim ticket for an uploaded-audio session: the session's id, and a
+/// channel that delivers its outcome once the pipeline settles.
+///
+/// A transcription request's response *is* the transcript, so unlike a live
+/// dictation (whose result arrives as a `final` event) the caller has to wait
+/// for the outcome. Handing it out as a ticket keeps that wait out of the
+/// engine's mailbox loop.
+pub struct TranscribeTicket {
+    /// The session running the upload.
+    pub session_id: SessionId,
+    /// Resolves when the session reaches a terminal state.
+    pub outcome: oneshot::Receiver<PipelineOutcome>,
+}
+
 /// A message to the engine task.
 pub enum EngineRequest {
     /// Begin a session.
@@ -70,6 +85,18 @@ pub enum EngineRequest {
         options: ResolvedOptions,
         /// Where to send the answer.
         reply: oneshot::Sender<Result<SessionId, ProtoError>>,
+    },
+    /// Begin a session that transcribes audio the caller supplied — no
+    /// microphone, media pause or earcons.
+    Transcribe {
+        /// Who asked.
+        actor: Actor,
+        /// The decoded 16 kHz mono audio.
+        audio: SuppliedAudio,
+        /// Options, resolved by [`resolve_upload_options`].
+        options: ResolvedOptions,
+        /// Where to send the ticket (or the refusal).
+        reply: oneshot::Sender<Result<TranscribeTicket, ProtoError>>,
     },
     /// End the recording phase of the active session.
     Stop {
@@ -171,6 +198,29 @@ impl EngineHandle {
         self.ask(|reply| EngineRequest::Start {
             actor,
             mode,
+            options,
+            reply,
+        })
+        .await?
+    }
+
+    /// Start a session that transcribes `audio` instead of capturing.
+    ///
+    /// Runs through the same single-writer slot as a live dictation, so a busy
+    /// engine answers `busy` and `cancel` works on it.
+    ///
+    /// # Errors
+    ///
+    /// `busy` if a session is already running.
+    pub async fn transcribe(
+        &self,
+        actor: Actor,
+        audio: SuppliedAudio,
+        options: ResolvedOptions,
+    ) -> Result<TranscribeTicket, ProtoError> {
+        self.ask(|reply| EngineRequest::Transcribe {
+            actor,
+            audio,
             options,
             reply,
         })
@@ -325,6 +375,14 @@ impl Engine {
                     let r = self.handle_start(&actor, mode, options).await;
                     let _ = reply.send(r);
                 }
+                EngineRequest::Transcribe {
+                    actor,
+                    audio,
+                    options,
+                    reply,
+                } => {
+                    let _ = reply.send(self.handle_transcribe(&actor, audio, options));
+                }
                 EngineRequest::Stop { actor, reply } => {
                     let _ = reply.send(self.handle_stop(&actor));
                 }
@@ -385,6 +443,15 @@ impl Engine {
             );
         }
 
+        // Audio-less mode is a choice the user made, not a device fault: say so
+        // plainly (and on the desktop, where a hotkey press has no terminal).
+        if let Some(reason) = self.pipeline.audio.unavailable_reason() {
+            self.pipeline.notifier.notify(crate::ports::Notice::Error(
+                "Audio capture is disabled ([audio] capture = false)".into(),
+            ));
+            return Err(ProtoError::new(ErrorCode::CapabilityUnavailable, reason));
+        }
+
         // Opening the device is awaited here, inside the serialized loop, so
         // that `session_started` is never reported for a microphone that is
         // not actually recording. It costs the loop a few milliseconds and
@@ -436,6 +503,64 @@ impl Engine {
 
         info!(session = %id.as_str(), ?mode, "session started");
         Ok(id)
+    }
+
+    /// Start an upload session. Deliberately synchronous: nothing here awaits a
+    /// device, so the slot is claimed and the pipeline spawned in one turn of
+    /// the mailbox, and a second request can only ever see the first's session.
+    fn handle_transcribe(
+        &mut self,
+        actor: &Actor,
+        audio: SuppliedAudio,
+        options: ResolvedOptions,
+    ) -> Result<TranscribeTicket, ProtoError> {
+        if self.has_live_session() {
+            return Err(
+                ProtoError::new(ErrorCode::Busy, "a dictation session is already running")
+                    .with_retry_after_ms(500),
+            );
+        }
+
+        let token = CancelToken::new();
+        let id = new_session_id();
+        let handle = SessionHandle::new_upload(id.clone(), token, self.bus.clone(), audio);
+
+        // There is no recording phase to wait out: store the stop permit now so
+        // the pipeline's wait passes straight through (a cancel still wins —
+        // the wait is biased toward it). `stop_issued` makes a client `stop`
+        // an honest `invalid_state` rather than a silent no-op.
+        let stop = Arc::new(Notify::new());
+        stop.notify_one();
+        self.active = Some(ActiveSession {
+            handle: handle.clone(),
+            owner: actor.as_upload_owner(),
+            stop: stop.clone(),
+            stop_issued: true,
+        });
+
+        let (outcome_tx, outcome_rx) = oneshot::channel();
+        let pipeline = self.pipeline.clone();
+        let tx = self.tx.clone();
+        let session_id = id.clone();
+        tokio::spawn(async move {
+            let outcome = pipeline.run(handle, stop, options).await;
+            // Free the engine's slot *before* answering the caller, so a client
+            // that fires its next request the moment it has a transcript is
+            // ordered after the release by the mailbox instead of racing it.
+            let _ = tx
+                .send(EngineRequest::SessionFinished {
+                    session_id,
+                    outcome: Box::new(outcome.clone()),
+                })
+                .await;
+            let _ = outcome_tx.send(outcome);
+        });
+
+        info!(session = %id.as_str(), "upload session started");
+        Ok(TranscribeTicket {
+            session_id: id,
+            outcome: outcome_rx,
+        })
     }
 
     fn handle_stop(&mut self, actor: &Actor) -> Result<SessionId, ProtoError> {
@@ -623,8 +748,32 @@ impl Engine {
                 backend: model.backend,
             }),
             capabilities,
+            formatter: self.pipeline.formatter.status(),
+            audio: self.pipeline.audio.input_status(),
         }
     }
+}
+
+/// Resolve options for an uploaded-audio session.
+///
+/// The one rule that differs from [`resolve_options`]: an omitted `inject`
+/// never means "the connection's default". A live dictation types into the
+/// focused window because that is what a hotkey is *for*; an upload is a
+/// request/response call, and the caller who did not ask for typing must not
+/// have text appear in whatever window happens to have focus. Asking for it
+/// (`Some(true)`) still requires the `text_injection` capability.
+///
+/// # Errors
+///
+/// `forbidden` when the caller asks for something its capabilities do not
+/// grant.
+pub fn resolve_upload_options(
+    options: Option<&SessionOptions>,
+    capabilities: &Capabilities,
+) -> Result<ResolvedOptions, ProtoError> {
+    let mut resolved = resolve_options(options, capabilities)?;
+    resolved.inject = options.is_some_and(|o| o.inject == Some(true));
+    Ok(resolved)
 }
 
 /// Resolve a command's [`SessionOptions`] against the caller's capabilities.
@@ -726,6 +875,39 @@ mod tests {
             ..SessionOptions::default()
         };
         let err = resolve_options(Some(&options), &caps(false)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Forbidden);
+    }
+
+    #[test]
+    fn an_upload_never_injects_unless_it_asks() {
+        // Even on a connection that may inject, silence means "return the text".
+        let local = caps(true);
+        assert!(!resolve_upload_options(None, &local).unwrap().inject);
+        let bare = SessionOptions::default();
+        assert!(!resolve_upload_options(Some(&bare), &local).unwrap().inject);
+        let no = SessionOptions {
+            inject: Some(false),
+            ..SessionOptions::default()
+        };
+        assert!(!resolve_upload_options(Some(&no), &local).unwrap().inject);
+
+        let yes = SessionOptions {
+            inject: Some(true),
+            ..SessionOptions::default()
+        };
+        assert!(resolve_upload_options(Some(&yes), &local).unwrap().inject);
+    }
+
+    #[test]
+    fn an_upload_that_asks_to_inject_without_permission_is_forbidden() {
+        let yes = SessionOptions {
+            inject: Some(true),
+            ..SessionOptions::default()
+        };
+        let err = resolve_upload_options(Some(&yes), &caps(false)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Forbidden);
+        let err = resolve_upload_options(Some(&yes), &Capabilities::remote_transcription_only())
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::Forbidden);
     }
 
