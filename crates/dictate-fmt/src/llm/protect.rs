@@ -229,6 +229,14 @@ pub fn mask(text: &str, spans: &[Range<usize>], style: MaskStyle) -> Result<Mask
         if ws == 0 && !rest.is_empty() {
             break;
         }
+        // "/create_plan uh actually no /research_codebase …": the speaker
+        // is correcting the span itself. Detached, the model could resolve
+        // the correction by deleting the cue while the span stays — two
+        // commands where one was meant. Masked instead, the span-correction
+        // validator makes that case fail open.
+        if follows_correction_cue(rest) {
+            break;
+        }
         cut = r.end + ws;
         consumed += 1;
     }
@@ -268,6 +276,33 @@ pub fn mask(text: &str, spans: &[Range<usize>], style: MaskStyle) -> Result<Mask
 }
 
 impl Masked {
+    /// After a detached command prefix the body is the command's argument
+    /// ("/describe_pr and mention…"), not a new sentence: keep the first
+    /// word's case as dictated. The pronoun "I" is the exception.
+    fn keep_continuation_case(&self, output: &str) -> String {
+        if self.prefix.is_empty() {
+            return output.to_string();
+        }
+        let (Some(i), Some(o)) = (self.body.chars().next(), output.chars().next()) else {
+            return output.to_string();
+        };
+        let first_word = self
+            .body
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase();
+        let pronoun = matches!(first_word.as_str(), "i" | "i'm" | "i'll" | "i've" | "i'd");
+        if i != o && i.to_lowercase().eq(o.to_lowercase()) && !pronoun {
+            let mut s = String::with_capacity(output.len());
+            s.push(i);
+            s.push_str(&output[o.len_utf8()..]);
+            s
+        } else {
+            output.to_string()
+        }
+    }
+
     /// Verify the model's output and put the spans back. Returns the full
     /// text: prefix + restored body.
     ///
@@ -307,6 +342,7 @@ impl Masked {
 
         let mut restored = String::with_capacity(output.len() + self.prefix.len() + 64);
         restored.push_str(&self.prefix);
+        let output = &self.keep_continuation_case(output);
         let mut pos = 0;
         for (range, n) in &found {
             let before = output[..range.start].chars().next_back();
@@ -337,6 +373,45 @@ impl Masked {
         }
         Ok(restored)
     }
+}
+
+const FILLERS: &[&str] = &["uh", "um", "er", "erm", "oh", "like", "so", "hmm"];
+
+/// The correction cue that opens `text` (after fillers), if any: "actually",
+/// "sorry", "wait", "I mean", "no wait", "scratch that", "or rather"… The
+/// returned token is the one a faithful formatting must keep when the cue
+/// sits right after a protected span.
+#[must_use]
+pub fn correction_cue(text: &str) -> Option<&'static str> {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '⟦' && c != '⟧')
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .skip_while(|w| FILLERS.contains(&w.as_str()))
+        .take(2)
+        .collect();
+    let w0 = words.first().map(String::as_str)?;
+    let w1 = words.get(1).map(String::as_str).unwrap_or("");
+    match (w0, w1) {
+        ("actually", _) => Some("actually"),
+        ("sorry", _) => Some("sorry"),
+        ("wait", _) => Some("wait"),
+        ("rather", _) => Some("rather"),
+        ("correction", _) => Some("correction"),
+        ("scratch", "that") => Some("scratch"),
+        ("i", "mean") => Some("mean"),
+        ("or", "rather") => Some("rather"),
+        ("no", "wait" | "sorry" | "actually" | "no") => Some("no"),
+        ("no", w) if w.starts_with('⟦') || w.starts_with('/') => Some("no"),
+        _ => None,
+    }
+}
+
+fn follows_correction_cue(rest: &str) -> bool {
+    correction_cue(rest).is_some()
 }
 
 /// Punctuation that may newly appear directly before a span.
@@ -572,6 +647,27 @@ mod tests {
         assert!(!m.body.contains("research"));
         let out = m.restore("I would like you to look at ⟦1⟧ today.").unwrap();
         assert_eq!(out, "/research_codebase I would like you to look at src/auth.rs today.");
+        // The pronoun is capitalized even though the dictation had "i".
+    }
+
+    #[test]
+    fn continuation_after_a_detached_command_keeps_its_case() {
+        let t = "/describe_pr and mention the migration";
+        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        assert_eq!(
+            m.restore("And mention the migration.").unwrap(),
+            "/describe_pr and mention the migration."
+        );
+        let t = "/research_codebase i would like a summary";
+        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        assert_eq!(
+            m.restore("I would like a summary.").unwrap(),
+            "/research_codebase I would like a summary."
+        );
+        // Without a prefix the model's sentence case stands.
+        let t = "look at src/a.rs";
+        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        assert_eq!(m.restore("Look at ⟦1⟧.").unwrap(), "Look at src/a.rs.");
     }
 
     #[test]
@@ -589,6 +685,32 @@ mod tests {
         let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
         assert_eq!(m.prefix, "");
         assert_eq!(m.body, "⟦1⟧, then push");
+    }
+
+    #[test]
+    fn a_leading_span_being_corrected_is_masked_not_detached() {
+        let t = "/create_plan uh actually no /research_codebase first";
+        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        assert_eq!(m.prefix, "");
+        assert_eq!(m.body, "⟦1⟧ uh actually no ⟦2⟧ first");
+    }
+
+    #[test]
+    fn correction_cues() {
+        for (t, cue) in [
+            ("actually no, the other one", Some("actually")),
+            ("uh sorry I meant", Some("sorry")),
+            ("I mean the settings file", Some("mean")),
+            ("no wait", Some("no")),
+            ("no ⟦2⟧ instead", Some("no")),
+            (", or rather the old one", Some("rather")),
+            ("scratch that", Some("scratch")),
+            ("no longer works", None),
+            ("is failing", None),
+            ("", None),
+        ] {
+            assert_eq!(correction_cue(t), cue, "{t:?}");
+        }
     }
 
     #[test]

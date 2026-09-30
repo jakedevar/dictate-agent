@@ -52,6 +52,11 @@ pub struct Case {
     /// answer to a dictated question, an executed instruction, …
     #[serde(default)]
     pub must_not_contain: Vec<String>,
+    /// Words (whole-word, case-insensitive) the speaker retracted in a
+    /// self-correction: present in the input, absent from a correct output.
+    /// A miss is a failure, not leakage.
+    #[serde(default)]
+    pub must_drop: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -159,8 +164,25 @@ pub fn lint_corpus(cases: &[Case]) -> Vec<String> {
                 problems.push(format!("{}: must_not_contain {n:?} is in input/expected", c.id));
             }
         }
+        for d in &c.must_drop {
+            if !contains_word(&c.input, d) || contains_word(&c.expected, d) {
+                problems.push(format!("{}: must_drop {d:?} must be in input and not expected", c.id));
+            }
+        }
     }
     problems
+}
+
+/// Whole-word, case-insensitive containment.
+#[must_use]
+pub fn contains_word(haystack: &str, word: &str) -> bool {
+    let h = haystack.to_lowercase();
+    let w = word.to_lowercase();
+    h.match_indices(&w).any(|(i, _)| {
+        let before = h[..i].chars().next_back();
+        let after = h[i + w.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
 }
 
 /// Length bucket, chosen around Jake's p50 (17 words) and p90 (53 words).
@@ -259,6 +281,11 @@ fn judge(case: &Case, text: &str) -> (bool, f64, bool, bool, bool, Vec<String>) 
     for k in &case.must_keep {
         if !text.contains(k.as_str()) {
             reasons.push(format!("missing {k:?}"));
+        }
+    }
+    for d in &case.must_drop {
+        if contains_word(text, d) {
+            reasons.push(format!("kept retracted {d:?}"));
         }
     }
     let (a, b) = (sim_words(text), sim_words(&case.expected));
@@ -874,6 +901,7 @@ mod tests {
             expected: expected.into(),
             must_keep: vec![],
             must_not_contain: vec![],
+            must_drop: vec![],
             tags: vec![],
             vocabulary: vec![],
         }
@@ -902,6 +930,17 @@ mod tests {
         s.protected = vec!["/deploy".into()];
         let (pass, _, _, spans, ..) = judge(&s, "Run deploy now.");
         assert!(!pass && !spans);
+    }
+
+    #[test]
+    fn retracted_words_fail_without_counting_as_leaks() {
+        let mut c = case("meet at five actually six", "Meet at six.");
+        c.must_drop = vec!["five".into()];
+        let (pass, .., leaked, reasons) = judge(&c, "Meet at five, actually six.");
+        assert!(!pass && !leaked, "{reasons:?}");
+        assert!(judge(&c, "Meet at six.").0);
+        assert!(contains_word("Meet at Five.", "five"));
+        assert!(!contains_word("fivefold", "five"));
     }
 
     #[test]

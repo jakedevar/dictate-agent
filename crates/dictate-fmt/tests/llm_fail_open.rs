@@ -392,6 +392,13 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::Question,
         ),
+        (
+            "/create_plan uh actually no /research_codebase first, look at the config",
+            Terminal,
+            Box::new(|_| chat("⟦1⟧ ⟦2⟧ first, look at the config.")),
+            false,
+            Validator::SpanCorrection,
+        ),
         ("meet me at five", Chat, Box::new(|_| chat("Meet me at 6.")), false, Validator::Numbers),
         (
             "add fuzzy finding to the file picker",
@@ -407,7 +414,7 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::EditDistance,
         ),
-        (long, Terminal, Box::new(|_| chat("Refactor the parser.")), true, Validator::LengthRatio),
+        (long, Terminal, Box::new(|_| chat("Refactor the parser.")), false, Validator::LengthRatio),
     ];
     for (input, category, reply, loosen, want) in cases {
         let got = rejected_by(input, category, reply, loosen).await;

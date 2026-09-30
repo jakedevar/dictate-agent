@@ -46,6 +46,10 @@ pub enum Validator {
     NewLines,
     /// A question mark was lost: a question stopped being a question.
     Question,
+    /// A self-correction right after a protected span was "resolved" while
+    /// the span stayed: the model cannot drop a span, so resolving it would
+    /// keep what the speaker retracted.
+    SpanCorrection,
     /// A number the input did not contain.
     Numbers,
     /// Words the speaker did not say.
@@ -69,6 +73,7 @@ impl Validator {
             Self::Markup => "markup",
             Self::NewLines => "new_lines",
             Self::Question => "question",
+            Self::SpanCorrection => "span_correction",
             Self::Numbers => "numbers",
             Self::NovelWords => "novel_words",
             Self::EditDistance => "edit_distance",
@@ -132,7 +137,7 @@ pub struct Thresholds {
 impl Default for Thresholds {
     fn default() -> Self {
         Self {
-            min_ratio: 0.3,
+            min_ratio: 0.4,
             max_ratio: 1.35,
             max_extra_chars: 16,
             max_edit_ratio: 0.55,
@@ -170,6 +175,7 @@ pub fn validate(c: &Check<'_>) -> Result<(), Rejection> {
     markup(c)?;
     new_lines(c)?;
     question(c)?;
+    span_correction(c)?;
 
     let structure = c.policy.allows_new_lines();
     let input_text = strip_placeholders(c.input, c.mask);
@@ -223,8 +229,8 @@ const PREAMBLES: &[&str] = &[
     "here is",
     "here's",
     "here are",
-    "okay, here",
-    "ok, here",
+    "okay here",
+    "ok here",
     "i'd be happy",
     "i would be happy",
     "i can help",
@@ -265,7 +271,14 @@ fn starts_with_word(haystack: &str, needle: &str) -> bool {
 }
 
 fn preamble(c: &Check<'_>) -> Result<(), Rejection> {
-    let normalize = |s: &str| s.trim_start().to_lowercase().replace('’', "'");
+    // Compare words, not punctuation: "okay here is" dictated and "Okay,
+    // here is" formatted are the same opener.
+    let normalize = |s: &str| {
+        s.trim_start()
+            .to_lowercase()
+            .replace('’', "'")
+            .replace([',', ';', '!', '.'], "")
+    };
     let input = normalize(c.input);
     let out = normalize(c.output);
     for p in PREAMBLES {
@@ -354,6 +367,25 @@ pub fn words_for_scoring(text: &str) -> Vec<String> {
     words(text)
 }
 
+fn span_correction(c: &Check<'_>) -> Result<(), Rejection> {
+    let out_words: HashSet<String> = c
+        .output
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(str::to_lowercase)
+        .collect();
+    for m in c.mask.pattern().find_iter(c.input) {
+        if let Some(cue) = super::protect::correction_cue(&c.input[m.end()..]) {
+            if !out_words.contains(cue) {
+                return Err(Rejection::new(
+                    Validator::SpanCorrection,
+                    format!("resolved a self-correction next to protected span {}", m.as_str()),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Lexical
 // ---------------------------------------------------------------------------
@@ -426,7 +458,12 @@ const TENS: &[&str] = &[
 ];
 const ORDINALS: &[&str] = &[
     "zeroth", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
-    "ninth", "tenth", "eleventh", "twelfth",
+    "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+    "sixteenth", "seventeenth", "eighteenth", "nineteenth",
+];
+const TENS_ORDINALS: &[&str] = &[
+    "", "", "twentieth", "thirtieth", "fortieth", "fiftieth", "sixtieth", "seventieth",
+    "eightieth", "ninetieth",
 ];
 
 fn number_word_value(w: &str) -> Option<u64> {
@@ -438,6 +475,9 @@ fn number_word_value(w: &str) -> Option<u64> {
     }
     if let Some(i) = ORDINALS.iter().position(|o| *o == w) {
         return Some(i as u64);
+    }
+    if let Some(i) = TENS_ORDINALS.iter().position(|t| !t.is_empty() && *t == w) {
+        return Some(i as u64 * 10);
     }
     None
 }
@@ -580,11 +620,18 @@ fn novel_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(),
         .collect();
 
     let mut novel = Vec::new();
-    for w in output {
+    for (i, w) in output.iter().enumerate() {
         if known.contains(w.as_str()) || licensed.contains(w.as_str()) {
             continue;
         }
         if is_concatenation(w, input) {
+            continue;
+        }
+        // "wifi" → "Wi-Fi": a split of one input word into adjacent pieces.
+        let joins = |a: &str, b: &str| known.contains(format!("{a}{b}").as_str());
+        if (i + 1 < output.len() && joins(w, &output[i + 1]))
+            || (i > 0 && joins(&output[i - 1], w))
+        {
             continue;
         }
         if vocabulary.iter().any(|v| v == w) && sounds_like_some_input(w, input) {
@@ -702,22 +749,77 @@ fn collapse_numbers(words: &[String]) -> Vec<&str> {
     out
 }
 
+/// Edit distance where deleting an input word costs [`DELETE_COST`] and
+/// inserting or substituting costs 1. Deleting is what filler removal and
+/// self-corrections legitimately do ("… scratch that, we should recompute
+/// it" drops half the words); inserting or replacing words is what changes
+/// meaning. Gross deletion is the length-ratio validator's job.
+fn weighted_edits(input: &[&str], output: &[&str]) -> f64 {
+    let mut prev: Vec<f64> = (0..=output.len()).map(|j| j as f64).collect();
+    let mut cur = vec![0.0; output.len() + 1];
+    for (i, x) in input.iter().enumerate() {
+        cur[0] = (i + 1) as f64 * DELETE_COST;
+        for (j, y) in output.iter().enumerate() {
+            let sub = prev[j] + if x == y { 0.0 } else { 1.0 };
+            let delete = prev[j + 1] + DELETE_COST;
+            let insert = cur[j] + 1.0;
+            cur[j + 1] = sub.min(delete).min(insert);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[output.len()]
+}
+
+/// Cost of dropping one dictated word in [`weighted_edits`].
+const DELETE_COST: f64 = 0.5;
+
 fn edit_distance(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(), Rejection> {
     let input = collapse_numbers(input);
     let output = collapse_numbers(output);
     if input.is_empty() {
         return Ok(());
     }
-    let d = levenshtein(&input, &output);
-    let ratio = d as f64 / input.len() as f64;
+    let d = weighted_edits(&input, &output);
+    let ratio = d / input.len() as f64;
     let allowed = (c.thresholds.max_edit_ratio * input.len() as f64).max(c.thresholds.min_edits as f64);
-    if d as f64 > allowed {
+    if d > allowed {
         return Err(Rejection::new(
             Validator::EditDistance,
-            format!("{d} word edits for {} words ({ratio:.2})", input.len()),
+            format!("{d:.1} weighted word edits for {} words ({ratio:.2})", input.len()),
+        ));
+    }
+
+    // Order: the dictated words the output keeps must appear in dictated
+    // order. Deleting is cheap above, so a reshuffle of the same words would
+    // otherwise pass; one grammatical swap ("you can" → "can you") is fine.
+    let known: HashSet<&str> = input.iter().copied().collect();
+    let kept: Vec<&str> = output.iter().copied().filter(|w| known.contains(w)).collect();
+    let in_order = lcs_len(&input, &kept);
+    let out_of_order = kept.len() - in_order;
+    let slack = ((kept.len() as f64 * 0.15).ceil() as usize).max(2);
+    if out_of_order > slack {
+        return Err(Rejection::new(
+            Validator::EditDistance,
+            format!("reordered: {out_of_order} of {} kept words out of dictated order", kept.len()),
         ));
     }
     Ok(())
+}
+
+fn lcs_len(a: &[&str], b: &[&str]) -> usize {
+    let mut prev = vec![0usize; b.len() + 1];
+    let mut cur = vec![0usize; b.len() + 1];
+    for x in a {
+        for (j, y) in b.iter().enumerate() {
+            cur[j + 1] = if x == y {
+                prev[j] + 1
+            } else {
+                prev[j + 1].max(cur[j])
+            };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 fn length_ratio(c: &Check<'_>) -> Result<(), Rejection> {
@@ -827,6 +929,19 @@ mod tests {
     }
 
     #[test]
+    fn accepts_splits_ordinals_and_punctuated_openers() {
+        run("what's the wifi password", "What's the Wi-Fi password?", "chat").unwrap();
+        run("moving to march fifteenth", "Moving to March 15th.", "chat").unwrap();
+        run("due on the thirtieth", "Due on the 30th.", "chat").unwrap();
+        run(
+            "okay here is a longer one to test",
+            "Okay, here is a longer one to test.",
+            "terminal",
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn accepts_compounds_contractions_and_vocabulary() {
         run("send me an e mail", "Send me an email.", "terminal").unwrap();
         run("do not do that", "Don't do that.", "terminal").unwrap();
@@ -913,6 +1028,33 @@ mod tests {
     }
 
     #[test]
+    fn rejects_resolving_a_correction_of_a_protected_span() {
+        // Both spans survive, so only this validator can see the problem.
+        assert_eq!(
+            rejected_by(run(
+                "⟦1⟧ uh actually no ⟦2⟧ first, look at the config",
+                "⟦1⟧ ⟦2⟧ first, look at the config.",
+                "terminal"
+            )),
+            Validator::SpanCorrection
+        );
+        // Keeping the correction verbatim is fine…
+        run(
+            "⟦1⟧ uh actually no ⟦2⟧ first, look at the config",
+            "⟦1⟧, actually no, ⟦2⟧ first, look at the config.",
+            "terminal",
+        )
+        .unwrap();
+        // …and so is resolving a correction that does not touch a span.
+        run(
+            "run ⟦1⟧ on friday actually no thursday",
+            "Run ⟦1⟧ on Thursday.",
+            "terminal",
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn rejects_new_numbers() {
         assert_eq!(
             rejected_by(run("meet me at five", "Meet me at 6.", "chat")),
@@ -975,6 +1117,11 @@ mod tests {
     }
 
     #[test]
+    fn a_single_grammatical_swap_is_not_a_reorder() {
+        run("so you can check the logs", "So can you check the logs?", "chat").unwrap();
+    }
+
+    #[test]
     fn rejects_reordering_and_rewrites() {
         assert_eq!(
             rejected_by(run(
@@ -988,26 +1135,29 @@ mod tests {
 
     #[test]
     fn rejects_gross_length_changes() {
-        // Pure deletion passes every lexical check, so length is what
-        // catches a model that drops most of the dictation.
+        // Pure deletion passes every lexical check and is cheap in the edit
+        // distance, so length is what catches a model that drops most of
+        // the dictation.
         let input = "okay so I would like you to refactor the parser module and also update the tests \
                      and then make sure the documentation reflects the new behavior thanks";
         assert_eq!(
             rejected_by(run(input, "Refactor the parser.", "terminal")),
-            Validator::EditDistance
+            Validator::LengthRatio
         );
-        let mut t = Thresholds::default();
-        t.max_edit_ratio = 10.0;
-        let policy = CategoryPolicies::default().terminal;
-        let r = validate(&Check {
-            input,
-            output: "Refactor the parser.",
-            policy: &policy,
-            vocabulary: &[],
-            mask: MaskStyle::Brackets,
-            thresholds: &t,
-        });
-        assert_eq!(rejected_by(r), Validator::LengthRatio);
+    }
+
+    #[test]
+    fn a_long_retraction_is_not_a_rewrite() {
+        // "scratch that" legitimately drops more than half the words.
+        run(
+            "we should cache the the result scratch that we should recompute it every time",
+            "We should recompute it every time.",
+            "terminal",
+        )
+        .unwrap();
+        assert_eq!(weighted_edits(&["a", "b", "c", "d"], &["c", "d"]), 1.0);
+        assert_eq!(weighted_edits(&["a", "b"], &["a", "x", "b"]), 1.0);
+        assert_eq!(weighted_edits(&["a", "b"], &["b", "a"]), 1.5);
     }
 
     #[test]
