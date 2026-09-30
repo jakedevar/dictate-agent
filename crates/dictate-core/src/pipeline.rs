@@ -162,7 +162,7 @@ pub struct ResolvedOptions {
     /// Host focus may only be read for trusted local live capture sessions.
     /// Upload callers must set this false before resolving context.
     pub capture_context: bool,
-    /// Immutable context snapshot; filled before the first device await.
+    /// Start snapshot, replaced by the stop-time app decision for live sessions.
     pub context: Option<dictate_proto::AppContext>,
     /// Resolved overrides consumed by formatting and injection.
     pub profile: dictate_proto::ResolvedProfile,
@@ -251,7 +251,7 @@ enum Step<T> {
 }
 
 impl Pipeline {
-    /// Resolve once at session acceptance, before audio/media can move focus.
+    /// Resolve at acceptance; live sessions refresh when recording stops.
     /// Headless/upload consumers call this with capture_context = false.
     pub fn resolve_context(&self, options: &mut ResolvedOptions) {
         options.profile = self
@@ -271,7 +271,7 @@ impl Pipeline {
         self: Arc<Self>,
         handle: SessionHandle,
         stop: Arc<Notify>,
-        opts: ResolvedOptions,
+        mut opts: ResolvedOptions,
     ) -> PipelineOutcome {
         let mut stages = Stages::new();
         let token = handle.token().clone();
@@ -317,6 +317,23 @@ impl Pipeline {
             }
             () = stop.notified() => {}
             () = self.auto_stop(&handle, &token), if matches!(handle.mode(), DictationMode::OneShot | DictationMode::WakeWord) => {}
+        }
+
+        if !upload {
+            // Explicit stops were captured synchronously by the engine; VAD
+            // stops arrive here immediately after observing trailing silence.
+            let profile = handle.stop_profile().unwrap_or_else(|| {
+                self.context
+                    .resolve(opts.app.as_deref(), opts.capture_context)
+            });
+            if profile.context.as_ref().map(|c| &c.app) != opts.context.as_ref().map(|c| &c.app) {
+                opts.context = profile.context.clone();
+                opts.profile = profile;
+                handle.publish(Event::ContextResolved {
+                    session_id: handle.id().clone(),
+                    context: opts.context.clone(),
+                });
+            }
         }
 
         let mut interaction = {
@@ -481,7 +498,7 @@ impl Pipeline {
         };
 
         // --- S22 dictionary: bounded per-session vocabulary bias ------------
-        // Scope by the immutable S23 context captured at session start (or the
+        // Scope by the S23 stop-time context for live sessions (or the
         // caller-supplied app id); `None` applies global entries only.
         let dictionary_app = opts.context.clone();
         let stt_request = SttRequest {

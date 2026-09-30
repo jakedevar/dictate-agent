@@ -1,7 +1,7 @@
 //! Application context: where a session's text is going.
 //!
 //! The context engine (S23) resolves this from the focused window when a
-//! session starts; a remote client (S33) can instead name its target through
+//! session starts and stops; a remote client (S33) can instead name its target through
 //! [`SessionOptions::app`](crate::SessionOptions::app). Formatting (S20/S21)
 //! reads it for tone and structure, the dictionary and snippets (S22/S24) for
 //! per-app scope, and injection (S13) for the per-app paste/type policy.
@@ -72,7 +72,7 @@ pub struct AppContext {
     /// whatever the client supplied in `SessionOptions::app`.
     pub app: String,
 
-    /// Window title when the session started.
+    /// Window title at this context resolution (start or stop).
     ///
     /// Privacy-sensitive — a title can carry a document name or a message
     /// preview — so it must not be persisted when privacy mode applies.
