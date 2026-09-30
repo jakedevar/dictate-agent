@@ -587,7 +587,8 @@ fn golden_result_handshake_capabilities() {
                     "config_write": false,
                     "wake_word": false,
                     "headless": false,
-                    "privacy_mode": false
+                    "privacy_mode": false,
+                    "diagnostics": false
                 },
                 "audio_formats": ["pcm_f32le", "pcm_s16le", "wav"],
                 "routes": ["type"],
@@ -944,4 +945,132 @@ fn golden_dictionary_scope_and_suggestions() {
             "reason":"consistent_rewrite","count":3,"days":2,"first_seen":"2026-09-01T12:00:00+00:00","last_seen":"2026-09-02T12:00:00+00:00"
         }]}),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (S03)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn golden_command_diagnose() {
+    pin(
+        "command/diagnose",
+        Command::Diagnose { quick: false },
+        json!({"type": "diagnose"}),
+    );
+    pin(
+        "command/diagnose quick",
+        Command::Diagnose { quick: true },
+        json!({"type": "diagnose", "quick": true}),
+    );
+}
+
+#[test]
+fn golden_result_diagnostics() {
+    pin(
+        "result/diagnostics",
+        CommandResult::Diagnostics(Box::new(DiagnosticsReport {
+            checks: vec![
+                DiagnosticCheck::ok("stt_model", "Speech model", "large-v3-turbo verified"),
+                DiagnosticCheck::fail(
+                    "formatter",
+                    "Formatter model",
+                    "model 'qwen3:14b' is not installed",
+                    "ollama pull qwen3:14b, or set grammar.model to an installed model",
+                ),
+                DiagnosticCheck::skipped("hotkeys", "Global hotkeys", "disabled in config"),
+            ],
+        })),
+        json!({
+            "type": "diagnostics",
+            "checks": [
+                {"id": "stt_model", "title": "Speech model", "status": "ok",
+                 "detail": "large-v3-turbo verified"},
+                {"id": "formatter", "title": "Formatter model", "status": "fail",
+                 "detail": "model 'qwen3:14b' is not installed",
+                 "fix": "ollama pull qwen3:14b, or set grammar.model to an installed model"},
+                {"id": "hotkeys", "title": "Global hotkeys", "status": "skipped",
+                 "detail": "disabled in config"}
+            ]
+        }),
+    );
+}
+
+#[test]
+fn golden_status_health_fields_are_additive() {
+    let base = Status {
+        state: State::Idle,
+        session: None,
+        daemon: DaemonInfo {
+            name: "dictated".into(),
+            version: "0.2.0".into(),
+            protocol_version: 1,
+            pid: None,
+            uptime_ms: None,
+        },
+        model: None,
+        capabilities: Capabilities::default(),
+        formatter: Some(FormatterStatus {
+            enabled: true,
+            model: Some("qwen3:14b".into()),
+            health: FormatterHealth::ModelMissing,
+            detail: Some("installed: gemma4:12b".into()),
+        }),
+        audio: Some(AudioStatus {
+            capture_enabled: true,
+            input_open: false,
+            pre_roll_ms: Some(0),
+        }),
+    };
+    let v = serde_json::to_value(CommandResult::Status(Box::new(base.clone()))).unwrap();
+    assert_eq!(
+        v["formatter"],
+        json!({"enabled": true, "model": "qwen3:14b", "health": "model_missing",
+               "detail": "installed: gemma4:12b"})
+    );
+    assert_eq!(
+        v["audio"],
+        json!({"capture_enabled": true, "input_open": false, "pre_roll_ms": 0})
+    );
+
+    // An older daemon's status (no health fields) must still parse, and must
+    // read as "not reported" rather than as healthy.
+    let old: Status = serde_json::from_value(json!({
+        "state": "idle",
+        "daemon": {"name": "dictated", "version": "0.2.0", "protocol_version": 1},
+        "capabilities": {}
+    }))
+    .unwrap();
+    assert_eq!(old.formatter, None);
+    assert_eq!(old.audio, None);
+}
+
+#[test]
+fn golden_diagnostics_vocabularies() {
+    let statuses: Vec<String> = CheckStatus::known().iter().map(|s| s.to_string()).collect();
+    assert_eq!(statuses, ["ok", "warn", "fail", "skipped"]);
+    let health: Vec<String> = FormatterHealth::known()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        health,
+        [
+            "disabled",
+            "unchecked",
+            "ok",
+            "model_missing",
+            "unreachable",
+            "failing"
+        ]
+    );
+}
+
+#[test]
+fn diagnostics_is_a_local_only_capability() {
+    assert!(Command::Diagnose { quick: false }.is_permitted(&Features::local_trusted()));
+    assert!(
+        !Command::Diagnose { quick: false }.is_permitted(&Features::remote_transcription_only())
+    );
+    assert!(!Command::Diagnose { quick: false }.mutates());
 }

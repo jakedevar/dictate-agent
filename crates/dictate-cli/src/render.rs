@@ -105,6 +105,42 @@ fn print_history_analytics(analytics: &HistoryAnalytics) {
     }
 }
 
+/// The formatter's observed health. A formatter that fails open is invisible
+/// everywhere else, so anything but healthy is spelled out and points at
+/// `dictate doctor`.
+fn formatter_line(f: &dictate_proto::FormatterStatus) -> String {
+    use dictate_proto::FormatterHealth as H;
+    let model = f.model.as_deref().unwrap_or("?");
+    match &f.health {
+        H::Disabled => "format   disabled".to_string(),
+        H::Ok => format!("format   {model} (ok)"),
+        H::Unchecked => format!("format   {model} (not checked yet)"),
+        other => format!(
+            "format   {model} — {}: dictations are typed UNFORMATTED{} (run `dictate doctor`)",
+            other.as_str().replace('_', " ").to_uppercase(),
+            f.detail
+                .as_deref()
+                .map(|d| format!(" [{d}]"))
+                .unwrap_or_default()
+        ),
+    }
+}
+
+/// Whether the microphone is open — the privacy-relevant fact.
+fn audio_line(a: &dictate_proto::AudioStatus) -> String {
+    if !a.capture_enabled {
+        return "mic      disabled (audio-less mode: uploads only)".to_string();
+    }
+    match (a.input_open, a.pre_roll_ms.unwrap_or(0)) {
+        (true, ms) if ms > 0 => {
+            format!("mic      OPEN while idle for the {ms} ms pre-roll (audio.pre_roll_ms = 0 closes it)")
+        }
+        (true, _) => "mic      open (recording)".to_string(),
+        (false, 0) => "mic      closed while idle (pre-roll off)".to_string(),
+        (false, ms) => format!("mic      not open (wanted for the {ms} ms pre-roll)"),
+    }
+}
+
 fn print_status(status: &Status) {
     println!("state    {}", status.state.as_str());
     if let Some(session) = &status.session {
@@ -139,6 +175,13 @@ fn print_status(status: &Status) {
         );
     }
 
+    if let Some(formatter) = &status.formatter {
+        println!("{}", formatter_line(formatter));
+    }
+    if let Some(audio) = &status.audio {
+        println!("{}", audio_line(audio));
+    }
+
     let f = &status.capabilities.features;
     let mut on: Vec<&str> = Vec::new();
     for (name, enabled) in [
@@ -164,6 +207,16 @@ fn print_status(status: &Status) {
     if f.headless {
         println!("         headless — text injection is not possible here");
     }
+}
+
+/// The one-line route/injection/timing summary that follows a transcript.
+pub fn transcript_summary(t: &Transcript) -> String {
+    format!(
+        "route {}  {}  {}",
+        t.route.as_str(),
+        injection(&t.injection),
+        timings(&t.timings)
+    )
 }
 
 fn print_transcript(t: &Transcript) {
@@ -413,5 +466,47 @@ mod tests {
         assert_eq!(human_duration(5_000), "5s");
         assert_eq!(human_duration(120_000), "2m");
         assert_eq!(human_duration(7_200_000), "2h0m");
+    }
+
+    #[test]
+    fn a_broken_formatter_is_spelled_out_in_status() {
+        use dictate_proto::{FormatterHealth, FormatterStatus};
+        let line = formatter_line(&FormatterStatus {
+            enabled: true,
+            model: Some("qwen3:14b".into()),
+            health: FormatterHealth::ModelMissing,
+            detail: Some("installed: gemma4:12b".into()),
+        });
+        assert!(
+            line.contains("MODEL MISSING") && line.contains("UNFORMATTED"),
+            "{line}"
+        );
+        assert!(
+            line.contains("dictate doctor") && line.contains("gemma4:12b"),
+            "{line}"
+        );
+
+        let ok = formatter_line(&FormatterStatus {
+            enabled: true,
+            model: Some("gemma4:12b".into()),
+            health: FormatterHealth::Ok,
+            detail: None,
+        });
+        assert_eq!(ok, "format   gemma4:12b (ok)");
+    }
+
+    #[test]
+    fn the_microphone_line_says_whether_the_device_is_open_while_idle() {
+        use dictate_proto::AudioStatus;
+        let line = |capture_enabled, input_open, pre_roll_ms| {
+            audio_line(&AudioStatus {
+                capture_enabled,
+                input_open,
+                pre_roll_ms: Some(pre_roll_ms),
+            })
+        };
+        assert!(line(true, true, 300).contains("OPEN while idle"));
+        assert!(line(true, false, 0).contains("closed while idle"));
+        assert!(line(false, false, 0).contains("audio-less"));
     }
 }

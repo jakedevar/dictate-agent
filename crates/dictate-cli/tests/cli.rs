@@ -106,6 +106,8 @@ async fn stub_daemon_with_command_count(
                                 backend: Some("cuda".into()),
                             }),
                             capabilities: Capabilities::local_trusted(),
+                            formatter: None,
+                            audio: None,
                         }))),
                         Command::Toggle => match state {
                             State::Idle | State::Done | State::Error | State::Cancelled => {

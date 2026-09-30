@@ -172,6 +172,15 @@ pub enum Command {
         options: Option<SessionOptions>,
     },
 
+    /// Run the daemon's self-diagnosis: every dependency it leans on, each
+    /// with a verdict and a one-line fix. Backs `dictate doctor`.
+    Diagnose {
+        /// Skip the slow checks (hashing the multi-gigabyte model file).
+        /// Skipped checks report `skipped`, never a guess.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quick: bool,
+    },
+
     /// Open a binary audio stream. The server replies with a stream id to put
     /// in each [`AudioFrame`](crate::AudioFrame).
     BeginAudioStream {
@@ -224,6 +233,7 @@ impl Command {
             Self::TranscribeAudio { .. } => "transcribe_audio",
             Self::BeginAudioStream { .. } => "begin_audio_stream",
             Self::EndAudioStream { .. } => "end_audio_stream",
+            Self::Diagnose { .. } => "diagnose",
         }
     }
 
@@ -276,6 +286,8 @@ impl Command {
 
             Self::TranscribeAudio { .. } => features.transcribe_upload,
             Self::BeginAudioStream { .. } | Self::EndAudioStream { .. } => features.streaming_audio,
+
+            Self::Diagnose { .. } => features.diagnostics,
 
             Self::GetConfig { .. } => features.config_read,
             Self::GetContext => features.context_read,

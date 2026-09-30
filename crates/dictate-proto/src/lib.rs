@@ -94,6 +94,7 @@ pub mod audio;
 pub mod capability;
 pub mod command;
 pub mod context;
+pub mod diagnostics;
 pub mod envelope;
 pub mod error;
 pub mod event;
@@ -109,6 +110,9 @@ pub use capability::{
 };
 pub use command::{Command, SessionOptions};
 pub use context::{AppCategory, AppContext, ContextInjection, ResolvedProfile, Tone};
+pub use diagnostics::{
+    AudioStatus, CheckStatus, DiagnosticCheck, DiagnosticsReport, FormatterHealth, FormatterStatus,
+};
 pub use envelope::{EventEnvelope, Message, Outcome, Request, RequestId, Response};
 pub use error::{ErrorCode, ProtoError};
 pub use event::{AudioActivity, Event, FinalText, Hypothesis};

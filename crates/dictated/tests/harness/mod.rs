@@ -13,11 +13,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use dictate_core::config::{Config, ConfigReport};
 use dictate_core::ports::mock::{
     MockAudio, MockFormatter, MockInjector, MockStt, NullEarcons, NullMedia, RecordingNotifier,
 };
 use dictate_core::ports::VoiceActivityGate;
-use dictate_core::ports::{AudioFeedback, Formatter, MediaController, SttProvider};
+use dictate_core::ports::{AudioFeedback, AudioSource, Formatter, MediaController, SttProvider};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};
 use dictate_proto::{
@@ -72,6 +73,10 @@ pub struct Setup {
     pub history_privacy: bool,
     pub media: Arc<dyn MediaController>,
     pub earcons: Arc<dyn AudioFeedback>,
+    /// Replaces `audio` in the pipeline (e.g. with an audio-less source).
+    pub audio_source: Option<Arc<dyn AudioSource>>,
+    /// When set, the daemon gets a real `Doctor` built from this config.
+    pub doctor: Option<(Config, ConfigReport)>,
 }
 
 impl Default for Setup {
@@ -95,6 +100,8 @@ impl Default for Setup {
             history_privacy: false,
             media: Arc::new(NullMedia),
             earcons: Arc::new(NullEarcons),
+            audio_source: None,
+            doctor: None,
         }
     }
 }
@@ -126,6 +133,14 @@ impl Setup {
     }
     pub fn with_history(mut self) -> Self {
         self.history_enabled = true;
+        self
+    }
+    pub fn with_audio_source(mut self, source: Arc<dyn AudioSource>) -> Self {
+        self.audio_source = Some(source);
+        self
+    }
+    pub fn with_doctor(mut self, config: Config, report: ConfigReport) -> Self {
+        self.doctor = Some((config, report));
         self
     }
 
@@ -185,7 +200,10 @@ impl Harness {
         let pipeline = Arc::new(Pipeline {
             context: setup.context,
             dictionary: Some(dictionary.clone()),
-            audio: setup.audio.clone(),
+            audio: setup
+                .audio_source
+                .clone()
+                .unwrap_or_else(|| setup.audio.clone() as Arc<dyn AudioSource>),
             stt: setup.stt.clone(),
             vad: setup.vad.clone(),
             formatter: setup.formatter.clone(),
@@ -204,12 +222,21 @@ impl Harness {
         });
 
         let runtime = RuntimePaths::under(&dir);
-        let daemon = Daemon::start(
+        let diagnostics = setup.doctor.map(|(config, report)| {
+            Arc::new(dictated::doctor::Doctor::new(
+                config,
+                report,
+                runtime.clone(),
+                pipeline.clone(),
+            )) as Arc<dyn dictated::server::DiagnosticsProvider>
+        });
+        let daemon = Daemon::start_with(
             pipeline,
             history.clone(),
             &runtime,
             setup.capabilities,
             None,
+            dictated::DaemonExtras { diagnostics },
         )
         .await
         .expect("daemon must start");
@@ -236,6 +263,11 @@ impl Harness {
     /// Connect a client without handshaking.
     pub async fn raw_client(&self) -> Client {
         Client::connect(&self.socket).await
+    }
+
+    /// The private directory holding this harness's socket and files.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
     }
 
     pub async fn stop(self) {
@@ -295,6 +327,14 @@ impl Client {
         Some(serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad frame {line:?}: {e}")))
     }
 
+    /// Send a command without waiting for its response — for tests that hang up
+    /// (or read raw frames) instead of waiting.
+    pub async fn fire(&mut self, command: Command) {
+        let id = RequestId::Number(self.next_id);
+        self.next_id += 1;
+        self.send(&Message::request(id, command)).await;
+    }
+
     /// Send a command and wait for *its* response, buffering events meanwhile.
     pub async fn request(&mut self, command: Command) -> Result<CommandResult, ProtoError> {
         let id = RequestId::Number(self.next_id);
@@ -322,6 +362,39 @@ impl Client {
             }
         })
         .await
+    }
+
+    /// As [`Client::request`], with a caller-chosen timeout — for operations that
+    /// legitimately take longer than the suite's default (hashing a model file).
+    pub async fn request_within(
+        &mut self,
+        timeout: Duration,
+        command: Command,
+    ) -> Result<CommandResult, ProtoError> {
+        let id = RequestId::Number(self.next_id);
+        self.next_id += 1;
+        self.send(&Message::request(id.clone(), command)).await;
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self.read_message().await.expect("connection closed") {
+                    Message::Response(r) if r.id == id => {
+                        return match r.outcome {
+                            dictate_proto::Outcome::Result(v) => Ok(v),
+                            dictate_proto::Outcome::Error(e) => Err(e),
+                        }
+                    }
+                    Message::Event(e) => {
+                        if let Event::StateChanged { to, .. } = &e.event {
+                            self.seen_states.push(to.clone());
+                        }
+                        self.pending_events.push_back(e.event);
+                    }
+                    other => panic!("unexpected message {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for a response"))
     }
 
     pub async fn handshake(&mut self) -> ServerHello {

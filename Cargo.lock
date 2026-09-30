@@ -667,6 +667,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",
+ "hound",
  "rodio",
  "serde",
  "tokio",
@@ -717,6 +718,8 @@ dependencies = [
  "ollama-rs",
  "regex",
  "serde",
+ "serde_ignored",
+ "serde_json",
  "signal-hook",
  "signal-hook-tokio",
  "tokio",
@@ -834,7 +837,9 @@ dependencies = [
  "dictate-history",
  "dictate-hotkey",
  "dictate-proto",
+ "dictate-stt",
  "dictate-vad",
+ "hound",
  "libc",
  "serde_json",
  "signal-hook",
@@ -2955,6 +2960,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

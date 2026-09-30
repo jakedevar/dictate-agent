@@ -341,3 +341,75 @@ async fn remote_context_discovery_and_sensitive_events_are_denied() {
     }
     h.stop().await;
 }
+
+/// A one-second 16 kHz mono WAV of a quiet tone (the mock VAD and STT decide
+/// what it "says"; only the decoder reads the samples).
+fn tone_wav() -> Vec<u8> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = hound::WavWriter::new(&mut buf, spec).unwrap();
+        for i in 0..16_000u32 {
+            let s =
+                ((f64::from(i) * 440.0 * std::f64::consts::TAU / 16_000.0).sin() * 3000.0) as i16;
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    buf.into_inner()
+}
+
+#[tokio::test]
+async fn uploads_resolve_a_named_app_without_ever_reading_host_focus() {
+    struct ForbiddenFocus;
+    impl ContextProvider for ForbiddenFocus {
+        fn capture(&self) -> Option<WindowInfo> {
+            panic!("an upload must never query host focus")
+        }
+    }
+    let c = config("[[profiles]]\nname='chat'\nmatch={class='slack'}\ncategory='chat'");
+    let h = Harness::with(setup(c, Arc::new(ForbiddenFocus))).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+
+    for (app, expected) in [(Some("Slack"), Some(("slack", "chat"))), (None, None)] {
+        let result = client
+            .request(Command::TranscribeAudio {
+                audio: dictate_proto::AudioSource::Inline {
+                    format: dictate_proto::AudioFormat::wav(),
+                    data: tone_wav(),
+                },
+                options: Some(SessionOptions {
+                    app: app.map(str::to_string),
+                    ..Default::default()
+                }),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(result, CommandResult::Transcript(_)), "{result:?}");
+
+        let context = loop {
+            match client.next_event().await {
+                Event::ContextResolved { context, .. } => break context,
+                _ => continue,
+            }
+        };
+        match expected {
+            Some((app, profile)) => {
+                let context = context.expect("a named app resolves a context");
+                assert_eq!(context.app, app);
+                assert_eq!(context.profile.as_deref(), Some(profile));
+                assert_eq!(context.category, AppCategory::Chat);
+                assert_eq!(context.title, None, "uploads never carry host titles");
+            }
+            None => assert_eq!(context, None, "no app and no host focus: no context"),
+        }
+    }
+    assert!(h.injector.injected().is_empty());
+    h.stop().await;
+}

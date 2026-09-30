@@ -155,6 +155,35 @@ scripts drive Python; with only `dictated` running they drive `dictated`.
 Neither ever overwrites a PID file a living process owns — which is the
 whole reason the two can stay installed side by side.
 
+### Headless transcription, doctor, real-hardware checks (S03)
+
+```bash
+dictate transcribe clip.wav [--json] [--inject] [--route R] [--privacy]
+                        # upload a WAV; text on stdout, summary on stderr.
+                        # Never types unless --inject (and the connection may).
+dictate doctor [--quick] [--json]
+                        # one named check per dependency, each with a one-line
+                        # fix; exits 1 on a failure. Works with no daemon.
+dictated --check-config [--config PATH]
+                        # effective config + every warning; exit 1 if invalid
+just e2e                # real CUDA Whisper + Silero VAD, in-process daemon,
+                        # synthetic fixtures, WER + per-stage p50/p95 (GPU + model)
+just smoke              # release binaries, isolated dictated, doctor + transcribe
+```
+
+- `transcribe_audio` (inline WAV/PCM) runs as an *upload session* in the
+  engine's single slot: no microphone, media pause, earcons or `recording`
+  state (`SessionHandle::is_upload`). `[audio] capture = false` starts the
+  daemon with no input device at all (`DisabledAudioSource`); `pre_roll_ms = 0`
+  closes the device while idle (`dictate status` → `mic`).
+- Config loading maps Python-era shapes (`[router]`→`[local]`, HF model ids)
+  and **warns once per unknown section/key** — the example config loads clean
+  (tested). `formatter.health` in `get_status` exposes a fail-open formatter.
+- The `e2e-real` cargo feature gates `crates/dictated/tests/e2e_real.rs`; the
+  default `cargo test --workspace --all-targets` needs no GPU, model, network
+  or display. Real-hardware checks run against a private temp runtime and never
+  touch the live daemon (see `scripts/smoke-real.sh` for the isolation rules).
+
 ### Paths must never collide with the Python daemon
 
 The Python reference daemon owns `~/.config/dictate-agent/dictate.pid` and

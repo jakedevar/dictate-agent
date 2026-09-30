@@ -24,7 +24,22 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = config::load_config(None)?;
+    let config_path = flag_value(&args, "--config").map(std::path::PathBuf::from);
+    if args.iter().any(|a| a == "--check-config") {
+        return check_config(config_path.as_deref());
+    }
+
+    let (config, report) = config::load_config_with_report(config_path.as_deref())?;
+    for warning in &report.warnings {
+        tracing::warn!("config: {warning}");
+    }
+    if !report.errors.is_empty() {
+        anyhow::bail!(
+            "invalid configuration in {}:\n  - {}",
+            report.path.display(),
+            report.errors.join("\n  - ")
+        );
+    }
 
     // Built here rather than via `#[tokio::main]` so the worker count is a
     // deliberate choice: the daemon is almost entirely idle, and its blocking
@@ -33,7 +48,7 @@ fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(dictated::run(config))
+        .block_on(dictated::run_with_report(config, report))
 }
 
 fn init_tracing() -> Result<()> {
@@ -65,9 +80,13 @@ USAGE:
     dictated [OPTIONS]
 
 OPTIONS:
-    --check      Verify external tools this daemon shells out to
-    --version    Print the version
-    --help       Print this help
+    --check                 Verify external tools this daemon shells out to
+    --check-config          Print the effective configuration and any warnings, then
+                            exit (non-zero if the configuration is invalid)
+    --config <PATH>         Read this config file instead of
+                            $XDG_CONFIG_HOME/dictate-agent/config.toml
+    --version               Print the version
+    --help                  Print this help
 
 CONTROL:
     dictate toggle | cancel | status | tail     (unix socket)
@@ -76,6 +95,52 @@ CONTROL:
 ",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+/// The value following `flag`, if present.
+fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+}
+
+/// `dictated --check-config`: load the configuration exactly as the daemon
+/// would, print what it resolved to and everything it had to say about the
+/// file, and exit non-zero when the daemon would refuse to start.
+fn check_config(path: Option<&std::path::Path>) -> Result<()> {
+    let (config, report) = config::load_config_with_report(path)?;
+    println!("config file : {}", report.path.display());
+    println!(
+        "status      : {}",
+        if !report.existed {
+            "not found — built-in defaults apply"
+        } else {
+            "loaded"
+        }
+    );
+    println!();
+    println!("effective configuration:");
+    println!("{config:#?}");
+    println!();
+    if report.warnings.is_empty() {
+        println!("warnings: none");
+    } else {
+        println!("warnings ({}):", report.warnings.len());
+        for w in &report.warnings {
+            println!("  - {w}");
+        }
+    }
+    if report.errors.is_empty() {
+        println!("errors  : none");
+        Ok(())
+    } else {
+        println!("errors ({}):", report.errors.len());
+        for e in &report.errors {
+            println!("  - {e}");
+        }
+        std::process::exit(1);
+    }
 }
 
 /// Check each external program still used as a subprocess.

@@ -30,20 +30,25 @@ pub mod cancel;
 pub mod config;
 pub mod engine;
 pub mod event_bus;
+pub mod formatter_health;
 pub mod local_executor;
 pub mod notify;
+pub mod ollama;
 pub mod pipeline;
 pub mod ports;
 pub mod router;
 pub mod session;
 pub mod timer;
+pub mod upload;
 
 pub use cancel::{CancelToken, CancelVerdict};
 pub use config::Config;
-pub use engine::{resolve_options, Engine, EngineHandle, ToggleOutcome};
+pub use engine::{
+    resolve_options, resolve_upload_options, Engine, EngineHandle, ToggleOutcome, TranscribeTicket,
+};
 pub use event_bus::EventBus;
 pub use pipeline::{Pipeline, PipelineOutcome, ResolvedOptions};
-pub use session::{Actor, ClientId, ClientIdGen, SessionHandle, SessionOwner};
+pub use session::{Actor, ClientId, ClientIdGen, SessionHandle, SessionOwner, SuppliedAudio};
 
 pub use dictate_context::{
     ContextConfig, ContextEngine, ContextProvider, NoContext, TestContext, WindowInfo,
