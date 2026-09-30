@@ -39,6 +39,7 @@ use dictate_proto::{
     AudioFormat, AudioSource as Upload, Command, CommandResult, SessionOptions, StageTiming,
     Transcript,
 };
+use dictate_stt::SttProvider;
 use dictated::paths::RuntimePaths;
 use dictated::{Daemon, DaemonExtras};
 use harness::Client;
@@ -642,4 +643,78 @@ async fn silence_is_gated_by_the_real_vad_and_never_transcribed() {
         t.timings.stt
     );
     real.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_cpu_model_reports_cpu_from_initialization() {
+    let _exclusive = ONE_MODEL_AT_A_TIME.lock().await;
+    let config = dictate_stt::WhisperConfig {
+        model: "large-v3-turbo".into(),
+        model_path: model_path().to_string_lossy().into_owned(),
+        device: "cpu".into(),
+        ..Default::default()
+    };
+    let stt = WhisperStt::new(&config);
+    tokio::time::timeout(Duration::from_secs(120), async {
+        while !stt.model().loaded {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("CPU context loads the existing model without downloading");
+    assert_eq!(stt.model().backend.as_deref(), Some("cpu"));
+    say!("CPU context: observed backend cpu (same whisper.cpp logging probe as CUDA)");
+}
+
+/// CUDA discovery is process-global. A fresh child with no visible devices
+/// exercises the actual fallback while leaving the parent's GPU tests intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cuda_request_without_a_visible_gpu_reports_cpu_and_warns() {
+    const CHILD: &str = "DICTATE_E2E_BACKEND_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok("1") {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::stderr)
+            .init();
+        let real = Real::start().await;
+        assert_eq!(real.pipeline.stt.model().backend.as_deref(), Some("cpu"));
+        let mut client = real.client().await;
+        let CommandResult::Diagnostics(report) = client
+            .request(Command::Diagnose { quick: true })
+            .await
+            .unwrap()
+        else {
+            panic!("expected diagnostics");
+        };
+        let backend = report.check("stt_backend").unwrap();
+        assert_eq!(backend.status, dictate_proto::CheckStatus::Fail);
+        assert!(backend
+            .detail
+            .contains("configured for cuda but running on cpu"));
+        real.stop().await;
+        return;
+    }
+    let _exclusive = ONE_MODEL_AT_A_TIME.lock().await;
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "cuda_request_without_a_visible_gpu_reports_cpu_and_warns",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("CUDA_VISIBLE_DEVICES", "-1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fallback child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Whisper backend differs from request"),
+        "CPU fallback must issue a WARN: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    say!("CUDA request with no visible GPU: observed cpu, WARN emitted, doctor reports cuda/cpu mismatch");
 }
