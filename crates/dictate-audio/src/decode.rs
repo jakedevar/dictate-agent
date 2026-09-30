@@ -207,7 +207,7 @@ pub fn decode_raw(
     let channels = channels.ok_or(DecodeError::MissingParameter("channels"))?;
     check_layout(rate_hz, channels)?;
     let frame_bytes = encoding.bytes_per_sample() * usize::from(channels);
-    if bytes.len() % frame_bytes != 0 {
+    if !bytes.len().is_multiple_of(frame_bytes) {
         return Err(DecodeError::Malformed(format!(
             "{} bytes is not a whole number of {frame_bytes}-byte frames",
             bytes.len()

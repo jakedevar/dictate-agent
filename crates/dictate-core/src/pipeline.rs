@@ -220,8 +220,10 @@ enum Step<T> {
 impl Pipeline {
     /// Run one session to a terminal state.
     ///
-    /// The session begins in `Recording` (the engine has already opened the
-    /// device) and waits on `stop`. Returns the terminal state so the engine
+    /// A live session begins in `Recording` (the engine has already opened the
+    /// device) and waits on `stop`. An upload (see
+    /// [`SessionHandle::is_upload`]) skips the recording phase and every side
+    /// effect around it, and takes its samples from the handle. Returns the terminal state so the engine
     /// can clear its slot; every event a client needs has already been
     /// published by then.
     pub async fn run(

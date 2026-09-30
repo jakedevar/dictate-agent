@@ -2,9 +2,23 @@
 # Copy to ~/.config/dictate-agent/config.toml
 
 [audio]
+# Whether this daemon may use the microphone at all. `false` is "audio-less
+# mode": no input device is ever opened, `dictate toggle`/`start` fail with a
+# clear error, and only uploaded audio works (`dictate transcribe file.wav`).
+# Use it for servers, CI, and the isolated daemons the E2E tests start.
+capture = true
 # Exact PipeWire/ALSA input device name. Empty uses the system default.
 input_device = ""
 # Keep audio immediately before the hotkey so the first syllable is not clipped.
+#
+# PRIVACY TRADE-OFF: a non-zero pre-roll means the input device is held OPEN
+# WHILE IDLE (your desktop's microphone indicator stays lit) so a ring buffer
+# can hold the last few hundred milliseconds. Nothing beyond that ring is kept,
+# and it is discarded after every session, but the device is open around the
+# clock. `pre_roll_ms = 0` closes the device between recordings: it is opened
+# when a recording starts and released on stop/cancel, at the cost of clipping
+# the first syllable if you speak the instant you press the key.
+# `dictate status` shows whether the device is open right now (`mic: open`).
 pre_roll_ms = 300
 # Preserve final words after the stop hotkey.
 trailing_capture_ms = 500
@@ -44,6 +58,17 @@ device = "cuda"
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
 no_speech_threshold = 0.6
 
+# `auto` detects the spoken language; set e.g. "en", "fr", or "ja" to pin it.
+language = "auto"
+
+# Optional dictionary/jargon bias. S22 will populate this automatically.
+initial_prompt = ""
+
+# A config written for the Python-era daemon names this by Hugging Face id
+# (`model = "openai/whisper-large-v3-turbo"`). That still loads: known ids are
+# mapped to the catalog name above with a warning. Unknown keys are never
+# silently ignored — `dictated --check-config` lists every one.
+
 [vad]
 # CPU Silero VAD: skip STT for silence and trim silence around speech.
 enabled = true
@@ -55,12 +80,6 @@ speech_pad_ms = 100
 trailing_silence_ms = 900
 poll_interval_ms = 32
 
-# `auto` detects the spoken language; set e.g. "en", "fr", or "ja" to pin it.
-language = "auto"
-
-# Optional dictionary/jargon bias. S22 will populate this automatically.
-initial_prompt = ""
-
 [grammar]
 # Auto grammar correction (runs between transcription and routing)
 enabled = false
@@ -70,7 +89,15 @@ timeout_s = 10.0
 # Skip correction for short inputs (preserves trigger words like "timer")
 min_words = 3
 
+[upload]
+# Limits on audio uploaded with `transcribe_audio` / `dictate transcribe`.
+# An upload is decoded and resampled in memory, so it is bounded.
+max_audio_seconds = 600
+# Largest payload, in bytes of audio data (a 16 kHz mono 16-bit WAV is ~1.9 MB/min).
+max_bytes = 67108864
+
 [local]
+# (`[router]` in a Python-era config is read as this section, with a warning.)
 # Ollama configuration for local inference (triggered by "easy/simple/medium/hard" prefix)
 host = "http://localhost:11434"
 model = "qwen3:14b"

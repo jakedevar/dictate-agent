@@ -886,4 +886,18 @@ foo = "bar"
         assert!(report.warnings.is_empty());
         assert_eq!(config.whisper.device, "cuda");
     }
+
+    /// The shipped example is what users copy; it must load clean. (This test
+    /// caught two keys documented under the wrong section.)
+    #[test]
+    fn the_example_config_loads_without_a_single_warning_or_error() {
+        let example = include_str!("../../../config/config.example.toml");
+        let (config, report) = parse_config(example).expect("the example must parse");
+        assert!(report.warnings.is_empty(), "{:#?}", report.warnings);
+        assert!(report.errors.is_empty(), "{:#?}", report.errors);
+        assert!(config.audio.capture);
+        assert_eq!(config.audio.pre_roll_ms, 300);
+        assert_eq!(config.upload.max_audio_seconds, 600);
+        assert_eq!(config.whisper.language, "auto");
+    }
 }

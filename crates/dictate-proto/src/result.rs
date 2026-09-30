@@ -369,7 +369,7 @@ mod tests {
             CommandResult::Deleted { id: 9 },
             CommandResult::History(HistoryPage::default()),
             CommandResult::Transcript(Box::new(Transcript::delivered("hello"))),
-            CommandResult::Diagnostics(Box::new(DiagnosticsReport::default())),
+            CommandResult::Diagnostics(Box::default()),
             CommandResult::AudioStreamOpened {
                 stream_id: 3,
                 session_id: "s1".into(),

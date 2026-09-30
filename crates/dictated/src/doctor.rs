@@ -101,7 +101,9 @@ impl Doctor {
                 "fix the listed values in the config file, then restart dictated",
             );
         }
-        let origin = if r.existed {
+        let origin = if r.path.as_os_str().is_empty() {
+            "built-in configuration (no config file read)".to_string()
+        } else if r.existed {
             format!("loaded {}", r.path.display())
         } else {
             format!("no file at {}; using defaults", r.path.display())

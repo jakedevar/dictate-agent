@@ -193,6 +193,14 @@ struct Real {
 impl Real {
     async fn start() -> Self {
         let exclusive = ONE_MODEL_AT_A_TIME.lock().await;
+        // This test must never reach a real desktop: not to type (the injector
+        // is a mock) and not even to probe. Hide the session from the daemon
+        // under test. Tests are serialised by the lock above, and nothing else
+        // in this process reads the environment concurrently.
+        for var in ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"] {
+            // SAFETY: see above — single test at a time, before the daemon starts.
+            unsafe { std::env::remove_var(var) };
+        }
         let model = model_path();
         assert!(
             model.exists(),

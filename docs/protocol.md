@@ -296,6 +296,10 @@ answered `capability_unavailable` here.
   client must not apply a short read timeout. `session_started`-style events are
   published to subscribers as usual (the uploading connection receives its own
   events after the response, because it is busy waiting for it).
+- **Hang-up.** Do not half-close the write side of the socket while waiting for
+  the transcript: the daemon reads EOF as "the caller is gone" and cancels the
+  session, so that an interrupted `dictate transcribe --inject` types nothing.
+  Keep the connection open until the response arrives.
 - **Injection.** Off unless `options.inject` is `true` *and* the connection has
   `text_injection` (`forbidden` otherwise). Unlike `start_dictation`, an
   omitted `inject` never means "the connection's default": an upload delivers
