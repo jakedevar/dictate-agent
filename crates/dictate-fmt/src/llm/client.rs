@@ -171,8 +171,10 @@ impl std::error::Error for BackendError {}
 /// [`HttpBackend`]; tests and the recorded eval tier substitute their own.
 pub trait ChatBackend: Send + Sync {
     /// One non-streaming chat completion.
-    fn chat<'a>(&'a self, request: &'a ChatRequest)
-        -> BoxFuture<'a, Result<ChatResponse, BackendError>>;
+    fn chat<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+    ) -> BoxFuture<'a, Result<ChatResponse, BackendError>>;
 
     /// Installed models (`/api/tags`).
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<InstalledModel>, BackendError>>;
@@ -470,14 +472,21 @@ mod tests {
 
     #[test]
     fn base_url_normalization() {
-        assert_eq!(normalize_base("http://localhost:11434/"), "http://localhost:11434");
+        assert_eq!(
+            normalize_base("http://localhost:11434/"),
+            "http://localhost:11434"
+        );
         assert_eq!(normalize_base("localhost:11434"), "http://localhost:11434");
         assert_eq!(normalize_base(" https://h:1 "), "https://h:1");
     }
 
     #[test]
     fn missing_model_is_classified_from_the_error_body() {
-        let e = classify_status(404, br#"{"error":"model 'qwen3:14b' not found"}"#, "qwen3:14b");
+        let e = classify_status(
+            404,
+            br#"{"error":"model 'qwen3:14b' not found"}"#,
+            "qwen3:14b",
+        );
         assert_eq!(e, BackendError::ModelMissing("qwen3:14b".into()));
         let other = classify_status(500, br#"{"error":"out of memory"}"#, "m");
         assert_eq!(
@@ -489,7 +498,9 @@ mod tests {
         );
         // A non-JSON error body is kept (truncated) rather than lost.
         let raw = classify_status(502, b"bad gateway", "m");
-        assert!(matches!(raw, BackendError::Http { status: 502, ref message } if message == "bad gateway"));
+        assert!(
+            matches!(raw, BackendError::Http { status: 502, ref message } if message == "bad gateway")
+        );
     }
 
     #[test]
@@ -510,7 +521,10 @@ mod tests {
 
     #[test]
     fn malformed_and_in_band_errors_are_errors() {
-        assert!(matches!(parse_chat(b"not json"), Err(BackendError::Malformed(_))));
+        assert!(matches!(
+            parse_chat(b"not json"),
+            Err(BackendError::Malformed(_))
+        ));
         assert!(matches!(
             parse_chat(br#"{"error":"boom"}"#),
             Err(BackendError::Http { status: 200, .. })

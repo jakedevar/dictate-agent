@@ -219,7 +219,10 @@ fn prompt_echo(c: &Check<'_>) -> Result<(), Rejection> {
     let input = c.input.to_lowercase();
     for m in ECHO_MARKERS {
         if out.contains(m) && !input.contains(m) {
-            return Err(Rejection::new(Validator::PromptEcho, format!("contains {m:?}")));
+            return Err(Rejection::new(
+                Validator::PromptEcho,
+                format!("contains {m:?}"),
+            ));
         }
     }
     Ok(())
@@ -289,7 +292,10 @@ fn preamble(c: &Check<'_>) -> Result<(), Rejection> {
     let out = normalize(c.output);
     for p in PREAMBLES {
         if starts_with_word(&out, p) && !starts_with_word(&input, p) {
-            return Err(Rejection::new(Validator::Preamble, format!("starts with {p:?}")));
+            return Err(Rejection::new(
+                Validator::Preamble,
+                format!("starts with {p:?}"),
+            ));
         }
     }
     let input_lines: HashSet<String> = c.input.lines().map(normalize).collect();
@@ -326,7 +332,10 @@ fn markup(c: &Check<'_>) -> Result<(), Rejection> {
         .iter()
         .find(|ch| output.contains(**ch) && !input.contains(**ch))
     {
-        return Err(Rejection::new(Validator::Markup, format!("added symbol {sym:?}")));
+        return Err(Rejection::new(
+            Validator::Markup,
+            format!("added symbol {sym:?}"),
+        ));
     }
     static LINE_MARKUP: OnceLock<Regex> = OnceLock::new();
     let re = LINE_MARKUP.get_or_init(|| Regex::new(r"(?m)^\s*(#{1,6}\s|[-*•]\s|>\s|\|)").unwrap());
@@ -400,7 +409,10 @@ fn span_correction(c: &Check<'_>) -> Result<(), Rejection> {
             if !out_words.contains(cue) {
                 return Err(Rejection::new(
                     Validator::SpanCorrection,
-                    format!("resolved a self-correction next to protected span {}", m.as_str()),
+                    format!(
+                        "resolved a self-correction next to protected span {}",
+                        m.as_str()
+                    ),
                 ));
             }
         }
@@ -471,21 +483,63 @@ fn expand(w: &str, out: &mut Vec<String>) {
 }
 
 const UNITS: &[&str] = &[
-    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
     "nineteen",
 ];
 const TENS: &[&str] = &[
     "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
 ];
 const ORDINALS: &[&str] = &[
-    "zeroth", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
-    "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
-    "sixteenth", "seventeenth", "eighteenth", "nineteenth",
+    "zeroth",
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "sixth",
+    "seventh",
+    "eighth",
+    "ninth",
+    "tenth",
+    "eleventh",
+    "twelfth",
+    "thirteenth",
+    "fourteenth",
+    "fifteenth",
+    "sixteenth",
+    "seventeenth",
+    "eighteenth",
+    "nineteenth",
 ];
 const TENS_ORDINALS: &[&str] = &[
-    "", "", "twentieth", "thirtieth", "fortieth", "fiftieth", "sixtieth", "seventieth",
-    "eightieth", "ninetieth",
+    "",
+    "",
+    "twentieth",
+    "thirtieth",
+    "fortieth",
+    "fiftieth",
+    "sixtieth",
+    "seventieth",
+    "eightieth",
+    "ninetieth",
 ];
 
 fn number_word_value(w: &str) -> Option<u64> {
@@ -534,7 +588,10 @@ fn licensed_numbers(input: &[String]) -> HashSet<String> {
         let mut j = i;
         while j < input.len()
             && (is_number(&input[j])
-                || matches!(input[j].as_str(), "hundred" | "thousand" | "million" | "and"))
+                || matches!(
+                    input[j].as_str(),
+                    "hundred" | "thousand" | "million" | "and"
+                ))
         {
             run.push(input[j].as_str());
             j += 1;
@@ -603,7 +660,7 @@ fn group_values(run: &[&str]) -> Vec<u64> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < nums.len() {
-        if nums[i] >= 20 && nums[i] % 10 == 0 && i + 1 < nums.len() && nums[i + 1] < 10 {
+        if nums[i] >= 20 && nums[i].is_multiple_of(10) && i + 1 < nums.len() && nums[i + 1] < 10 {
             out.push(nums[i] + nums[i + 1]);
             i += 2;
         } else {
@@ -628,20 +685,16 @@ fn numbers(input: &[String], output: &[String]) -> Result<(), Rejection> {
 /// negations, quantifiers and anything that carries content.
 const PROSE_INSERTABLE: &[&str] = &[
     "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with", "from",
-    "by", "as", "that", "this", "it", "is", "are", "was", "were", "be", "been", "am", "do",
-    "does", "did", "have", "has", "had", "will", "would", "can", "could", "should", "i", "you",
-    "we", "they", "he", "she", "me", "my", "your", "our", "their", "so", "if", "then", "there",
-    "here", "which", "who", "what", "about", "into", "up", "just",
+    "by", "as", "that", "this", "it", "is", "are", "was", "were", "be", "been", "am", "do", "does",
+    "did", "have", "has", "had", "will", "would", "can", "could", "should", "i", "you", "we",
+    "they", "he", "she", "me", "my", "your", "our", "their", "so", "if", "then", "there", "here",
+    "which", "who", "what", "about", "into", "up", "just",
 ];
 
 fn novel_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(), Rejection> {
     let known: HashSet<&str> = input.iter().map(String::as_str).collect();
     let licensed = licensed_numbers(input);
-    let vocabulary: Vec<String> = c
-        .vocabulary
-        .iter()
-        .flat_map(|v| words(v))
-        .collect();
+    let vocabulary: Vec<String> = c.vocabulary.iter().flat_map(|v| words(v)).collect();
 
     let mut novel = Vec::new();
     for (i, w) in output.iter().enumerate() {
@@ -653,8 +706,7 @@ fn novel_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(),
         }
         // "wifi" → "Wi-Fi": a split of one input word into adjacent pieces.
         let joins = |a: &str, b: &str| known.contains(format!("{a}{b}").as_str());
-        if (i + 1 < output.len() && joins(w, &output[i + 1]))
-            || (i > 0 && joins(&output[i - 1], w))
+        if (i + 1 < output.len() && joins(w, &output[i + 1])) || (i > 0 && joins(&output[i - 1], w))
         {
             continue;
         }
@@ -704,7 +756,9 @@ fn quote_list(words: &[String]) -> String {
 
 /// "e mail" → "email", "java script" → "javascript".
 fn is_concatenation(w: &str, input: &[String]) -> bool {
-    input.windows(2).any(|p| p[0].len() + p[1].len() == w.len() && format!("{}{}", p[0], p[1]) == w)
+    input
+        .windows(2)
+        .any(|p| p[0].len() + p[1].len() == w.len() && format!("{}{}", p[0], p[1]) == w)
         || input.windows(3).any(|p| {
             p[0].len() + p[1].len() + p[2].len() == w.len()
                 && format!("{}{}{}", p[0], p[1], p[2]) == w
@@ -805,11 +859,15 @@ fn edit_distance(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     }
     let d = weighted_edits(&input, &output);
     let ratio = d / input.len() as f64;
-    let allowed = (c.thresholds.max_edit_ratio * input.len() as f64).max(c.thresholds.min_edits as f64);
+    let allowed =
+        (c.thresholds.max_edit_ratio * input.len() as f64).max(c.thresholds.min_edits as f64);
     if d > allowed {
         return Err(Rejection::new(
             Validator::EditDistance,
-            format!("{d:.1} weighted word edits for {} words ({ratio:.2})", input.len()),
+            format!(
+                "{d:.1} weighted word edits for {} words ({ratio:.2})",
+                input.len()
+            ),
         ));
     }
 
@@ -817,14 +875,21 @@ fn edit_distance(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     // order. Deleting is cheap above, so a reshuffle of the same words would
     // otherwise pass; one grammatical swap ("you can" → "can you") is fine.
     let known: HashSet<&str> = input.iter().copied().collect();
-    let kept: Vec<&str> = output.iter().copied().filter(|w| known.contains(w)).collect();
+    let kept: Vec<&str> = output
+        .iter()
+        .copied()
+        .filter(|w| known.contains(w))
+        .collect();
     let in_order = lcs_len(&input, &kept);
     let out_of_order = kept.len() - in_order;
     let slack = ((kept.len() as f64 * 0.15).ceil() as usize).max(2);
     if out_of_order > slack {
         return Err(Rejection::new(
             Validator::EditDistance,
-            format!("reordered: {out_of_order} of {} kept words out of dictated order", kept.len()),
+            format!(
+                "reordered: {out_of_order} of {} kept words out of dictated order",
+                kept.len()
+            ),
         ));
     }
     Ok(())
@@ -849,14 +914,49 @@ fn lcs_len(a: &[&str], b: &[&str]) -> usize {
 /// Words a formatter may delete without explanation: fillers, discourse
 /// markers and correction cues.
 const DELETABLE: &[&str] = &[
-    "um", "uh", "er", "erm", "hmm", "mm", "like", "so", "basically", "actually", "just",
-    "really", "you", "know", "i", "mean", "okay", "ok", "oh", "well", "yeah", "anyway",
-    "literally", "right", "alright", "wait", "sorry", "scratch", "rather", "no",
+    "um",
+    "uh",
+    "er",
+    "erm",
+    "hmm",
+    "mm",
+    "like",
+    "so",
+    "basically",
+    "actually",
+    "just",
+    "really",
+    "you",
+    "know",
+    "i",
+    "mean",
+    "okay",
+    "ok",
+    "oh",
+    "well",
+    "yeah",
+    "anyway",
+    "literally",
+    "right",
+    "alright",
+    "wait",
+    "sorry",
+    "scratch",
+    "rather",
+    "no",
 ];
 /// Unit words a number's written form absorbs ("$25", "50%", "3.5").
 const UNIT_WORDS: &[&str] = &["dollars", "dollar", "cents", "percent", "point", "degrees"];
 const NEGATIONS: &[&str] = &["not", "never", "no", "nothing", "none", "nobody", "without"];
-const CUES: &[&str] = &["actually", "sorry", "wait", "rather", "scratch", "mean", "correction"];
+const CUES: &[&str] = &[
+    "actually",
+    "sorry",
+    "wait",
+    "rather",
+    "scratch",
+    "mean",
+    "correction",
+];
 
 /// Input indices kept by a longest common subsequence alignment that
 /// prefers the *latest* occurrence of a repeated word — the speaker's last
@@ -910,13 +1010,18 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     // "e mail" → "email": pieces of a compound the output kept joined.
     let joined = |k: usize| {
         (k > 0 && in_output.contains(format!("{}{}", input[k - 1], input[k]).as_str()))
-            || (k + 1 < input.len() && in_output.contains(format!("{}{}", input[k], input[k + 1]).as_str()))
+            || (k + 1 < input.len()
+                && in_output.contains(format!("{}{}", input[k], input[k + 1]).as_str()))
             || (k + 2 < input.len()
-                && in_output.contains(format!("{}{}{}", input[k], input[k + 1], input[k + 2]).as_str()))
+                && in_output
+                    .contains(format!("{}{}{}", input[k], input[k + 1], input[k + 2]).as_str()))
             || (k > 0
                 && k + 1 < input.len()
-                && in_output.contains(format!("{}{}{}", input[k - 1], input[k], input[k + 1]).as_str()))
-            || (k > 1 && in_output.contains(format!("{}{}{}", input[k - 2], input[k - 1], input[k]).as_str()))
+                && in_output
+                    .contains(format!("{}{}{}", input[k - 1], input[k], input[k + 1]).as_str()))
+            || (k > 1
+                && in_output
+                    .contains(format!("{}{}{}", input[k - 2], input[k - 1], input[k]).as_str()))
     };
     // "on tuesday no wednesday": a bare "no" between a dropped word and a
     // kept one is the classic "A, no, B" correction.
@@ -932,9 +1037,13 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     // A numbered list absorbs the spoken enumerators ("first…", "two…",
     // "finally…") into its markers.
     let listed = c.policy.allows_new_lines() && c.output.contains('\n');
-    let enumerator = |w: &str| listed && matches!(w, "#" | "then" | "next" | "finally" | "lastly" | "last");
+    let enumerator =
+        |w: &str| listed && matches!(w, "#" | "then" | "next" | "finally" | "lastly" | "last");
     // "wifi" → "Wi-Fi": a word the output kept split into adjacent pieces.
-    let split_pairs: HashSet<String> = output.windows(2).map(|p| format!("{}{}", p[0], p[1])).collect();
+    let split_pairs: HashSet<String> = output
+        .windows(2)
+        .map(|p| format!("{}{}", p[0], p[1]))
+        .collect();
     // A vocabulary term replacing its mis-heard rendering ("cube control").
     let vocabulary: Vec<String> = c
         .vocabulary
@@ -970,8 +1079,7 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
             d += 1;
         }
         let restart = (d..(d + 6).min(input.len())).any(|j| kept[j] && input[j] == input[start]);
-        for k in start..d {
-            let w = input[k];
+        for (k, &w) in input.iter().enumerate().take(d).skip(start) {
             let negation = NEGATIONS.contains(&w);
             let explained = if negation {
                 // Dropping a negation flips meaning unless it is itself the
@@ -1009,7 +1117,8 @@ fn length_ratio(c: &Check<'_>) -> Result<(), Rejection> {
     if i == 0 {
         return Ok(());
     }
-    let upper = ((i as f64 * c.thresholds.max_ratio) as usize).max(i + c.thresholds.max_extra_chars);
+    let upper =
+        ((i as f64 * c.thresholds.max_ratio) as usize).max(i + c.thresholds.max_extra_chars);
     let lower = (i as f64 * c.thresholds.min_ratio) as usize;
     if o > upper || o < lower {
         return Err(Rejection::new(
@@ -1036,7 +1145,9 @@ mod tests {
         vocabulary: &[&str],
     ) -> Result<(), Rejection> {
         let policies = CategoryPolicies::default();
-        let policy = policies.get(&dictate_proto::AppCategory::from(category)).clone();
+        let policy = policies
+            .get(&dictate_proto::AppCategory::from(category))
+            .clone();
         let vocabulary: Vec<String> = vocabulary.iter().map(|s| (*s).to_string()).collect();
         let thresholds = Thresholds::default();
         validate(&Check {
@@ -1063,7 +1174,12 @@ mod tests {
             "terminal",
         )
         .unwrap();
-        run("let's meet at five actually no six pm", "Let's meet at six PM.", "terminal").unwrap();
+        run(
+            "let's meet at five actually no six pm",
+            "Let's meet at six PM.",
+            "terminal",
+        )
+        .unwrap();
         run(
             "can you tell me what the capital of france is",
             "Can you tell me what the capital of France is?",
@@ -1080,11 +1196,26 @@ mod tests {
 
     #[test]
     fn accepts_numbers_the_speaker_said_in_words() {
-        run("meet at five thirty on the twenty first", "Meet at 5:30 on the 21st.", "chat").unwrap();
+        run(
+            "meet at five thirty on the twenty first",
+            "Meet at 5:30 on the 21st.",
+            "chat",
+        )
+        .unwrap();
         run("it costs twenty five dollars", "It costs $25.", "terminal").unwrap();
         run("back in twenty twenty six", "Back in 2026.", "terminal").unwrap();
-        run("about two thousand twenty six rows", "About 2026 rows.", "terminal").unwrap();
-        run("roughly three point five percent", "Roughly 3.5%.", "terminal").unwrap();
+        run(
+            "about two thousand twenty six rows",
+            "About 2026 rows.",
+            "terminal",
+        )
+        .unwrap();
+        run(
+            "roughly three point five percent",
+            "Roughly 3.5%.",
+            "terminal",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1111,7 +1242,12 @@ mod tests {
 
     #[test]
     fn accepts_splits_ordinals_and_punctuated_openers() {
-        run("what's the wifi password", "What's the Wi-Fi password?", "chat").unwrap();
+        run(
+            "what's the wifi password",
+            "What's the Wi-Fi password?",
+            "chat",
+        )
+        .unwrap();
         run("moving to march fifteenth", "Moving to March 15th.", "chat").unwrap();
         run("due on the thirtieth", "Due on the 30th.", "chat").unwrap();
         run(
@@ -1127,15 +1263,23 @@ mod tests {
         run("send me an e mail", "Send me an email.", "terminal").unwrap();
         run("do not do that", "Don't do that.", "terminal").unwrap();
         run("it is fine", "It's fine.", "terminal").unwrap();
-        run_vocab("deploy it with cube control", "Deploy it with kubecontrol.", "terminal", &["kubecontrol"])
-            .unwrap();
+        run_vocab(
+            "deploy it with cube control",
+            "Deploy it with kubecontrol.",
+            "terminal",
+            &["kubecontrol"],
+        )
+        .unwrap();
     }
 
     // --- must reject: one test per validator --------------------------------
 
     #[test]
     fn rejects_empty_output() {
-        assert_eq!(rejected_by(run("hello there friend", "  ", "chat")), Validator::EmptyOutput);
+        assert_eq!(
+            rejected_by(run("hello there friend", "  ", "chat")),
+            Validator::EmptyOutput
+        );
     }
 
     #[test]
@@ -1149,7 +1293,11 @@ mod tests {
     #[test]
     fn rejects_assistant_preambles_and_annotations() {
         assert_eq!(
-            rejected_by(run("what is two plus two", "Sure! What is two plus two?", "chat")),
+            rejected_by(run(
+                "what is two plus two",
+                "Sure! What is two plus two?",
+                "chat"
+            )),
             Validator::Preamble
         );
         assert_eq!(
@@ -1171,11 +1319,19 @@ mod tests {
     #[test]
     fn rejects_markup_the_input_did_not_have() {
         assert_eq!(
-            rejected_by(run("print hello world in python", "```python\nprint('hello world')\n```", "document")),
+            rejected_by(run(
+                "print hello world in python",
+                "```python\nprint('hello world')\n```",
+                "document"
+            )),
             Validator::Markup
         );
         assert_eq!(
-            rejected_by(run("this is really important", "This is **really** important.", "chat")),
+            rejected_by(run(
+                "this is really important",
+                "This is **really** important.",
+                "chat"
+            )),
             Validator::Markup
         );
         assert_eq!(
@@ -1242,7 +1398,11 @@ mod tests {
             Validator::Numbers
         );
         assert_eq!(
-            rejected_by(run("what is two plus two", "What is two plus two? 4", "chat")),
+            rejected_by(run(
+                "what is two plus two",
+                "What is two plus two? 4",
+                "chat"
+            )),
             Validator::Numbers
         );
     }
@@ -1270,17 +1430,30 @@ mod tests {
         );
         // Prose may add grammar words but never a negation…
         assert_eq!(
-            rejected_by(run("we should ship it today", "We should not ship it today.", "chat")),
+            rejected_by(run(
+                "we should ship it today",
+                "We should not ship it today.",
+                "chat"
+            )),
             Validator::NovelWords
         );
         // …nor a named entity or content word.
         assert_eq!(
-            rejected_by(run("send it to the team", "Send it to the Acme team.", "email")),
+            rejected_by(run(
+                "send it to the team",
+                "Send it to the Acme team.",
+                "email"
+            )),
             Validator::NovelWords
         );
         // A vocabulary term must correspond to something that was said.
         assert_eq!(
-            rejected_by(run_vocab("deploy it now", "Deploy kubecontrol now.", "terminal", &["kubecontrol"])),
+            rejected_by(run_vocab(
+                "deploy it now",
+                "Deploy kubecontrol now.",
+                "terminal",
+                &["kubecontrol"]
+            )),
             Validator::NovelWords
         );
     }
@@ -1299,7 +1472,12 @@ mod tests {
 
     #[test]
     fn a_single_grammatical_swap_is_not_a_reorder() {
-        run("so you can check the logs", "So can you check the logs?", "chat").unwrap();
+        run(
+            "so you can check the logs",
+            "So can you check the logs?",
+            "chat",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1325,11 +1503,20 @@ mod tests {
             Validator::Markup
         );
         assert_eq!(
-            rejected_by(run("email me at sam at example dot com", "Email me at sam@example.com.", "chat")),
+            rejected_by(run(
+                "email me at sam at example dot com",
+                "Email me at sam@example.com.",
+                "chat"
+            )),
             Validator::Markup
         );
         // Placeholders are not symbols, and dictated symbols may stay.
-        run("look at <k1/> and a + b", "Look at <k1/> and a + b.", "terminal").unwrap();
+        run(
+            "look at <k1/> and a + b",
+            "Look at <k1/> and a + b.",
+            "terminal",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1353,7 +1540,11 @@ mod tests {
             Validator::DroppedWords
         );
         assert_eq!(
-            rejected_by(run("please don't push it yet", "Please push it yet.", "terminal")),
+            rejected_by(run(
+                "please don't push it yet",
+                "Please push it yet.",
+                "terminal"
+            )),
             Validator::DroppedWords
         );
     }
@@ -1366,7 +1557,12 @@ mod tests {
             "document",
         )
         .unwrap();
-        run("the flight is at nine am", "The flight is at 9:00 AM.", "chat").unwrap();
+        run(
+            "the flight is at nine am",
+            "The flight is at 9:00 AM.",
+            "chat",
+        )
+        .unwrap();
         for (input, output) in [
             ("follow up on our call on tuesday no wednesday about pricing", "Follow up on our call on Wednesday about pricing."),
             ("search for flights in may, no, june", "Search for flights in June."),
@@ -1384,7 +1580,8 @@ mod tests {
     #[test]
     fn rejects_gross_length_changes() {
         // Dropping most of the dictation is named for what it drops…
-        let input = "okay so I would like you to refactor the parser module and also update the tests \
+        let input =
+            "okay so I would like you to refactor the parser module and also update the tests \
                      and then make sure the documentation reflects the new behavior thanks";
         assert_eq!(
             rejected_by(run(input, "Refactor the parser.", "terminal")),

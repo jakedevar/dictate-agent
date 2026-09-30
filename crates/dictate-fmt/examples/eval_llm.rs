@@ -22,9 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dictate_fmt::llm::eval::{self, Case, RecordingBackend, Report};
-use dictate_fmt::llm::{
-    ChatBackend, HttpBackend, LlmConfig, LlmFormatter, LlmRequest, MaskStyle,
-};
+use dictate_fmt::llm::{ChatBackend, HttpBackend, LlmConfig, LlmFormatter, LlmRequest, MaskStyle};
 use dictate_proto::{AppCategory, Tone};
 
 #[derive(Debug, Default)]
@@ -91,7 +89,14 @@ fn parse_args() -> Args {
             "--concurrency" => a.concurrency = Some(val().parse().expect("N")),
             "--verbose" | "-v" => a.verbose = true,
             "--help" | "-h" => {
-                println!("{}", include_str!("eval_llm.rs").lines().take(20).collect::<Vec<_>>().join("\n"));
+                println!(
+                    "{}",
+                    include_str!("eval_llm.rs")
+                        .lines()
+                        .take(20)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown argument {other}"),
@@ -100,7 +105,12 @@ fn parse_args() -> Args {
     a
 }
 
-fn formatter(args: &Args, model: &str, backend: Arc<dyn ChatBackend>, mask: MaskStyle) -> LlmFormatter {
+fn formatter(
+    args: &Args,
+    model: &str,
+    backend: Arc<dyn ChatBackend>,
+    mask: MaskStyle,
+) -> LlmFormatter {
     let mut config = LlmConfig {
         enabled: true,
         host: args.host.clone(),
@@ -131,7 +141,10 @@ async fn resolve_model(args: &Args) -> String {
     });
     match f.refresh().await.model() {
         Some(m) => m.to_string(),
-        None => panic!("no model on the default ladder is installed: {}", f.health().summary()),
+        None => panic!(
+            "no model on the default ladder is installed: {}",
+            f.health().summary()
+        ),
     }
 }
 
@@ -158,7 +171,10 @@ async fn run_cases(
             println!(
                 "FAIL {} [{}] {:.0}ms {:?}\n  in : {}\n  out: {}\n  exp: {}\n  raw: {:?}",
                 r.id,
-                r.rejected_by.as_deref().or(r.skipped.as_deref()).unwrap_or("-"),
+                r.rejected_by
+                    .as_deref()
+                    .or(r.skipped.as_deref())
+                    .unwrap_or("-"),
                 r.latency_ms,
                 r.fail_reasons,
                 case.input,
@@ -168,7 +184,12 @@ async fn run_cases(
             );
         }
         if (i + 1) % 25 == 0 {
-            eprintln!("  {}/{} cases, {:.0}s", i + 1, cases.len(), started.elapsed().as_secs_f64());
+            eprintln!(
+                "  {}/{} cases, {:.0}s",
+                i + 1,
+                cases.len(),
+                started.elapsed().as_secs_f64()
+            );
         }
         results.push(r);
     }
@@ -180,7 +201,11 @@ fn write_json(path: &Path, value: &impl serde::Serialize) {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).expect("create report dir");
     }
-    std::fs::write(path, serde_json::to_string_pretty(value).expect("serialize")).expect("write report");
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(value).expect("serialize"),
+    )
+    .expect("write report");
     println!("wrote {}", path.display());
 }
 
@@ -231,8 +256,15 @@ fn synthetic(words: usize, seed: usize) -> String {
 }
 
 async fn latency_bench(args: &Args, model: &str, reps: usize) -> serde_json::Value {
-    let f = formatter(args, model, Arc::new(HttpBackend::new(&args.host)), dictate_fmt::llm::DEFAULT_MASK);
-    f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))).await.expect("load");
+    let f = formatter(
+        args,
+        model,
+        Arc::new(HttpBackend::new(&args.host)),
+        dictate_fmt::llm::DEFAULT_MASK,
+    );
+    f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+        .await
+        .expect("load");
     let mut out = serde_json::Map::new();
     for words in [17usize, 53] {
         let mut ms = Vec::new();
@@ -249,7 +281,13 @@ async fn latency_bench(args: &Args, model: &str, reps: usize) -> serde_json::Val
             }
             ms.push(o.duration.as_secs_f64() * 1000.0);
             if let Some(r) = trace.segments.first().and_then(|s| s.response.as_ref()) {
-                tokens.push((r.eval_count, r.prompt_eval_count, r.prompt_eval_cached_count, r.eval_ms, r.prompt_eval_ms));
+                tokens.push((
+                    r.eval_count,
+                    r.prompt_eval_count,
+                    r.prompt_eval_cached_count,
+                    r.eval_ms,
+                    r.prompt_eval_ms,
+                ));
             }
         }
         let stats = eval::LatencyStats::of(&ms);
@@ -293,7 +331,12 @@ async fn wait_unloaded(host: &str, model: &str) {
 
 async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
     let http = Arc::new(HttpBackend::new(&args.host));
-    let f = Arc::new(formatter(args, model, http.clone(), dictate_fmt::llm::DEFAULT_MASK));
+    let f = Arc::new(formatter(
+        args,
+        model,
+        http.clone(),
+        dictate_fmt::llm::DEFAULT_MASK,
+    ));
     let req = LlmRequest {
         category: AppCategory::Terminal,
         ..LlmRequest::new(synthetic(17, 1))
@@ -305,8 +348,15 @@ async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
     f.unload().await.expect("unload");
     wait_unloaded(&args.host, model).await;
     let o = f.format(&req).await;
-    println!("cold, production timeout: {:.0} ms, error {:?}", o.duration.as_secs_f64() * 1000.0, o.error);
-    results.insert("cold_production_timeout".into(), serde_json::json!({"ms": o.duration.as_secs_f64() * 1000.0, "error": o.error}));
+    println!(
+        "cold, production timeout: {:.0} ms, error {:?}",
+        o.duration.as_secs_f64() * 1000.0,
+        o.error
+    );
+    results.insert(
+        "cold_production_timeout".into(),
+        serde_json::json!({"ms": o.duration.as_secs_f64() * 1000.0, "error": o.error}),
+    );
 
     // 2. Cold with a generous timeout: the raw cost of a cold start.
     f.unload().await.expect("unload");
@@ -322,8 +372,15 @@ async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
     generous.timeout.base_ms = 30_000;
     let g = LlmFormatter::with_backend(generous, http.clone());
     let o = g.format(&req).await;
-    println!("cold, generous timeout: {:.0} ms, error {:?}", o.duration.as_secs_f64() * 1000.0, o.error);
-    results.insert("cold_generous_timeout_ms".into(), serde_json::json!(o.duration.as_secs_f64() * 1000.0));
+    println!(
+        "cold, generous timeout: {:.0} ms, error {:?}",
+        o.duration.as_secs_f64() * 1000.0,
+        o.error
+    );
+    results.insert(
+        "cold_generous_timeout_ms".into(),
+        serde_json::json!(o.duration.as_secs_f64() * 1000.0),
+    );
 
     // 3. Warm-up at record start, then ~2 s of "speech".
     f.unload().await.expect("unload");
@@ -331,8 +388,75 @@ async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
     tokio::time::sleep(Duration::from_millis(2000)).await;
     let o = f.format(&req).await;
-    println!("warm-up at record start + 2 s speech: {:.0} ms, error {:?}", o.duration.as_secs_f64() * 1000.0, o.error);
-    results.insert("warmup_on_record_ms".into(), serde_json::json!(o.duration.as_secs_f64() * 1000.0));
+    println!(
+        "warm-up at record start + 2 s speech: {:.0} ms, error {:?}",
+        o.duration.as_secs_f64() * 1000.0,
+        o.error
+    );
+    results.insert(
+        "warmup_on_record_ms".into(),
+        serde_json::json!(o.duration.as_secs_f64() * 1000.0),
+    );
+
+    // 3b. Same, but load only (no prompt-cache priming), repeated so the
+    // difference is not one sample's noise.
+    let mut load_only = Vec::new();
+    let mut primed_cold = Vec::new();
+    for rep in 0..5 {
+        let r = LlmRequest {
+            category: AppCategory::Terminal,
+            ..LlmRequest::new(synthetic(17, rep + 40))
+        };
+        f.unload().await.expect("unload");
+        wait_unloaded(&args.host, model).await;
+        f.warm_up(None).await.expect("load");
+        let (o, t) = f.format_traced(&r).await;
+        load_only.push((
+            o.duration.as_secs_f64() * 1000.0,
+            t.segments[0]
+                .response
+                .as_ref()
+                .map_or(0.0, |x| x.prompt_eval_ms),
+        ));
+        f.unload().await.expect("unload");
+        wait_unloaded(&args.host, model).await;
+        f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+            .await
+            .expect("load+prime");
+        let (o, t) = f.format_traced(&r).await;
+        primed_cold.push((
+            o.duration.as_secs_f64() * 1000.0,
+            t.segments[0]
+                .response
+                .as_ref()
+                .map_or(0.0, |x| x.prompt_eval_ms),
+        ));
+    }
+    let median = |v: &[(f64, f64)], i: usize| {
+        let mut x: Vec<f64> = v.iter().map(|p| if i == 0 { p.0 } else { p.1 }).collect();
+        x.sort_by(f64::total_cmp);
+        eval::percentile(&x, 50.0)
+    };
+    println!(
+        "first request after a cold load: load only p50 {:.0} ms (prompt eval {:.0} ms) · load+prime p50 {:.0} ms (prompt eval {:.0} ms)",
+        median(&load_only, 0), median(&load_only, 1), median(&primed_cold, 0), median(&primed_cold, 1)
+    );
+    results.insert(
+        "after_cold_load_only_p50_ms".into(),
+        serde_json::json!(median(&load_only, 0)),
+    );
+    results.insert(
+        "after_cold_load_only_prompt_eval_ms".into(),
+        serde_json::json!(median(&load_only, 1)),
+    );
+    results.insert(
+        "after_cold_load_primed_p50_ms".into(),
+        serde_json::json!(median(&primed_cold, 0)),
+    );
+    results.insert(
+        "after_cold_load_primed_prompt_eval_ms".into(),
+        serde_json::json!(median(&primed_cold, 1)),
+    );
 
     // 4. Warm, prompt cache evicted by another variant vs primed.
     let other = LlmRequest {
@@ -348,11 +472,25 @@ async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
         };
         f.format(&other).await;
         let (o, t) = f.format_traced(&r).await;
-        unprimed.push((o.duration.as_secs_f64() * 1000.0, t.segments[0].response.as_ref().map_or(0.0, |x| x.prompt_eval_ms)));
+        unprimed.push((
+            o.duration.as_secs_f64() * 1000.0,
+            t.segments[0]
+                .response
+                .as_ref()
+                .map_or(0.0, |x| x.prompt_eval_ms),
+        ));
         f.format(&other).await;
-        f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))).await.expect("prime");
+        f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+            .await
+            .expect("prime");
         let (o, t) = f.format_traced(&r).await;
-        primed.push((o.duration.as_secs_f64() * 1000.0, t.segments[0].response.as_ref().map_or(0.0, |x| x.prompt_eval_ms)));
+        primed.push((
+            o.duration.as_secs_f64() * 1000.0,
+            t.segments[0]
+                .response
+                .as_ref()
+                .map_or(0.0, |x| x.prompt_eval_ms),
+        ));
     }
     let med = |v: &[(f64, f64)], i: usize| {
         let mut x: Vec<f64> = v.iter().map(|p| if i == 0 { p.0 } else { p.1 }).collect();
@@ -363,10 +501,22 @@ async fn warmup_bench(args: &Args, model: &str) -> serde_json::Value {
         "warm, prompt cache evicted: p50 {:.0} ms (prompt eval {:.0} ms) · primed: p50 {:.0} ms (prompt eval {:.0} ms)",
         med(&unprimed, 0), med(&unprimed, 1), med(&primed, 0), med(&primed, 1)
     );
-    results.insert("warm_evicted_p50_ms".into(), serde_json::json!(med(&unprimed, 0)));
-    results.insert("warm_evicted_prompt_eval_ms".into(), serde_json::json!(med(&unprimed, 1)));
-    results.insert("warm_primed_p50_ms".into(), serde_json::json!(med(&primed, 0)));
-    results.insert("warm_primed_prompt_eval_ms".into(), serde_json::json!(med(&primed, 1)));
+    results.insert(
+        "warm_evicted_p50_ms".into(),
+        serde_json::json!(med(&unprimed, 0)),
+    );
+    results.insert(
+        "warm_evicted_prompt_eval_ms".into(),
+        serde_json::json!(med(&unprimed, 1)),
+    );
+    results.insert(
+        "warm_primed_p50_ms".into(),
+        serde_json::json!(med(&primed, 0)),
+    );
+    results.insert(
+        "warm_primed_prompt_eval_ms".into(),
+        serde_json::json!(med(&primed, 1)),
+    );
     serde_json::Value::Object(results)
 }
 
@@ -380,7 +530,8 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
     use std::collections::BTreeMap;
 
     let path = args.history_db.clone().unwrap_or_else(|| {
-        PathBuf::from(std::env::var("HOME").expect("HOME")).join(".local/share/dictate-agent/history.db")
+        PathBuf::from(std::env::var("HOME").expect("HOME"))
+            .join(".local/share/dictate-agent/history.db")
     });
     // Read-only, and the text never leaves this function except as counts.
     let conn = rusqlite::Connection::open_with_flags(
@@ -403,8 +554,15 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
     drop(stmt);
     drop(conn);
 
-    let f = formatter(args, model, Arc::new(HttpBackend::new(&args.host)), dictate_fmt::llm::DEFAULT_MASK);
-    f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))).await.expect("load");
+    let f = formatter(
+        args,
+        model,
+        Arc::new(HttpBackend::new(&args.host)),
+        dictate_fmt::llm::DEFAULT_MASK,
+    );
+    f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+        .await
+        .expect("load");
     let gate = LlmGate::default();
     let mut skipped: BTreeMap<String, usize> = BTreeMap::new();
     let mut rejected: BTreeMap<String, usize> = BTreeMap::new();
@@ -431,11 +589,17 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
                     .or_default()
                     .push(o.duration.as_secs_f64() * 1000.0);
                 if let Some(r) = &o.validator_rejection {
-                    *rejected.entry(r.validator.as_str().to_string()).or_default() += 1;
+                    *rejected
+                        .entry(r.validator.as_str().to_string())
+                        .or_default() += 1;
                 }
                 match &o.error {
                     Some(e) if !e.starts_with("validator") => {
-                        let kind = if e.contains("timed out") { "timeout" } else { "other" };
+                        let kind = if e.contains("timed out") {
+                            "timeout"
+                        } else {
+                            "other"
+                        };
                         *errors.entry(kind.to_string()).or_default() += 1;
                     }
                     Some(_) => {}
@@ -444,7 +608,9 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
                         if o.segments_applied < o.segments {
                             partial += 1;
                         }
-                        ratios.push(o.text.chars().count() as f64 / text.chars().count().max(1) as f64);
+                        ratios.push(
+                            o.text.chars().count() as f64 / text.chars().count().max(1) as f64,
+                        );
                     }
                 }
                 if o.changed {
@@ -454,8 +620,10 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
         }
     }
     ratios.sort_by(f64::total_cmp);
-    let by_bucket: BTreeMap<String, eval::LatencyStats> =
-        latency.iter().map(|(k, v)| (k.clone(), eval::LatencyStats::of(v))).collect();
+    let by_bucket: BTreeMap<String, eval::LatencyStats> = latency
+        .iter()
+        .map(|(k, v)| (k.clone(), eval::LatencyStats::of(v)))
+        .collect();
     let all: Vec<f64> = latency.values().flatten().copied().collect();
     let summary = serde_json::json!({
         "sampled": texts.len(),
@@ -471,7 +639,10 @@ async fn history_tier(args: &Args, model: &str, n: usize) -> serde_json::Value {
         "latency_by_bucket": by_bucket,
         "length_ratio_p5_p50_p95": [eval::percentile(&ratios, 5.0), eval::percentile(&ratios, 50.0), eval::percentile(&ratios, 95.0)],
     });
-    println!("history tier (aggregates only):\n{}", serde_json::to_string_pretty(&summary).unwrap());
+    println!(
+        "history tier (aggregates only):\n{}",
+        serde_json::to_string_pretty(&summary).unwrap()
+    );
     summary
 }
 
@@ -491,17 +662,39 @@ async fn main() {
 
     if args.latency > 0 {
         let v = latency_bench(&args, &model, args.latency).await;
-        write_json(&args.out.clone().unwrap_or_else(|| default_out(&model, "latency")), &v);
+        write_json(
+            &args
+                .out
+                .clone()
+                .unwrap_or_else(|| default_out(&model, "latency")),
+            &v,
+        );
     } else if args.warmup {
         let v = warmup_bench(&args, &model).await;
-        write_json(&args.out.clone().unwrap_or_else(|| default_out(&model, "warmup")), &v);
+        write_json(
+            &args
+                .out
+                .clone()
+                .unwrap_or_else(|| default_out(&model, "warmup")),
+            &v,
+        );
     } else if args.history > 0 {
         let v = history_tier(&args, &model, args.history).await;
-        write_json(&args.out.clone().unwrap_or_else(|| default_out(&model, "history")), &v);
+        write_json(
+            &args
+                .out
+                .clone()
+                .unwrap_or_else(|| default_out(&model, "history")),
+            &v,
+        );
     } else {
         let mut cases = eval::load_corpus(&args.corpus).expect("corpus");
         let problems = eval::lint_corpus(&cases);
-        assert!(problems.is_empty(), "corpus problems:\n{}", problems.join("\n"));
+        assert!(
+            problems.is_empty(),
+            "corpus problems:\n{}",
+            problems.join("\n")
+        );
         if let Some(f) = &args.filter {
             cases.retain(|c| c.id.contains(f.as_str()) || c.tags.iter().any(|t| t == f));
         }
@@ -530,11 +723,16 @@ async fn main() {
                 Some(p) => p.clone(),
                 None => default_out(&model, style.as_str()),
             };
-            write_json(&out, &serde_json::json!({"report": report, "results": results}));
+            write_json(
+                &out,
+                &serde_json::json!({"report": report, "results": results}),
+            );
             if args.record {
-                let path = eval::recordings_path(&crate_dir().join("tests/eval/recordings"), &model);
+                let path =
+                    eval::recordings_path(&crate_dir().join("tests/eval/recordings"), &model);
                 // Merge: replace this run's cases, keep other corpora's.
-                let ran: std::collections::HashSet<&str> = cases.iter().map(|c| c.id.as_str()).collect();
+                let ran: std::collections::HashSet<&str> =
+                    cases.iter().map(|c| c.id.as_str()).collect();
                 let mut all: Vec<eval::Recording> = eval::load_recordings(&path)
                     .unwrap_or_default()
                     .into_iter()
@@ -542,7 +740,12 @@ async fn main() {
                     .collect();
                 all.extend(recordings.iter().cloned());
                 eval::save_recordings(&path, &all).expect("save recordings");
-                println!("recorded {} replies ({} total) to {}", recordings.len(), all.len(), path.display());
+                println!(
+                    "recorded {} replies ({} total) to {}",
+                    recordings.len(),
+                    all.len(),
+                    path.display()
+                );
             }
         }
     }

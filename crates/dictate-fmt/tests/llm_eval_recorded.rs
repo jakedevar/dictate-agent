@@ -75,21 +75,31 @@ fn assert_no_drift(backend: &ReplayBackend) {
 fn corpus_is_well_formed_and_weighted_like_real_use() {
     let cases = corpus("corpus.jsonl");
     let problems = eval::lint_corpus(&cases);
-    assert!(problems.is_empty(), "corpus problems:\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "corpus problems:\n{}",
+        problems.join("\n")
+    );
     assert!(cases.len() >= 200, "{} cases", cases.len());
 
     let count = |f: &dyn Fn(&Case) -> bool| cases.iter().filter(|c| f(c)).count();
     let tagged = |t: &'static str| move |c: &Case| c.tags.iter().any(|x| x == t);
     // Coding-agent prompts in a terminal dominate real use.
     let terminal = count(&|c| c.category == dictate_proto::AppCategory::Terminal);
-    assert!(terminal * 2 >= cases.len(), "terminal {terminal}/{}", cases.len());
+    assert!(
+        terminal * 2 >= cases.len(),
+        "terminal {terminal}/{}",
+        cases.len()
+    );
     assert!(count(&tagged("slash")) >= 15);
     assert!(count(&|c| !c.protected.is_empty()) >= 40);
     assert!(count(&tagged("question")) >= 30);
     assert!(count(&tagged("adversarial")) >= 20);
     assert!(count(&tagged("correction")) >= 15);
     // Every category is represented.
-    for cat in ["terminal", "editor", "browser", "chat", "email", "document", "other"] {
+    for cat in [
+        "terminal", "editor", "browser", "chat", "email", "document", "other",
+    ] {
         assert!(count(&|c| c.category.as_str() == cat) >= 10, "{cat}");
     }
     // The p90 length band (41–70 words) is covered for latency statistics.
@@ -112,7 +122,11 @@ async fn recorded_corpus_meets_the_floor_with_every_span_and_no_leak() {
         "protected spans must survive byte for byte: {:?}",
         report.failures
     );
-    assert_eq!(report.leaked, 0, "no answer/execution leakage: {:?}", report.failures);
+    assert_eq!(
+        report.leaked, 0,
+        "no answer/execution leakage: {:?}",
+        report.failures
+    );
     assert!(
         report.pass_rate >= PASS_FLOOR,
         "pass rate {:.1}% below the {:.0}% floor:\n{}",

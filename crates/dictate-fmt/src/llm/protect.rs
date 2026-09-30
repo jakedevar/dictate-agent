@@ -263,7 +263,12 @@ pub fn mask(text: &str, spans: &[Range<usize>], style: MaskStyle) -> Result<Mask
 
     let boundaries = positions
         .iter()
-        .map(|p| (body[..p.start].chars().next_back(), body[p.end..].chars().next()))
+        .map(|p| {
+            (
+                body[..p.start].chars().next_back(),
+                body[p.end..].chars().next(),
+            )
+        })
         .collect();
 
     Ok(Masked {
@@ -472,7 +477,9 @@ fn classify_re() -> &'static [Regex] {
 /// one letter (the `regex` crate has no lookahead to say that).
 fn is_hash(core: &str) -> bool {
     (7..=40).contains(&core.len())
-        && core.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        && core
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         && core.bytes().any(|b| b.is_ascii_digit())
         && core.bytes().any(|b| b.is_ascii_alphabetic())
 }
@@ -483,7 +490,8 @@ fn is_technical(core: &str) -> bool {
     }
     let bytes = core.as_bytes();
     // Slash commands and absolute paths: "/research_codebase", "/etc/hosts".
-    if bytes[0] == b'/' && (bytes[1].is_ascii_alphanumeric() || bytes[1] == b'_' || bytes[1] == b'.')
+    if bytes[0] == b'/'
+        && (bytes[1].is_ascii_alphanumeric() || bytes[1] == b'_' || bytes[1] == b'.')
     {
         return true;
     }
@@ -506,10 +514,7 @@ fn is_technical(core: &str) -> bool {
     }
     // Interior slash: src/main.rs, feature/login. Not fractions ("1/2").
     if let Some(i) = core.find('/') {
-        if i > 0
-            && i + 1 < core.len()
-            && !core.bytes().all(|b| b.is_ascii_digit() || b == b'/')
-        {
+        if i > 0 && i + 1 < core.len() && !core.bytes().all(|b| b.is_ascii_digit() || b == b'/') {
             return true;
         }
     }
@@ -544,7 +549,8 @@ pub fn fallback_spans(text: &str) -> Vec<Range<usize>> {
                 .len();
         let mut core = &token[lead..];
         loop {
-            let trimmed = core.trim_end_matches([',', ';', ':', '!', '?', '"', '\'', '”', '’', ']']);
+            let trimmed =
+                core.trim_end_matches([',', ';', ':', '!', '?', '"', '\'', '”', '’', ']']);
             // A trailing ')' belongs to the token only for calls: "foo()".
             let trimmed = if trimmed.ends_with(')') && !trimmed.contains('(') {
                 &trimmed[..trimmed.len() - 1]
@@ -569,6 +575,8 @@ pub fn fallback_spans(text: &str) -> Vec<Range<usize>> {
 }
 
 #[cfg(test)]
+// The API takes a list of byte ranges; a one-range list is intended here.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
@@ -646,27 +654,45 @@ mod tests {
         assert_eq!(m.body, "i would like you to look at ⟦1⟧ today");
         assert!(!m.body.contains("research"));
         let out = m.restore("I would like you to look at ⟦1⟧ today.").unwrap();
-        assert_eq!(out, "/research_codebase I would like you to look at src/auth.rs today.");
+        assert_eq!(
+            out,
+            "/research_codebase I would like you to look at src/auth.rs today."
+        );
         // The pronoun is capitalized even though the dictation had "i".
     }
 
     #[test]
     fn continuation_after_a_detached_command_keeps_its_case() {
         let t = "/describe_pr and mention the migration";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(
             m.restore("And mention the migration.").unwrap(),
             "/describe_pr and mention the migration."
         );
         let t = "/research_codebase i would like a summary";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(
             m.restore("I would like a summary.").unwrap(),
             "/research_codebase I would like a summary."
         );
         // Without a prefix the model's sentence case stands.
         let t = "look at src/a.rs";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(m.restore("Look at ⟦1⟧.").unwrap(), "Look at src/a.rs.");
     }
 
@@ -682,7 +708,12 @@ mod tests {
     #[test]
     fn a_leading_span_glued_to_punctuation_is_masked_not_detached() {
         let t = "/commit, then push";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(m.prefix, "");
         assert_eq!(m.body, "⟦1⟧, then push");
     }
@@ -690,7 +721,12 @@ mod tests {
     #[test]
     fn a_leading_span_being_corrected_is_masked_not_detached() {
         let t = "/create_plan uh actually no /research_codebase first";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(m.prefix, "");
         assert_eq!(m.body, "⟦1⟧ uh actually no ⟦2⟧ first");
     }
@@ -716,13 +752,23 @@ mod tests {
     #[test]
     fn whole_text_protected_leaves_an_empty_body() {
         let t = "/compact";
-        let m = mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap();
+        let m = mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap();
         assert_eq!(m.prefix, "/compact");
         assert_eq!(m.body, "");
     }
 
     fn masked(t: &str) -> Masked {
-        mask(t, &normalize_spans(t, &[], true).unwrap(), MaskStyle::Brackets).unwrap()
+        mask(
+            t,
+            &normalize_spans(t, &[], true).unwrap(),
+            MaskStyle::Brackets,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -743,16 +789,25 @@ mod tests {
             m.restore("Look at ⟦1⟧ and ⟦2⟧ and ⟦3⟧."),
             Err(SpanError::Unknown(3))
         );
-        assert_eq!(m.restore("Look at ⟦1⟧ and ⟦2 ok ⟦2⟧."), Err(SpanError::Debris));
+        assert_eq!(
+            m.restore("Look at ⟦1⟧ and ⟦2 ok ⟦2⟧."),
+            Err(SpanError::Debris)
+        );
         assert_eq!(m.restore("Look at ⟦1⟧s and ⟦2⟧."), Err(SpanError::Glued(1)));
-        assert_eq!(m.restore("Look at the⟦1⟧ and ⟦2⟧."), Err(SpanError::Glued(1)));
+        assert_eq!(
+            m.restore("Look at the⟦1⟧ and ⟦2⟧."),
+            Err(SpanError::Glued(1))
+        );
     }
 
     #[test]
     fn glue_that_was_in_the_input_is_fine() {
         let m = masked("check (src/a.rs) now");
         assert_eq!(m.body, "check (⟦1⟧) now");
-        assert_eq!(m.restore("Check (⟦1⟧) now.").unwrap(), "Check (src/a.rs) now.");
+        assert_eq!(
+            m.restore("Check (⟦1⟧) now.").unwrap(),
+            "Check (src/a.rs) now."
+        );
     }
 
     #[test]
@@ -761,7 +816,10 @@ mod tests {
             mask("a ⟦1⟧ b", &[], MaskStyle::Brackets),
             Err(SpanError::Collision)
         );
-        assert_eq!(mask("a ZQX9 b", &[], MaskStyle::Letters), Err(SpanError::Collision));
+        assert_eq!(
+            mask("a ZQX9 b", &[], MaskStyle::Letters),
+            Err(SpanError::Collision)
+        );
         assert!(mask("a <k1/> b", &[], MaskStyle::Brackets).is_ok());
     }
 
@@ -772,7 +830,10 @@ mod tests {
         for style in MaskStyle::ALL {
             let m = mask(t, &spans, style).unwrap();
             let out = m.body.replacen("so", "So", 1);
-            assert_eq!(m.restore(&out).unwrap(), "So look at src/a.rs and src/b.rs ok");
+            assert_eq!(
+                m.restore(&out).unwrap(),
+                "So look at src/a.rs and src/b.rs ok"
+            );
             assert_eq!(MaskStyle::parse(style.as_str()), Some(style));
         }
     }
@@ -794,6 +855,9 @@ mod tests {
         let t = "/compact now please";
         let spans = normalize_spans(t, &[], true).unwrap();
         assert_eq!(unprotected_words(t, &spans), 2);
-        assert_eq!(unprotected_words("/compact", &normalize_spans("/compact", &[], true).unwrap()), 0);
+        assert_eq!(
+            unprotected_words("/compact", &normalize_spans("/compact", &[], true).unwrap()),
+            0
+        );
     }
 }

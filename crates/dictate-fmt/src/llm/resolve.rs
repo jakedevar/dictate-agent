@@ -110,7 +110,10 @@ pub fn resolve_ladder(ladder: &[String], installed: &[InstalledModel]) -> LlmHea
         }
     }
     LlmHealth::Unavailable {
-        reason: format!("none of the configured models is installed: {}", ladder.join(", ")),
+        reason: format!(
+            "none of the configured models is installed: {}",
+            ladder.join(", ")
+        ),
         installed_alternatives: installed
             .iter()
             .filter(|m| !m.is_embedding())

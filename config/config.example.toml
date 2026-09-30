@@ -63,6 +63,11 @@ initial_prompt = ""
 
 [grammar]
 # Auto grammar correction (runs between transcription and routing)
+# DEPRECATED (S21): superseded by [format.llm] below. While [format.llm] is
+# absent, these keys are still read as an alias — enabled, host, min_words,
+# timeout_s (becomes [format.llm.timeout] max_ms) and model (tried first,
+# ahead of the [format.llm] default ladder) — with a one-time warning. When
+# [format.llm] is present, [grammar] is ignored (also warned).
 enabled = false
 host = "http://localhost:11434"
 model = "qwen3:0.6b"
@@ -70,10 +75,97 @@ timeout_s = 10.0
 # Skip correction for short inputs (preserves trigger words like "timer")
 min_words = 3
 
+[format.llm]
+# S21 formatting pass: a local Ollama model turns the rules output into what
+# the speaker would have typed carefully (fillers, false starts and
+# self-corrections resolved; punctuation, casing and structure fixed), guarded
+# by validators. Every failure — Ollama down, model missing, timeout, a
+# rejected output — keeps the rules output (fail-open) and names the reason.
+# Off by default in code (no network dependency by default); on here.
+enabled = true
+host = "http://localhost:11434"
+# Preference ladder, resolved against installed models at startup and after a
+# failure. A missing preferred model is reported once, loudly, in `status`.
+models = ["gemma4:e4b", "gemma4:12b"]
+# Words outside protected spans (paths, /commands, identifiers) needed to run.
+min_words = 3
+# How long Ollama keeps the model loaded after a request ("30m", "1h", "-1"
+# forever, "0" unload). A cold load costs ~2.7 s, so a short utterance after
+# an idle period falls back to the rules output.
+keep_alive = "30m"
+# Load the model at daemon start, and again when recording starts.
+warmup_on_start = true
+warmup_on_record = true
+# Sampling temperature, clamped to 0.0..=0.2.
+temperature = 0.1
+# Also protect obviously technical tokens S20 did not mark (defence in depth).
+protect_fallback = true
+
+[format.llm.timeout]
+# Per request: base_ms + per_word_ms * words, capped at max_ms. Decode time
+# is ~6.8 ms per output token on gemma4:e4b (RTX 5080).
+base_ms = 400
+per_word_ms = 20
+max_ms = 4000
+
+[format.llm.chunking]
+# Up to this many words go to the model in one request.
+max_single_words = 90
+# Longer inputs split at sentence/paragraph boundaries into ~this many words.
+chunk_words = 60
+# Chunks in flight. Measured: no gain with the default Ollama server, which
+# runs one request at a time; >1 only with OLLAMA_NUM_PARALLEL set.
+concurrency = 1
+# Above this the pass is skipped (reason `too_long`).
+max_words = 300
+
+# Per-category defaults. `style`: "verbatim" (fillers/false starts/
+# corrections/punctuation only — no rewording, no new line breaks), "prose"
+# (light grammar; `structure` allows numbered lists and paragraphs) or
+# "email" (dictated greeting/sign-off on their own lines). The app category
+# and tone come from the app-context profile (S23).
+[format.llm.categories.terminal]
+enabled = true
+style = "verbatim"
+structure = false
+
+[format.llm.categories.editor]
+enabled = true
+style = "verbatim"
+structure = false
+
+[format.llm.categories.browser]
+enabled = true
+style = "prose"
+structure = true
+
+[format.llm.categories.chat]
+enabled = true
+style = "prose"
+structure = false
+
+[format.llm.categories.email]
+enabled = true
+style = "email"
+structure = true
+
+[format.llm.categories.document]
+enabled = true
+style = "prose"
+structure = true
+
+[format.llm.categories.other]
+enabled = true
+style = "prose"
+structure = true
+
 [local]
 # Ollama configuration for local inference (triggered by "easy/simple/medium/hard" prefix)
 host = "http://localhost:11434"
 model = "qwen3:14b"
+# Fallbacks, tried in order when `model` is not installed (resolved against
+# `ollama list` at first use and after a "model not found").
+models = ["gemma4:12b", "gemma4:e4b"]
 timeout_s = 120.0
 
 [output]

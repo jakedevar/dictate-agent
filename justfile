@@ -40,3 +40,18 @@ install-unit:
 
 # Everything CI checks, in one go
 check: test clippy
+
+# S21 live LLM eval against the local Ollama (needs the model installed):
+#   just eval-llm                         default ladder, corpus, JSON report
+#   just eval-llm gemma4:12b              a specific model
+#   just eval-llm gemma4:e4b --record     re-record the CI fixtures
+#   just eval-llm "" --latency 30         p50/p95 at 17 and 53 words
+#   just eval-llm "" --warmup             cold vs warm vs warm-up benchmarks
+#   just eval-llm "" --masks              compare placeholder styles
+# Reports go to target/eval/. The real-history tier (aggregates only) needs
+# the extra feature: cargo run --release -p dictate-fmt --features
+# eval-history --example eval_llm -- --history 500
+#
+# Live LLM eval (S21): corpus, latency, warm-up, mask sweep, re-record
+eval-llm model="" *args="":
+    cargo run --release -p dictate-fmt --features eval-live --example eval_llm -- --model "{{model}}" {{args}}

@@ -263,8 +263,9 @@ impl LlmFormatter {
         // Words the model would actually see; an utterance that is all
         // protected spans ("/compact") has nothing to format. An invalid
         // range fails later, in `format`, where the error is reported.
-        let spans = protect::normalize_spans(&req.text, &req.protected, self.config.protect_fallback)
-            .unwrap_or_default();
+        let spans =
+            protect::normalize_spans(&req.text, &req.protected, self.config.protect_fallback)
+                .unwrap_or_default();
         let words = protect::unprotected_words(&req.text, &spans);
         if words == 0 || (!forced && words < self.config.min_words) {
             return LlmPlan::Skip(SkipReason::BelowMinWords);
@@ -300,19 +301,20 @@ impl LlmFormatter {
         };
 
         if !self.config.enabled {
-            return (fail("LLM formatting is disabled".into(), None), LlmTrace::default());
+            return (
+                fail("LLM formatting is disabled".into(), None),
+                LlmTrace::default(),
+            );
         }
-        let spans = match protect::normalize_spans(
-            &req.text,
-            &req.protected,
-            self.config.protect_fallback,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("LLM pass not attempted: {e}");
-                return (fail(e.to_string(), None), LlmTrace::default());
-            }
-        };
+        let spans =
+            match protect::normalize_spans(&req.text, &req.protected, self.config.protect_fallback)
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("LLM pass not attempted: {e}");
+                    return (fail(e.to_string(), None), LlmTrace::default());
+                }
+            };
         let model = match self.resolver.ensure(self.backend.as_ref()).await {
             Ok(m) => m,
             Err(reason) => {
@@ -324,10 +326,10 @@ impl LlmFormatter {
         };
 
         let total_words = req.text.split_whitespace().count();
-        let ranges = if total_words > self.config.chunking.max_single_words {
+        let ranges: Vec<Range<usize>> = if total_words > self.config.chunking.max_single_words {
             chunk::split(&req.text, &spans, self.config.chunking.chunk_words)
         } else {
-            vec![0..req.text.len()]
+            std::iter::once(0..req.text.len()).collect()
         };
         let deadline = start + self.config.timeout.for_words(total_words);
         let policy = self.config.categories.get(&req.category).clone();
@@ -389,9 +391,8 @@ impl LlmFormatter {
         }
 
         let segments = ranges.len();
-        let error = (applied == 0).then(|| {
-            first_error.unwrap_or_else(|| "LLM produced no usable output".to_string())
-        });
+        let error = (applied == 0)
+            .then(|| first_error.unwrap_or_else(|| "LLM produced no usable output".to_string()));
         let text = if applied == 0 { req.text.clone() } else { text };
         let changed = text != req.text;
         let outcome = LlmOutcome {
@@ -501,7 +502,10 @@ impl LlmFormatter {
     pub async fn start(&self) -> LlmHealth {
         let health = self.refresh().await;
         if self.config.warmup_on_start && health.model().is_some() {
-            match self.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))).await {
+            match self
+                .warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+                .await
+            {
                 Ok(d) => info!(ms = d.as_millis() as u64, "LLM model loaded"),
                 Err(e) => warn!("LLM warm-up at start failed: {e}"),
             }
@@ -618,7 +622,10 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
         words: core.split_whitespace().count(),
         ..SegmentTrace::default()
     };
-    let unchanged = |mut trace: SegmentTrace, error: Option<String>, rejection: Option<Rejection>, backend_error| {
+    let unchanged = |mut trace: SegmentTrace,
+                     error: Option<String>,
+                     rejection: Option<Rejection>,
+                     backend_error| {
         trace.latency = started.elapsed();
         trace.error = error;
         trace.rejection = rejection;
@@ -650,7 +657,12 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
         .for_words(masked.body.split_whitespace().count())
         .min(remaining);
     if timeout.is_zero() {
-        return unchanged(trace, Some("pass deadline reached before this chunk".into()), None, None);
+        return unchanged(
+            trace,
+            Some("pass deadline reached before this chunk".into()),
+            None,
+            None,
+        );
     }
 
     let spec = PromptSpec {
@@ -699,11 +711,19 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
         );
     }
     if output.trim().is_empty() {
-        return reject(trace, Rejection::new(Validator::EmptyOutput, "no text returned"));
+        return reject(
+            trace,
+            Rejection::new(Validator::EmptyOutput, "no text returned"),
+        );
     }
     let restored = match masked.restore(&output) {
         Ok(r) => r,
-        Err(e) => return reject(trace, Rejection::new(Validator::ProtectedSpans, e.to_string())),
+        Err(e) => {
+            return reject(
+                trace,
+                Rejection::new(Validator::ProtectedSpans, e.to_string()),
+            )
+        }
     };
     if let Err(r) = validate::validate(&validate::Check {
         input: &masked.body,
@@ -764,7 +784,10 @@ mod tests {
         assert_eq!(clean_output("<dictation>\nHi.\n</dictation>", "hi"), "Hi.");
         assert_eq!(clean_output("\"Hi there.\"", "hi there"), "Hi there.");
         // Quotes that were dictated, or that are inside the text, stay.
-        assert_eq!(clean_output("\"Hi\" he said.", "hi he said"), "\"Hi\" he said.");
+        assert_eq!(
+            clean_output("\"Hi\" he said.", "hi he said"),
+            "\"Hi\" he said."
+        );
         assert_eq!(clean_output("\"Hi.\"", "\"hi\""), "\"Hi.\"");
         assert_eq!(clean_output("  Hi.\r\n", "hi"), "Hi.");
     }

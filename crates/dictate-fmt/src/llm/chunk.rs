@@ -17,8 +17,7 @@ use regex::Regex;
 /// whitespace, or after a blank line.
 fn boundaries(text: &str, spans: &[Range<usize>]) -> Vec<usize> {
     static SENTENCE: OnceLock<Regex> = OnceLock::new();
-    let re = SENTENCE
-        .get_or_init(|| Regex::new(r#"[.!?]["'”’)\]]*\s+|\n[ \t]*\n\s*"#).unwrap());
+    let re = SENTENCE.get_or_init(|| Regex::new(r#"[.!?]["'”’)\]]*\s+|\n[ \t]*\n\s*"#).unwrap());
     re.find_iter(text)
         .map(|m| m.end())
         .filter(|&end| end < text.len())
@@ -69,7 +68,10 @@ mod tests {
     use super::*;
 
     fn pieces<'a>(text: &'a str, spans: &[Range<usize>], n: usize) -> Vec<&'a str> {
-        split(text, spans, n).into_iter().map(|r| &text[r]).collect()
+        split(text, spans, n)
+            .into_iter()
+            .map(|r| &text[r])
+            .collect()
     }
 
     #[test]
@@ -110,11 +112,14 @@ mod tests {
         // A span that itself contains ". " (backtick code) is not a boundary.
         let text = "Run `a. b` now please. Then stop.";
         let span = text.find('`').unwrap()..text.rfind('`').unwrap() + 1;
-        let chunks = split(text, &[span.clone()], 1);
+        let chunks = split(text, std::slice::from_ref(&span), 1);
         for c in &chunks {
             assert!(!(c.start > span.start && c.start < span.end), "{chunks:?}");
         }
-        assert_eq!(pieces(text, &[span], 1), ["Run `a. b` now please. ", "Then stop."]);
+        assert_eq!(
+            pieces(text, &[span], 1),
+            ["Run `a. b` now please. ", "Then stop."]
+        );
     }
 
     #[test]

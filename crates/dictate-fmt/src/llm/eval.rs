@@ -161,12 +161,18 @@ pub fn lint_corpus(cases: &[Case]) -> Vec<String> {
         for n in &c.must_not_contain {
             let n = n.to_lowercase();
             if c.input.to_lowercase().contains(&n) || c.expected.to_lowercase().contains(&n) {
-                problems.push(format!("{}: must_not_contain {n:?} is in input/expected", c.id));
+                problems.push(format!(
+                    "{}: must_not_contain {n:?} is in input/expected",
+                    c.id
+                ));
             }
         }
         for d in &c.must_drop {
             if !contains_word(&c.input, d) || contains_word(&c.expected, d) {
-                problems.push(format!("{}: must_drop {d:?} must be in input and not expected", c.id));
+                problems.push(format!(
+                    "{}: must_drop {d:?} must be in input and not expected",
+                    c.id
+                ));
             }
         }
     }
@@ -303,7 +309,14 @@ fn judge(case: &Case, text: &str) -> (bool, f64, bool, bool, bool, Vec<String>) 
         reasons.push("initial capitalization mismatch".to_string());
     }
     let exact = normalize_ws(text) == normalize_ws(&case.expected);
-    (reasons.is_empty(), similarity, exact, spans_preserved, leaked, reasons)
+    (
+        reasons.is_empty(),
+        similarity,
+        exact,
+        spans_preserved,
+        leaked,
+        reasons,
+    )
 }
 
 /// Score one case from the pass's outcome.
@@ -319,14 +332,20 @@ pub fn score_case(
     let (pass, similarity, exact, spans_preserved, leaked, fail_reasons) = judge(case, &output);
     let (baseline_pass, ..) = judge(case, &case.input);
     let segments = trace.map(|t| t.segments.as_slice()).unwrap_or_default();
-    let raw_outputs: Vec<String> = segments.iter().filter_map(|s| s.raw_output.clone()).collect();
-    let raw_leak = segments
+    let raw_outputs: Vec<String> = segments
         .iter()
-        .any(|s| s.rejection.as_ref().is_some_and(|r| r.validator.is_leakage()))
-        || raw_outputs.iter().any(|r| {
-            let r = r.to_lowercase();
-            case.must_not_contain.iter().any(|n| r.contains(&n.to_lowercase()))
-        });
+        .filter_map(|s| s.raw_output.clone())
+        .collect();
+    let raw_leak = segments.iter().any(|s| {
+        s.rejection
+            .as_ref()
+            .is_some_and(|r| r.validator.is_leakage())
+    }) || raw_outputs.iter().any(|r| {
+        let r = r.to_lowercase();
+        case.must_not_contain
+            .iter()
+            .any(|n| r.contains(&n.to_lowercase()))
+    });
     CaseResult {
         id: case.id.clone(),
         category: case.category.to_string(),
@@ -391,10 +410,8 @@ pub async fn run_corpus(
             LlmPlan::Run => {
                 let started = Instant::now();
                 let (outcome, trace) = formatter.format_traced(&request).await;
-                let latency = latency_of.map_or_else(
-                    || started.elapsed().as_secs_f64() * 1000.0,
-                    |f| f(&case.id),
-                );
+                let latency = latency_of
+                    .map_or_else(|| started.elapsed().as_secs_f64() * 1000.0, |f| f(&case.id));
                 score_case(case, None, Some(&outcome), Some(&trace), latency)
             }
         };
@@ -534,7 +551,10 @@ pub fn report(model: &str, mask_style: &str, results: &[CaseResult]) -> Report {
         }
     }
     for r in &ran {
-        by_bucket.entry(r.bucket.clone()).or_default().push(r.latency_ms);
+        by_bucket
+            .entry(r.bucket.clone())
+            .or_default()
+            .push(r.latency_ms);
     }
     let all_latency: Vec<f64> = ran.iter().map(|r| r.latency_ms).collect();
     Report {
@@ -677,7 +697,13 @@ pub fn request_key(req: &ChatRequest) -> String {
 pub fn recordings_path(dir: &Path, model: &str) -> std::path::PathBuf {
     let name: String = model
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     dir.join(format!("{name}.jsonl"))
 }
@@ -829,7 +855,10 @@ impl RecordingBackend {
     /// Everything recorded so far.
     #[must_use]
     pub fn recordings(&self) -> Vec<Recording> {
-        self.recordings.lock().map(|r| r.clone()).unwrap_or_default()
+        self.recordings
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -852,7 +881,8 @@ impl ChatBackend for RecordingBackend {
                         done_reason: r.done_reason.clone(),
                         eval_count: r.eval_count,
                         prompt_eval_count: r.prompt_eval_count,
-                        latency_ms: (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
+                        latency_ms: (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round()
+                            / 10.0,
                     });
                 }
             }
@@ -911,8 +941,14 @@ mod tests {
     fn rubric_passes_close_matches_and_fails_real_differences() {
         let c = case("so uh fix the the parser", "So fix the parser.");
         assert!(judge(&c, "So fix the parser.").0);
-        assert!(judge(&c, "So, fix the parser.").0, "punctuation variants pass");
-        assert!(!judge(&c, "so fix the parser.").0, "capitalization is judged");
+        assert!(
+            judge(&c, "So, fix the parser.").0,
+            "punctuation variants pass"
+        );
+        assert!(
+            !judge(&c, "so fix the parser.").0,
+            "capitalization is judged"
+        );
         assert!(!judge(&c, "Fix the lexer.").0, "different words fail");
         let q = case("is it green", "Is it green?");
         assert!(!judge(&q, "Is it green.").0, "a lost question fails");
@@ -920,7 +956,10 @@ mod tests {
 
     #[test]
     fn rubric_flags_leaks_and_span_damage() {
-        let mut c = case("what is the capital of france", "What is the capital of France?");
+        let mut c = case(
+            "what is the capital of france",
+            "What is the capital of France?",
+        );
         c.must_not_contain = vec!["Paris".into()];
         let (pass, .., leaked, _) = judge(&c, "What is the capital of France? Paris.");
         assert!(!pass && leaked);

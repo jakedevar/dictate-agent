@@ -3,6 +3,10 @@
 //! classification, timeouts and resolver run exactly as in production. No
 //! network, GPU or model needed.
 
+// `LlmRequest::protected` is a list of byte ranges; one-range lists are
+// intended here.
+#![allow(clippy::single_range_in_vec_init)]
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -135,7 +139,9 @@ fn dictation(body: &Value) -> String {
         .and_then(|m| m.last())
         .and_then(|m| m["content"].as_str())
         .unwrap_or_default();
-    let start = last.find("<dictation>\n").map_or(0, |i| i + "<dictation>\n".len());
+    let start = last
+        .find("<dictation>\n")
+        .map_or(0, |i| i + "<dictation>\n".len());
     let end = last.rfind("\n</dictation>").unwrap_or(last.len());
     last[start..end].to_string()
 }
@@ -150,7 +156,10 @@ fn chat(content: &str) -> Reply {
 /// A model that capitalizes the first letter and adds a period.
 fn tidy(d: &str) -> String {
     let mut c = d.chars();
-    let first = c.next().map(|f| f.to_uppercase().collect::<String>()).unwrap_or_default();
+    let first = c
+        .next()
+        .map(|f| f.to_uppercase().collect::<String>())
+        .unwrap_or_default();
     let mut s = format!("{first}{}", c.as_str());
     if !s.ends_with(['.', '?', '!']) {
         s.push('.');
@@ -180,10 +189,19 @@ fn request(text: &str) -> LlmRequest {
 const INPUT: &str = "so could you look at why the build is failing on main";
 
 fn assert_failed_open(outcome: &dictate_fmt::llm::LlmOutcome, input: &str, needle: &str) {
-    assert_eq!(outcome.text, input, "fail-open must return the input unchanged");
+    assert_eq!(
+        outcome.text, input,
+        "fail-open must return the input unchanged"
+    );
     assert!(!outcome.changed);
-    let err = outcome.error.as_deref().expect("a failure must carry its reason");
-    assert!(err.contains(needle), "error {err:?} should mention {needle:?}");
+    let err = outcome
+        .error
+        .as_deref()
+        .expect("a failure must carry its reason");
+    assert!(
+        err.contains(needle),
+        "error {err:?} should mention {needle:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +219,10 @@ async fn ollama_down_fails_open_and_then_skips_honestly() {
     let started = std::time::Instant::now();
     let out = f.format(&request(INPUT)).await;
     assert_failed_open(&out, INPUT, "unreachable");
-    assert!(started.elapsed() < Duration::from_secs(2), "a refused connect is fast");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a refused connect is fast"
+    );
     assert!(matches!(f.health(), LlmHealth::Unavailable { .. }));
     // Within the back-off the pipeline is told up front: Skipped, not a
     // fabricated Ran, and no per-utterance connection attempt.
@@ -217,10 +238,9 @@ async fn missing_model_fails_open_then_the_ladder_resolves_to_an_installed_one()
     let inst = installed.clone();
     let fake = Fake::start(move |path, body| match path {
         "/api/tags" => tags(&inst.lock().unwrap()),
-        _ if body["model"] == "gemma4:e4b" => Reply::Json(
-            404,
-            json!({"error": "model 'gemma4:e4b' not found"}),
-        ),
+        _ if body["model"] == "gemma4:e4b" => {
+            Reply::Json(404, json!({"error": "model 'gemma4:e4b' not found"}))
+        }
         _ => chat(&tidy(&dictation(body))),
     })
     .await;
@@ -320,6 +340,15 @@ async fn server_error_fails_open() {
 // Fail-open: every validator
 // ---------------------------------------------------------------------------
 
+/// Input, category, fake model reply, loosen edit distance, expected validator.
+type ValidatorCase = (
+    &'static str,
+    AppCategory,
+    Box<dyn Fn(&str) -> Reply + Send + Sync>,
+    bool,
+    Validator,
+);
+
 async fn rejected_by(
     input: &str,
     category: AppCategory,
@@ -348,7 +377,11 @@ async fn rejected_by(
         .clone()
         .expect("expected a validator rejection");
     assert_failed_open(&out, input, rejection.validator.as_str());
-    assert!(out.error.as_deref().unwrap().starts_with("validator rejected output"));
+    assert!(out
+        .error
+        .as_deref()
+        .unwrap()
+        .starts_with("validator rejected output"));
     rejection.validator
 }
 
@@ -357,13 +390,22 @@ async fn each_validator_rejects_and_fails_open() {
     use AppCategory::{Chat, Document, Terminal};
     let long = "okay so I would like you to refactor the parser module and also update the tests \
                 and then make sure the documentation reflects the new behavior";
-    let cases: Vec<(&str, AppCategory, Box<dyn Fn(&str) -> Reply + Send + Sync>, bool, Validator)> = vec![
-        (INPUT, Terminal, Box::new(|_| chat("")), false, Validator::EmptyOutput),
+    let cases: Vec<ValidatorCase> = vec![
+        (
+            INPUT,
+            Terminal,
+            Box::new(|_| chat("")),
+            false,
+            Validator::EmptyOutput,
+        ),
         (
             INPUT,
             Terminal,
             Box::new(|d| {
-                Reply::Json(200, json!({"message": {"content": tidy(d)}, "done_reason": "length"}))
+                Reply::Json(
+                    200,
+                    json!({"message": {"content": tidy(d)}, "done_reason": "length"}),
+                )
             }),
             false,
             Validator::Truncated,
@@ -375,9 +417,27 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::ProtectedSpans,
         ),
-        (INPUT, Terminal, Box::new(|d| chat(&format!("Formatted text: {}", tidy(d)))), false, Validator::PromptEcho),
-        (INPUT, Chat, Box::new(|d| chat(&format!("Sure! {}", tidy(d)))), false, Validator::Preamble),
-        (INPUT, Document, Box::new(|d| chat(&format!("**{}**", tidy(d)))), false, Validator::Markup),
+        (
+            INPUT,
+            Terminal,
+            Box::new(|d| chat(&format!("Formatted text: {}", tidy(d)))),
+            false,
+            Validator::PromptEcho,
+        ),
+        (
+            INPUT,
+            Chat,
+            Box::new(|d| chat(&format!("Sure! {}", tidy(d)))),
+            false,
+            Validator::Preamble,
+        ),
+        (
+            INPUT,
+            Document,
+            Box::new(|d| chat(&format!("**{}**", tidy(d)))),
+            false,
+            Validator::Markup,
+        ),
         (
             "first check the logs then restart the service",
             Terminal,
@@ -399,7 +459,13 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::SpanCorrection,
         ),
-        ("meet me at five", Chat, Box::new(|_| chat("Meet me at 6.")), false, Validator::Numbers),
+        (
+            "meet me at five",
+            Chat,
+            Box::new(|_| chat("Meet me at 6.")),
+            false,
+            Validator::Numbers,
+        ),
         (
             "add fuzzy finding to the file picker",
             Terminal,
@@ -414,7 +480,13 @@ async fn each_validator_rejects_and_fails_open() {
             false,
             Validator::EditDistance,
         ),
-        (long, Terminal, Box::new(|_| chat("Refactor the parser.")), false, Validator::DroppedWords),
+        (
+            long,
+            Terminal,
+            Box::new(|_| chat("Refactor the parser.")),
+            false,
+            Validator::DroppedWords,
+        ),
         (
             "please fix the bug in the parser now",
             Terminal,
@@ -449,7 +521,8 @@ async fn leading_slash_command_is_never_sent_and_paths_are_masked() {
     .await;
     let f = LlmFormatter::new(config(&fake.host()));
     // No caller spans at all: the fallback detector protects them.
-    let input = "/research_codebase i would like you to look at src/auth/session.rs and parse_token";
+    let input =
+        "/research_codebase i would like you to look at src/auth/session.rs and parse_token";
     let out = f.format(&request(input)).await;
     assert_eq!(out.error, None);
     assert_eq!(
@@ -512,7 +585,10 @@ async fn request_is_bounded_deterministic_and_non_thinking() {
     assert_eq!(body["keep_alive"], "45m");
     assert!(body["options"]["temperature"].as_f64().unwrap() <= 0.2);
     let np = body["options"]["num_predict"].as_i64().unwrap();
-    assert!((48..=128).contains(&np), "num_predict {np} bounded by input length");
+    assert!(
+        (48..=128).contains(&np),
+        "num_predict {np} bounded by input length"
+    );
     assert!(body["options"]["stop"]
         .as_array()
         .unwrap()
@@ -538,7 +614,8 @@ async fn long_input_is_chunked_and_a_rejected_chunk_falls_back_alone() {
     c.chunking.max_single_words = 8;
     c.chunking.chunk_words = 6;
     let f = LlmFormatter::new(c);
-    let input = "this is the first sentence here. this is the second sentence here. this is the third one";
+    let input =
+        "this is the first sentence here. this is the second sentence here. this is the third one";
     let out = f.format(&request(input)).await;
     assert_eq!(out.segments, 3);
     assert_eq!(out.segments_applied, 2);
@@ -558,7 +635,10 @@ async fn long_input_is_chunked_and_a_rejected_chunk_falls_back_alone() {
 async fn warm_up_loads_and_primes_the_prompt_cache() {
     let fake = Fake::start(|path, _| match path {
         "/api/tags" => tags(&["gemma4:e4b"]),
-        _ => Reply::Json(200, json!({"message": {"content": ""}, "done_reason": "load"})),
+        _ => Reply::Json(
+            200,
+            json!({"message": {"content": ""}, "done_reason": "load"}),
+        ),
     })
     .await;
     let f = LlmFormatter::new(config(&fake.host()));
@@ -568,14 +648,21 @@ async fn warm_up_loads_and_primes_the_prompt_cache() {
     let chats = fake.chat_requests();
     assert_eq!(chats.len(), 2);
     assert_eq!(chats[0]["messages"], json!([]), "first a load-only request");
-    assert_eq!(chats[1]["options"]["num_predict"], 1, "then a one-token prime");
+    assert_eq!(
+        chats[1]["options"]["num_predict"], 1,
+        "then a one-token prime"
+    );
 
     // The background variant never blocks the caller and dedupes.
     let f = Arc::new(f);
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(fake.chat_requests().len(), 4, "one warm-up in flight at a time");
+    assert_eq!(
+        fake.chat_requests().len(),
+        4,
+        "one warm-up in flight at a time"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -591,10 +678,21 @@ fn skip_rules_are_decided_before_the_model_is_called() {
     let r = request(INPUT);
     let type_route = LlmGate::default();
 
-    assert_eq!(run(&f, &r, type_route.clone()), LlmPlan::Run, "unchecked health still runs");
+    assert_eq!(
+        run(&f, &r, type_route.clone()),
+        LlmPlan::Run,
+        "unchecked health still runs"
+    );
     for route in [Route::Local, Route::Timer, Route::Command, Route::Edit] {
         assert_eq!(
-            run(&f, &r, LlmGate { route, ..LlmGate::default() }),
+            run(
+                &f,
+                &r,
+                LlmGate {
+                    route,
+                    ..LlmGate::default()
+                }
+            ),
             LlmPlan::Skip(SkipReason::RouteNotEligible)
         );
     }
@@ -607,23 +705,40 @@ fn skip_rules_are_decided_before_the_model_is_called() {
         profile_llm_format: Some(false),
         ..LlmGate::default()
     };
-    assert_eq!(run(&f, &r, profile_off.clone()), LlmPlan::Skip(SkipReason::Disabled));
+    assert_eq!(
+        run(&f, &r, profile_off.clone()),
+        LlmPlan::Skip(SkipReason::Disabled)
+    );
     let forced = LlmGate {
         profile_llm_format: Some(false),
         session_format_llm: Some(true),
         ..LlmGate::default()
     };
-    assert_eq!(run(&f, &r, forced.clone()), LlmPlan::Run, "the session overrides the profile");
+    assert_eq!(
+        run(&f, &r, forced.clone()),
+        LlmPlan::Run,
+        "the session overrides the profile"
+    );
 
     let chat = LlmRequest {
         category: AppCategory::Chat,
         ..request(INPUT)
     };
-    assert_eq!(run(&f, &chat, type_route.clone()), LlmPlan::Skip(SkipReason::Disabled));
+    assert_eq!(
+        run(&f, &chat, type_route.clone()),
+        LlmPlan::Skip(SkipReason::Disabled)
+    );
 
     let short = request("fix it");
-    assert_eq!(run(&f, &short, type_route.clone()), LlmPlan::Skip(SkipReason::BelowMinWords));
-    assert_eq!(run(&f, &short, forced), LlmPlan::Run, "Some(true) overrides min_words");
+    assert_eq!(
+        run(&f, &short, type_route.clone()),
+        LlmPlan::Skip(SkipReason::BelowMinWords)
+    );
+    assert_eq!(
+        run(&f, &short, forced),
+        LlmPlan::Run,
+        "Some(true) overrides min_words"
+    );
     // Protected words do not count: nothing left to format.
     let command_only = request("/compact src/main.rs");
     assert_eq!(
@@ -631,12 +746,18 @@ fn skip_rules_are_decided_before_the_model_is_called() {
         LlmPlan::Skip(SkipReason::BelowMinWords)
     );
     let long = request(&"word ".repeat(c.chunking.max_words + 1));
-    assert_eq!(run(&f, &long, type_route.clone()), LlmPlan::Skip(SkipReason::TooLong));
+    assert_eq!(
+        run(&f, &long, type_route.clone()),
+        LlmPlan::Skip(SkipReason::TooLong)
+    );
 
     let disabled = LlmFormatter::new(LlmConfig {
         enabled: false,
         ..c
     });
-    assert_eq!(run(&disabled, &r, type_route), LlmPlan::Skip(SkipReason::Disabled));
+    assert_eq!(
+        run(&disabled, &r, type_route),
+        LlmPlan::Skip(SkipReason::Disabled)
+    );
     assert_eq!(disabled.health(), LlmHealth::Disabled);
 }

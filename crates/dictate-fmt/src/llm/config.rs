@@ -280,7 +280,12 @@ const KNOWN_TOP_KEYS: &[&str] = &[
     "categories",
 ];
 const KNOWN_TIMEOUT_KEYS: &[&str] = &["base_ms", "per_word_ms", "max_ms"];
-const KNOWN_CHUNK_KEYS: &[&str] = &["max_single_words", "chunk_words", "concurrency", "max_words"];
+const KNOWN_CHUNK_KEYS: &[&str] = &[
+    "max_single_words",
+    "chunk_words",
+    "concurrency",
+    "max_words",
+];
 const KNOWN_CATEGORY_NAMES: &[&str] = &[
     "terminal", "editor", "browser", "chat", "email", "document", "other",
 ];
@@ -561,7 +566,10 @@ enabled = false
         );
         assert_eq!(c.chunking.concurrency, 2);
         assert_eq!(c.categories.terminal.style, Style::Prose);
-        assert!(c.categories.terminal.enabled, "omitted key keeps its default");
+        assert!(
+            c.categories.terminal.enabled,
+            "omitted key keeps its default"
+        );
         assert!(!c.categories.chat.enabled);
         // An unmentioned category keeps its default policy.
         assert_eq!(c.categories.editor, CategoryPolicy::verbatim());
@@ -634,7 +642,10 @@ tone = "casual"
         assert!(joined.contains("[format.llm].enabeld"), "{joined}");
         assert!(joined.contains("[format.llm.timeout].max"), "{joined}");
         assert!(joined.contains("categories].spreadsheet"), "{joined}");
-        assert!(joined.contains("[format.llm.categories.chat].tone"), "{joined}");
+        assert!(
+            joined.contains("[format.llm.categories.chat].tone"),
+            "{joined}"
+        );
     }
 
     #[test]
@@ -655,6 +666,31 @@ max_ms = 0
         assert_eq!(c.models, ["gemma4:e4b", "gemma4:12b"]);
         assert_eq!(c.timeout.max_ms, TimeoutPolicy::default().max_ms);
         assert_eq!(l.warnings.len(), 4, "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn the_documented_example_config_parses_without_unknown_keys() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/config.example.toml"
+        ))
+        .unwrap();
+        let root: toml::Table = toml::from_str(&text).unwrap();
+        let l = LlmConfig::from_document(&root).unwrap();
+        // The example still carries the deprecated [grammar] section for the
+        // pre-S21 grammar pass; everything else must be a known key.
+        assert_eq!(
+            l.warnings,
+            ["[grammar] is ignored because [format.llm] is present; remove [grammar]"]
+        );
+        let documented = LlmConfig {
+            enabled: true,
+            ..LlmConfig::default()
+        };
+        assert_eq!(
+            l.config, documented,
+            "example values must match the defaults they document"
+        );
     }
 
     #[test]
@@ -689,9 +725,6 @@ max_ms = 0
     #[test]
     fn unknown_category_values_fall_back_to_other() {
         let p = CategoryPolicies::default();
-        assert_eq!(
-            p.get(&AppCategory::Unknown("spreadsheet".into())),
-            &p.other
-        );
+        assert_eq!(p.get(&AppCategory::Unknown("spreadsheet".into())), &p.other);
     }
 }
