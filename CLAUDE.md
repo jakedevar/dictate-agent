@@ -5,25 +5,32 @@ pipeline diagram, and per-component design notes, read `AGENTS.md` first —
 this file does not duplicate that; it only covers what AGENTS.md doesn't:
 current repo state, how to build/test, and where things live.
 
-## Current state (as of the S02 daemon-skeleton slice, 2026-08-07)
-
-Two implementations live side by side on purpose:
+## Current state (as of Wave 1 integration + manager base, 2026-09-29)
 
 - **Rust workspace — live, primary.** `Cargo.toml` (workspace root) +
-  `crates/*`. Code-complete against the Python daemon's behavior
-  (Phases 1–7 of the rewrite) and now driven by a real control plane
-  (S02): 379 tests passing, clippy-clean, `cargo build --release`
-  producing `dictated` (daemon) and `dictate` (CLI).
-- **Python reference daemon — retained, Jake's daily driver.** `dictate/`
-  (13 modules). This is **not** legacy cruft to delete — it stays present
-  and runnable until the v1.0 parity cutover gate defined in
+  `crates/*`. Waves 0–1 of the Wispr Flow parity plan are integrated: protocol,
+  control plane, audio v2, Silero VAD, STT v2 with model manager, injection
+  v2, history v2, evdev hotkeys. 419+ tests pass, `clippy -D warnings` and
+  `cargo fmt --check` are clean. `cargo build --release` produces `dictated`
+  (daemon) and `dictate` (CLI).
+- **Jake's daily driver is `~/.local/bin/dictate-agent`** — a monolithic Rust
+  binary built 2026-06-18 from the pre-workspace port, launched by i3 through
+  `scripts/run.sh`. It shares `~/.config/dictate-agent/config.toml` (still in
+  the Python-era shape) with `dictated`, and writes
+  `~/.local/share/dictate-agent/history.db`. Never stop, signal, or
+  reconfigure it outside the cutover slice.
+- **Python reference daemon — retained, not running.** `dictate/` (13
+  modules) stays present and runnable until the v1.0 parity cutover gate
+  defined in
   `thoughts/shared/plans/2026-08-07-wisprflow-parity-master-slice-map.md`.
   Do not remove or modify it outside of a slice that explicitly says to.
+- **The GitHub repo is public.** Never commit real transcripts, history rows,
+  window titles, or personal vocabulary; fixtures are synthetic.
+- Active plan for Wave 2+:
+  `thoughts/shared/plans/2026-09-29-wave2-integration-contract.md`; worker
+  rules: `thoughts/shared/manager/worker-contract.md`.
 
-If you find a `CLAUDE.md` or note elsewhere claiming the Rust code lives
-in `src_rust_archive/` with Python as primary, it's stale — that was the
-inverse of reality on this branch and was reconciled in S00. There is no
-`src_rust_archive/` directory.
+There is no `src_rust_archive/` directory; notes claiming otherwise are stale.
 
 ## Workspace layout
 
@@ -32,11 +39,17 @@ crates/
   dictate-proto    wire protocol: commands, events, errors, versioned
                     envelope, binary audio-frame codec. Types + serde only —
                     no transport, no tokio, no I/O. See docs/protocol.md
-  dictate-audio    cpal capture (AudioCapture)
-  dictate-stt      whisper-rs transcription (Transcriber) + WhisperConfig
+  dictate-audio    cpal capture with idle pre-roll ring, AGC, device recovery,
+                    earcons (AudioCapture) + AudioConfig
+  dictate-vad      Silero VAD gate/trim + hands-free trailing-silence stop
+  dictate-stt      SttProvider + whisper-rs impl, pinned model catalog/pull,
+                    language/initial_prompt hooks + WhisperConfig
   dictate-fmt      grammar correction + text cleanup (GrammarCorrector) + GrammarConfig
-  dictate-history  SQLite interaction log (HistoryStore) + HistoryConfig
-  dictate-inject   clipboard-paste output (OutputHandler) + OutputConfig
+  dictate-history  SQLite WAL + FTS5 interaction log, analytics, retention,
+                    privacy mode, Python-DB import (HistoryStore) + HistoryConfig
+  dictate-inject   Injector boundary: X11 paste (clipboard save/restore) and
+                    direct typing, Wayland portal stub + OutputConfig
+  dictate-hotkey   passive evdev hold-to-talk / toggle / cancel service
   dictate-core     the engine: session state machine (session.rs), cancellable
                     pipeline (pipeline.rs), the command-serializing actor
                     (engine.rs), cancellation with a commit point (cancel.rs),
@@ -61,14 +74,14 @@ pulling it from `dictate-core::config` — `dictate-core` already depends on
 every leaf crate, so the reverse would be a circular crate dependency.
 `dictate-core::config::Config` re-exports and aggregates all of them.
 
-`dictate-proto` deliberately depends on nothing in the workspace, and
-nothing yet depends on it — S02 (daemon), S32 (UI), and S33 (network API)
-are its consumers. It is pinned by golden-JSON tests; read the
+`dictate-proto` deliberately depends on nothing in the workspace; the daemon,
+CLI, history and injection crates consume it today, and S32 (UI) and S33
+(network API) will. It is pinned by golden-JSON tests; read the
 compatibility rule in its crate docs before changing any wire type.
 
 Crates NOT yet created (owned by later slices in the master plan, do not
-add empty shells for these): `dictate-vad` (S11), `dictate-dict` (S22),
-`dictate-context` (S23), `dictate-hotkey` (S31), `dictate-server` (S33).
+add empty shells for these): `dictate-dict` (S22), `dictate-context` (S23),
+`dictate-server` (S33). `dictate-vad` (S11) and `dictate-hotkey` (S31) exist.
 
 `dictate-core` gained a dependency on `dictate-proto` in S02 (the engine
 speaks the wire types directly). The direction is still one-way — nothing
@@ -91,7 +104,7 @@ Preferred: use `just` or `make`, both of which set `PATH` for you.
 
 ```bash
 just build      # cargo build --workspace
-just test       # cargo test --workspace   (>= 379 tests must pass)
+just test       # cargo test --workspace   (>= 419 tests must pass)
 just clippy     # cargo clippy --all-targets --workspace  (must be clean)
 just check      # test + clippy
 just release    # cargo build --release --workspace
