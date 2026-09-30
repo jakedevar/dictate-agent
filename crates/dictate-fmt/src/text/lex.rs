@@ -12,6 +12,8 @@
 //!   closing punctuation or a line break, so each rule only deletes the words
 //!   it means to.
 
+use std::cell::Cell;
+
 use super::doc::{is_placeholder, ProtectedSpan, SpanKind, MAX_PROTECTED_SPANS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,10 +124,19 @@ pub(crate) fn is_terminal(s: &str) -> bool {
     matches!(s, "." | "!" | "?")
 }
 
+/// "No token" in the alive-token links.
+const NONE: usize = usize::MAX;
+
 pub(crate) struct Editor<'a> {
     src: &'a str,
     toks: Vec<Tok>,
     alive: Vec<bool>,
+    /// Links between alive tokens, so neighbour lookups are O(1) no matter
+    /// how many tokens a rule has deleted. For an alive token they are exact;
+    /// a dead token keeps the links it had when it died and lookups from it
+    /// follow (and compress) the chain.
+    next: Vec<Cell<usize>>,
+    prev: Vec<Cell<usize>>,
     repl: Vec<Option<String>>,
     spans: &'a mut Vec<ProtectedSpan>,
     changed: bool,
@@ -139,6 +150,12 @@ impl<'a> Editor<'a> {
             src,
             toks,
             alive: vec![true; n],
+            next: (0..n)
+                .map(|i| Cell::new(if i + 1 < n { i + 1 } else { NONE }))
+                .collect(),
+            prev: (0..n)
+                .map(|i| Cell::new(if i > 0 { i - 1 } else { NONE }))
+                .collect(),
             repl: vec![None; n],
             spans,
             changed: false,
@@ -169,14 +186,40 @@ impl<'a> Editor<'a> {
         self.alive[i] && self.toks[i].kind == Kind::Word
     }
 
+    /// Delete token `i`. Deleting a token between two spaces also deletes the
+    /// second space, so no two alive spaces are ever adjacent (the output is
+    /// the same — [`finish`](Self::finish) merges them — but neighbour
+    /// lookups that skip spaces stay O(1)).
     pub(crate) fn delete(&mut self, i: usize) {
         if self.toks[i].kind == Kind::Protected {
             debug_assert!(false, "rules must never delete a protected span");
             return;
         }
-        if self.alive[i] {
-            self.alive[i] = false;
-            self.changed = true;
+        if !self.alive[i] {
+            return;
+        }
+        self.unlink(i);
+        self.changed = true;
+        let p = self.prev[i].get();
+        let n = self.next[i].get();
+        if p != NONE
+            && n != NONE
+            && self.toks[p].kind == Kind::Space
+            && self.toks[n].kind == Kind::Space
+        {
+            self.unlink(n);
+        }
+    }
+
+    fn unlink(&mut self, i: usize) {
+        self.alive[i] = false;
+        let p = self.prev[i].get();
+        let n = self.next[i].get();
+        if p != NONE {
+            self.next[p].set(n);
+        }
+        if n != NONE {
+            self.prev[n].set(p);
         }
     }
 
@@ -204,23 +247,47 @@ impl<'a> Editor<'a> {
     }
 
     pub(crate) fn next_alive(&self, i: usize) -> Option<usize> {
-        (i + 1..self.toks.len()).find(|&j| self.alive[j])
+        let first = self.next[i].get();
+        let mut j = first;
+        while j != NONE && !self.alive[j] {
+            j = self.next[j].get();
+        }
+        if j != first {
+            self.next[i].set(j); // compress the dead chain
+        }
+        (j != NONE).then_some(j)
     }
 
     pub(crate) fn prev_alive(&self, i: usize) -> Option<usize> {
-        (0..i).rev().find(|&j| self.alive[j])
+        let first = self.prev[i].get();
+        let mut j = first;
+        while j != NONE && !self.alive[j] {
+            j = self.prev[j].get();
+        }
+        if j != first {
+            self.prev[i].set(j);
+        }
+        (j != NONE).then_some(j)
     }
 
     /// Next alive token that is not a space (may be a newline).
     pub(crate) fn next_solid(&self, i: usize) -> Option<usize> {
-        (i + 1..self.toks.len()).find(|&j| self.alive[j] && self.toks[j].kind != Kind::Space)
+        let j = self.next_alive(i)?;
+        if self.toks[j].kind == Kind::Space {
+            self.next_alive(j)
+        } else {
+            Some(j)
+        }
     }
 
     /// Previous alive token that is not a space (may be a newline).
     pub(crate) fn prev_solid(&self, i: usize) -> Option<usize> {
-        (0..i)
-            .rev()
-            .find(|&j| self.alive[j] && self.toks[j].kind != Kind::Space)
+        let j = self.prev_alive(i)?;
+        if self.toks[j].kind == Kind::Space {
+            self.prev_alive(j)
+        } else {
+            Some(j)
+        }
     }
 
     /// The alive token directly after `i` if it touches `i` (no space between).

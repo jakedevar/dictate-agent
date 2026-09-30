@@ -230,9 +230,10 @@ fn parse_fraction(items: &[Item], allow_big: bool) -> Option<(String, Option<&'s
     parse_int(items).map(|p| (p.value.to_string(), big))
 }
 
-fn group_thousands(v: u64) -> String {
+/// Plain digits below `from`, comma-grouped from `from` up.
+fn group_digits(v: u64, from: u64) -> String {
     let digits = v.to_string();
-    if v < 10_000 {
+    if v < from {
         return digits;
     }
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -245,14 +246,20 @@ fn group_thousands(v: u64) -> String {
     out
 }
 
+/// Counts group from 10,000 so a spoken port or size (`8000`) stays pasteable.
+fn group_thousands(v: u64) -> String {
+    group_digits(v, 10_000)
+}
+
 /// A parsed run, rendered.
 struct Rendered {
     text: String,
     /// A lone number below ten, which stays a word unless something marks it
     /// as a quantity.
     small_single: bool,
-    /// Rendered with a scale word (`2 million`), so currency goes in front.
-    value_for_cents: bool,
+    /// The value, when it rendered as a plain integer (no scale word, no
+    /// decimals). Money is regrouped from 1,000 (`$5,000`) and may take cents.
+    plain_int: Option<u64>,
 }
 
 fn render(items: &[Item]) -> Option<Rendered> {
@@ -266,7 +273,7 @@ fn render(items: &[Item]) -> Option<Rendered> {
             };
             Some(Rendered {
                 small_single: items.len() == 1 && p.value < 10,
-                value_for_cents: p.big.is_none(),
+                plain_int: p.big.is_none().then_some(p.value),
                 text,
             })
         }
@@ -288,7 +295,7 @@ fn render(items: &[Item]) -> Option<Rendered> {
             Some(Rendered {
                 text,
                 small_single: false,
-                value_for_cents: false,
+                plain_int: None,
             })
         }
         _ => {
@@ -305,7 +312,7 @@ fn render(items: &[Item]) -> Option<Rendered> {
             Some(Rendered {
                 text,
                 small_single: false,
-                value_for_cents: false,
+                plain_int: None,
             })
         }
     }
@@ -399,6 +406,41 @@ const UNITS: &[&str] = &[
     "cents",
     "core",
     "cores",
+];
+
+/// Ordinal words: a number run right before one is part of an ordinal.
+/// `second` is here because "twenty second" is 22nd as often as 20 s.
+const ORDINALS: &[&str] = &[
+    "first",
+    "second",
+    "third",
+    "fourth",
+    "fifth",
+    "sixth",
+    "seventh",
+    "eighth",
+    "ninth",
+    "tenth",
+    "eleventh",
+    "twelfth",
+    "thirteenth",
+    "fourteenth",
+    "fifteenth",
+    "sixteenth",
+    "seventeenth",
+    "eighteenth",
+    "nineteenth",
+    "twentieth",
+    "thirtieth",
+    "fortieth",
+    "fiftieth",
+    "sixtieth",
+    "seventieth",
+    "eightieth",
+    "ninetieth",
+    "hundredth",
+    "thousandth",
+    "millionth",
 ];
 
 /// "one second" / "one minute" are idioms for "a moment", not measurements.
@@ -528,6 +570,17 @@ fn apply_run(ed: &mut Editor<'_>, run: &Run) {
     let suffix_word = suffix.map(|(_, w)| ed.text(w).to_string());
     let suffix_word = suffix_word.as_deref().unwrap_or("");
 
+    // "twenty third", "one hundred and first", "twenty second": ordinals (or
+    // ambiguous with one) stay words.
+    let ordinal_after_and = suffix_word.eq_ignore_ascii_case("and")
+        && suffix.is_some_and(|(_, w)| {
+            ed.next_word_after_space(w)
+                .is_some_and(|(_, o)| eq_any(ed.text(o), ORDINALS))
+        });
+    if eq_any(suffix_word, ORDINALS) || ordinal_after_and {
+        return;
+    }
+
     // Percent: "five percent" / "five per cent".
     let percent = if suffix_word.eq_ignore_ascii_case("percent") {
         suffix.map(|(sp, w)| vec![sp, w])
@@ -555,8 +608,12 @@ fn apply_run(ed: &mut Editor<'_>, run: &Run) {
     };
     if let (Some(symbol), Some((sp, w))) = (symbol, suffix) {
         let mut consumed = vec![sp, w];
-        let mut text = format!("{symbol}{}", rendered.text);
-        if symbol == '$' && rendered.value_for_cents && !rendered.text.contains('.') {
+        let amount = match rendered.plain_int {
+            Some(v) => group_digits(v, 1_000),
+            None => rendered.text.clone(),
+        };
+        let mut text = format!("{symbol}{amount}");
+        if symbol == '$' && rendered.plain_int.is_some() {
             if let Some((cents, extra)) = cents_after(ed, w) {
                 text = format!("{text}.{cents:02}");
                 consumed.extend(extra);
@@ -776,6 +833,8 @@ mod tests {
             ("one dollar", "$1"),
             ("a five dollar bill", "a $5 bill"),
             ("twenty dollars and fifty cents", "$20.50"),
+            ("about five thousand dollars", "about $5,000"),
+            ("one hundred and forty nine dollars", "$149"),
             ("two million dollars", "$2 million"),
             ("five euros", "\u{20AC}5"),
             ("five thirty pm", "5:30 PM"),
@@ -827,6 +886,10 @@ mod tests {
             "twenty/twenty vision",
             "five thirty tomorrow",
             "I am five",
+            "the twenty third of May",
+            "the one hundred and first time",
+            "a twenty second delay",
+            "the twenty first century",
         ] {
             assert_eq!(num(input), input, "input: {input}");
         }

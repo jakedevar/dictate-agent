@@ -6,10 +6,13 @@
 //! or an ellipsis, and never inside or right after a protected span
 //! (`/research_codebase for the auth flow` keeps its lowercase `for`).
 //!
-//! The pronoun: a standalone `i` and `i'm`/`i've`/`i'll`/`i'd` become `I…`,
-//! except where `i` is plainly a loop variable ("for i in range", "while i is
-//! less than n", "i equals zero") — Jake dictates code prompts, and Whisper
-//! already capitalizes the pronoun itself.
+//! The pronoun: `i'm`/`i've`/`i'll`/`i'd` always become `I…`. A bare `i`
+//! becomes `I` only on evidence that it is the pronoun — it starts a
+//! sentence, follows a conjunction ("you and i", "so i"), or precedes a
+//! pronoun verb ("i think", "i tested") — and never where it is plainly a loop
+//! variable ("for i in range", "while i is less than n", "print i"). Whisper
+//! already capitalizes the pronoun, so in Jake's code prompts a lowercase `i`
+//! is far more often a variable; unknown contexts stay lowercase.
 
 use crate::text::lex::{capitalized, Editor, Kind};
 use crate::text::{FormatContext, TextDoc, TextStage};
@@ -45,6 +48,121 @@ const VARIABLE_AFTER: &[&str] = &[
     "increments",
     "goes",
 ];
+/// Words before `i` that make it the pronoun: "you and i", "so i".
+const PRONOUN_BEFORE: &[&str] = &[
+    "and", "but", "so", "because", "that", "when", "if", "as", "than", "or", "since", "then",
+    "what", "how", "why", "where", "who", "which", "until", "unless", "though", "although", "yes",
+    "no", "yeah", "well", "okay", "ok",
+];
+/// Words after `i` that make it the pronoun: "i think", "i can't".
+const PRONOUN_AFTER: &[&str] = &[
+    "am",
+    "was",
+    "have",
+    "had",
+    "will",
+    "would",
+    "can",
+    "can't",
+    "cannot",
+    "could",
+    "couldn't",
+    "should",
+    "shouldn't",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "do",
+    "don't",
+    "did",
+    "didn't",
+    "won't",
+    "wouldn't",
+    "haven't",
+    "hadn't",
+    "wasn't",
+    "think",
+    "thought",
+    "want",
+    "wanna",
+    "know",
+    "knew",
+    "mean",
+    "guess",
+    "feel",
+    "felt",
+    "like",
+    "love",
+    "hate",
+    "just",
+    "really",
+    "also",
+    "still",
+    "never",
+    "always",
+    "already",
+    "actually",
+    "probably",
+    "definitely",
+    "honestly",
+    "only",
+    "even",
+    "see",
+    "saw",
+    "said",
+    "say",
+    "try",
+    "got",
+    "get",
+    "made",
+    "make",
+    "went",
+    "go",
+    "believe",
+    "hope",
+    "wish",
+    "agree",
+    "found",
+    "understand",
+    "prefer",
+    "use",
+    "wrote",
+    "ran",
+    "ask",
+    "told",
+    "tell",
+    "keep",
+    "kept",
+    "forgot",
+    "remember",
+    "bet",
+];
+
+fn is_pronoun_i(ed: &Editor<'_>, i: usize) -> bool {
+    if ed.at_sentence_start(i) {
+        return true;
+    }
+    let before = ed
+        .prev_solid(i)
+        .filter(|&p| ed.kind(p) == Kind::Word)
+        .is_some_and(|p| {
+            PRONOUN_BEFORE
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(ed.text(p)))
+        });
+    let after = ed
+        .next_solid(i)
+        .filter(|&n| ed.kind(n) == Kind::Word)
+        .is_some_and(|n| {
+            let w = ed.text(n);
+            PRONOUN_AFTER.iter().any(|v| v.eq_ignore_ascii_case(w))
+                // "i tested", "i pushed", "i needed": a past-tense verb.
+                || (w.len() > 3 && w.ends_with("ed") && w.chars().all(|c| c.is_ascii_lowercase()))
+        });
+    before || after
+}
+
 const CONTRACTIONS: &[&str] = &[
     "i'm",
     "i've",
@@ -94,7 +212,7 @@ fn case(ed: &mut Editor<'_>) {
         }
         let word = ed.text(i);
         if word == "i" {
-            if !is_variable_i(ed, i) {
+            if !is_variable_i(ed, i) && is_pronoun_i(ed, i) {
                 ed.replace(i, "I".to_string());
             }
             continue;
@@ -133,6 +251,8 @@ mod tests {
                 "And I think I'm right, I've checked",
             ),
             ("you and i", "You and I"),
+            ("yesterday i tested it", "Yesterday I tested it"),
+            ("i print it", "I print it"),
             ("i'll do it and i'd say so", "I'll do it and I'd say so"),
             ("émile arrived. élan too", "Émile arrived. Élan too"),
         ];
@@ -157,6 +277,9 @@ mod tests {
             "Set i equals zero",
             "Then i = i + 1",
             "Use array[i] here",
+            "Then print i",
+            "Return i when done",
+            "Swap a and b with i as temp",
             "It is: lowercase after a colon",
         ] {
             assert_eq!(stage(&Casing, input), input, "input: {input:?}");

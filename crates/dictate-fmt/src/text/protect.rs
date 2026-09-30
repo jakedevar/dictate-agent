@@ -34,6 +34,8 @@ impl TextStage for Protect {
 pub fn detect_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
     let mut out = backtick_spans(text);
     let ticks = out.clone();
+    // Chunks and tick spans both arrive in order, so one cursor suffices.
+    let mut tick = 0;
     let mut chunk_start = None;
     for (i, c) in text
         .char_indices()
@@ -41,7 +43,10 @@ pub fn detect_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
     {
         if c.is_whitespace() {
             if let Some(s) = chunk_start.take() {
-                let overlaps_tick = ticks.iter().any(|(r, _)| r.start < i && s < r.end);
+                while tick < ticks.len() && ticks[tick].0.end <= s {
+                    tick += 1;
+                }
+                let overlaps_tick = ticks.get(tick).is_some_and(|(r, _)| r.start < i);
                 if !overlaps_tick {
                     if let Some(found) = classify_chunk(text, s, i) {
                         out.push(found);
@@ -119,21 +124,29 @@ fn classify_chunk(text: &str, start: usize, end: usize) -> Option<(Range<usize>,
             break;
         }
     }
-    loop {
+    // Bracket balance of the core, kept current as closers are stripped, so
+    // a chunk of ten thousand `)` costs linear time, not quadratic.
+    let count = |open: char, close: char| {
         let core = &text[s..e];
-        let c = core.chars().next_back()?;
-        let strip = TRAILERS.contains(&c)
-            || match c {
-                ')' => core.matches('(').count() < core.matches(')').count(),
-                ']' => core.matches('[').count() < core.matches(']').count(),
-                '}' => core.matches('{').count() < core.matches('}').count(),
-                _ => false,
-            };
-        if strip {
-            e -= c.len_utf8();
-        } else {
+        core.matches(open).count() as isize - core.matches(close).count() as isize
+    };
+    let mut balance = [count('(', ')'), count('[', ']'), count('{', '}')];
+    loop {
+        let c = text[s..e].chars().next_back()?;
+        let bracket = match c {
+            ')' => Some(0),
+            ']' => Some(1),
+            '}' => Some(2),
+            _ => None,
+        };
+        let strip = TRAILERS.contains(&c) || bracket.is_some_and(|b| balance[b] < 0);
+        if !strip {
             break;
         }
+        if let Some(b) = bracket {
+            balance[b] += 1;
+        }
+        e -= c.len_utf8();
     }
     if s >= e {
         return None;
@@ -253,7 +266,7 @@ const TLDS: &[&str] = &[
     "fr", "jp", "au", "eu", "info", "me", "sh", "tv", "xyz", "tech", "cloud", "so", "gg", "ly",
     "fm", "page", "site", "blog", "news", "xxx", "biz", "ru", "cn", "in", "nl", "se", "ch", "es",
     "it", "br", "mx", "nz", "ie", "be", "at", "dk", "no", "fi", "pl", "kr", "tw", "sg", "hk", "is",
-    "to", "ws", "cc", "ms", "run", "social", "chat", "codes",
+    "to", "ws", "cc", "ms", "run", "social", "chat", "codes", "rs",
 ];
 
 fn is_bare_domain(s: &str) -> bool {
