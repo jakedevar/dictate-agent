@@ -67,7 +67,9 @@ dictate/           Python reference daemon (retained until cutover)
 
 Crate dependency direction is one-way: `dictated` → `dictate-core` →
 {`dictate-audio`, `dictate-fmt`, `dictate-history`, `dictate-inject`,
-`dictate-stt`}, and `dictate-stt` → `dictate-fmt` (for `text_cleanup`).
+`dictate-stt`}; `dictate-fmt` → `dictate-proto` (for `FormatContext`).
+`dictate-stt` no longer depends on `dictate-fmt`: it returns raw Whisper
+text, and corrections/cleanup run in the S20 text chain.
 Nothing depends back on `dictate-core`. This is why each leaf crate owns
 its own `XConfig` struct (e.g. `dictate-fmt::GrammarConfig`) instead of
 pulling it from `dictate-core::config` — `dictate-core` already depends on

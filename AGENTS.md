@@ -19,14 +19,12 @@ graph TD
     
     D -->|f32 samples| F[Transcriber]
     F -->|Whisper.cpp CUDA| G[Raw Text]
-    G -->|Mis-transcription Mapping| H[Cleaned Text]
+    G -->|Scrub, protect, corrections, rules| H[TextChain Rules Output]
     
-    H -->|Fail-Open Correct| I[GrammarCorrector]
-    I -->|Ollama qwen3:0.6b| J[Corrected Text]
+    H -->|Prefix Matching| K[Router]
     
-    J -->|Prefix Matching| K[Router]
-    
-    K -->|Default Route| L[Type Agent]
+    K -->|Default Route| I[GrammarCorrector]
+    I -->|Ollama, fail-open, protected spans verified| L[Type Agent]
     K -->|'timer' prefix| M[Timer Agent]
     K -->|'easy/simple...' prefix| N[Local LLM Agent]
     K -->|'edit/fix...' prefix| O[Edit Agent - Planned]
@@ -61,10 +59,16 @@ Captures raw audio streams using `cpal` from the default ALSA/PipeWire input.
 Runs local Whisper inference using GGUF model configurations.
 * **Hardware Acceleration**: Configured for CUDA execution, running Whisper parameters on the Nvidia RTX 5080.
 * **Model**: Typically uses `ggml-large-v3-turbo.bin` (see [config.example.toml](file:///home/jakedevar/dictate_agent/config/config.example.toml#L8)).
-* **Hardcoded Corrections**: Translates common acoustic mishearings (e.g., "clod/cloud" to "Claude") and verbal commands (e.g., "create plan" to `/create_plan` slash commands).
+* **Raw output**: Returns Whisper's text untouched; corrections and cleanup belong to the text chain below.
+
+### 3b. Deterministic Text Chain: [TextChain](file:///home/jakedevar/dictate_agent/crates/dictate-fmt/src/text/mod.rs)
+Pure-Rust rules between STT and the router, timed as `fmt_rules` and configured under `[format]` / `[format.rules]`.
+* **Protected spans**: URLs, emails, paths, slash commands, and code identifiers become opaque placeholders no later stage can alter; LLM output that drops or edits one is rejected.
+* **Rules**: hallucination scrub, the historical acoustic corrections ("cloud" → "Claude", "create plan" → `/create_plan`), fillers, stutters, numbers, spacing, casing, terminal punctuation; spoken punctuation and line breaks are opt-in.
+* **Plug-in slots**: the dictionary (S22) and snippets (S24) run inside the chain as `TextStage`s.
 
 ### 4. Grammar Correction Agent: [GrammarCorrector](file:///home/jakedevar/dictate_agent/crates/dictate-fmt/src/grammar.rs#L23)
-An optional, inline agent that runs prior to router analysis.
+An optional, inline agent that runs after routing, for `type` utterances only, on the text chain's output.
 * Sends raw text to Ollama running a fast model (e.g., `qwen3:0.6b`).
 * Uses a specialized prompt instructing the LLM to only fix punctuation, spelling, and grammar without rephrasing or altering the core semantic meaning.
 * **Fail-Open Strategy**: If Ollama is not running, times out, or returns a response outside validation length parameters (0.5x to 1.5x of original length), the corrector rejects the changes and yields the raw Whisper text.

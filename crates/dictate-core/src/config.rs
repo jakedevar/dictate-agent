@@ -399,6 +399,14 @@ spoken_line_breaks = true
     }
 
     #[test]
+    fn the_example_config_documents_the_default_format_rules() {
+        let example: Config =
+            toml::from_str(include_str!("../../../config/config.example.toml")).unwrap();
+        assert_eq!(example.format.enabled, FormatConfig::default().enabled);
+        assert_eq!(example.format.rules, RulesConfig::default());
+    }
+
+    #[test]
     fn test_load_config_missing_file() {
         let result = load_config(Some(Path::new("/tmp/nonexistent-dictate-config.toml")));
         assert!(result.is_ok());
