@@ -317,6 +317,7 @@ impl Pipeline {
             }
             () = stop.notified() => {}
             () = self.auto_stop(&handle, &token), if matches!(handle.mode(), DictationMode::OneShot | DictationMode::WakeWord) => {}
+            () = self.meter(&handle) => {}
         }
 
         let mut interaction = {
@@ -761,6 +762,25 @@ impl Pipeline {
             biased;
             () = token.cancelled() => Step::Cancelled,
             v = fut => Step::Continue(v),
+        }
+    }
+
+    /// Publish the input level ~30 times a second while recording, for HUD
+    /// meters (S32). Never completes: it only ever loses the recording
+    /// `select!`. A source that reports no level publishes nothing.
+    async fn meter(&self, handle: &SessionHandle) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(33));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Some(level) = self.audio.level() {
+                handle.publish(Event::AudioLevel {
+                    session_id: handle.id().clone(),
+                    rms: level.rms,
+                    peak: Some(level.peak),
+                    at_ms: None,
+                });
+            }
         }
     }
 
