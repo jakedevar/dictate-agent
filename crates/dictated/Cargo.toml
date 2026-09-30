@@ -11,6 +11,17 @@ path = "src/lib.rs"
 name = "dictated"
 path = "src/main.rs"
 
+[features]
+# Real-hardware end-to-end tests (`tests/e2e_real.rs`): real Whisper on CUDA with
+# the installed model, real Silero VAD, a real in-process daemon. Off by default
+# so no ordinary `cargo test` needs a GPU or a model; run with `just e2e`.
+e2e-real = []
+
+[[test]]
+name = "e2e_real"
+path = "tests/e2e_real.rs"
+required-features = ["e2e-real"]
+
 [dependencies]
 anyhow = { workspace = true }
 dictate-core = { workspace = true }

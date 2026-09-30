@@ -354,6 +354,39 @@ impl Client {
         .await
     }
 
+    /// As [`Client::request`], with a caller-chosen timeout — for operations that
+    /// legitimately take longer than the suite's default (hashing a model file).
+    pub async fn request_within(
+        &mut self,
+        timeout: Duration,
+        command: Command,
+    ) -> Result<CommandResult, ProtoError> {
+        let id = RequestId::Number(self.next_id);
+        self.next_id += 1;
+        self.send(&Message::request(id.clone(), command)).await;
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self.read_message().await.expect("connection closed") {
+                    Message::Response(r) if r.id == id => {
+                        return match r.outcome {
+                            dictate_proto::Outcome::Result(v) => Ok(v),
+                            dictate_proto::Outcome::Error(e) => Err(e),
+                        }
+                    }
+                    Message::Event(e) => {
+                        if let Event::StateChanged { to, .. } = &e.event {
+                            self.seen_states.push(to.clone());
+                        }
+                        self.pending_events.push_back(e.event);
+                    }
+                    other => panic!("unexpected message {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for a response"))
+    }
+
     pub async fn handshake(&mut self) -> ServerHello {
         let hello = dictate_proto::Hello::new(dictate_proto::ClientInfo::new(
             "test-client",
