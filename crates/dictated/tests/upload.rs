@@ -136,7 +136,15 @@ async fn the_response_to_an_upload_is_its_transcript() {
     );
     assert!(matches!(t.timings.vad, StageTiming::Ran { .. }));
     assert!(matches!(t.timings.stt, StageTiming::Ran { .. }));
-    assert!(t.timings.total_ms.is_some());
+    // The documented invariant: the measured total is at least the sum of the
+    // stages (the gap is scheduling). Decoding happens before the session
+    // starts, so the total must include the `capture` stage explicitly.
+    let total = t.timings.total_ms.expect("total is reported");
+    assert!(
+        total >= t.timings.measured_ms() - 1e-6,
+        "total {total} ms is less than the stages' {} ms",
+        t.timings.measured_ms()
+    );
     assert!(
         t.timings
             .audio_ms

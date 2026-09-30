@@ -934,7 +934,12 @@ impl Pipeline {
             _ => {}
         }
 
-        let timings = stages.finish(outcome.audio_ms);
+        let mut timings = stages.finish(outcome.audio_ms);
+        // An upload's audio was decoded before the session existed; that cost
+        // is in the `capture` stage, so it belongs in the total as well.
+        if let (Some(audio), Some(total)) = (handle.supplied_audio(), timings.total_ms.as_mut()) {
+            *total += audio.prepare_ms;
+        }
         let mut transcript = outcome.transcript;
         if let Some(t) = transcript.as_mut() {
             t.timings = timings.clone();

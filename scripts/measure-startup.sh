@@ -42,6 +42,16 @@ ps -o %cpu=,rss= -p $pid | awk '{print "cpu% since start    : " $1 "  (avg incl.
 for c in short medium long; do
   target/release/dictate transcribe crates/dictated/tests/fixtures/e2e/$c.wav --privacy 2>&1 >/dev/null | sed "s/^/first $c: /"
 done
+# The decode+resample cost of realistic uploads (needs sox): the fixtures are
+# already 16 kHz mono, so convert them to what a phone or a recorder produces.
+if command -v sox >/dev/null; then
+  for spec in "44100 2" "48000 2" "48000 1"; do
+    set -- $spec
+    sox crates/dictated/tests/fixtures/e2e/long.wav -r $1 -c $2 -b 16 $root/up.wav
+    printf 'long clip as %s Hz / %s ch (%s KB): ' $1 $2 $(( $(stat -c %s $root/up.wav) / 1024 ))
+    target/release/dictate transcribe $root/up.wav --privacy 2>&1 >/dev/null
+  done
+fi
 grep -E 'VmRSS|VmHWM' /proc/$pid/status | tr '\n' ' '; echo "(after transcribing)"
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | awk -F, -v p=$pid '$1+0==p {print "GPU memory after   : " $2+0 " MiB"}'
 # idle CPU over 10 s

@@ -272,6 +272,23 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
+/// Dot product with eight independent accumulators, so the multiply-adds are
+/// not one long dependency chain and the compiler can vectorise them. This is
+/// the resampler's entire inner loop.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut lanes = [0.0f32; 8];
+    let (chunks_a, chunks_b) = (a.chunks_exact(8), b.chunks_exact(8));
+    let (rest_a, rest_b) = (chunks_a.remainder(), chunks_b.remainder());
+    for (x, y) in chunks_a.zip(chunks_b) {
+        for i in 0..8 {
+            lanes[i] += x[i] * y[i];
+        }
+    }
+    let tail: f32 = rest_a.iter().zip(rest_b).map(|(x, y)| x * y).sum();
+    lanes.iter().sum::<f32>() + tail
+}
+
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
         (a, b) = (b, a % b);
@@ -342,13 +359,21 @@ pub fn resample_mono(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
             }
             w.into_iter().map(|v| v as f32).collect()
         });
-        let mut acc = 0.0f32;
-        for (t, w) in weights.iter().enumerate() {
-            let idx = base + t as i64 - half;
-            if idx >= 0 && (idx as usize) < input.len() {
-                acc += input[idx as usize] * w;
+        let start = base - half;
+        let acc = if start >= 0 && start as usize + taps <= input.len() {
+            // Interior: the whole window lies inside the signal.
+            dot(&input[start as usize..start as usize + taps], weights)
+        } else {
+            // Edges: the signal is zero outside its ends.
+            let mut acc = 0.0f32;
+            for (t, w) in weights.iter().enumerate() {
+                let idx = start + t as i64;
+                if idx >= 0 && (idx as usize) < input.len() {
+                    acc += input[idx as usize] * w;
+                }
             }
-        }
+            acc
+        };
         out.push(acc);
     }
     out
