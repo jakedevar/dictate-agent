@@ -372,7 +372,9 @@ number would conflate:
 
 `skipped` reasons: `disabled`, `below_min_words`, `route_not_eligible`,
 `not_supported`, `no_speech_detected`, `not_permitted`,
-`dependency_unavailable`, `cancelled`.
+`dependency_unavailable`, `cancelled`, `too_long` (S21: the input exceeded the
+stage's length limit — the LLM pass above `[format.llm.chunking] max_words` —
+and the previous stage's output was kept).
 
 `total_ms` is reported, not derived: it includes scheduling and queueing that
 belong to no single stage, so it is normally *greater* than the sum. The gap is

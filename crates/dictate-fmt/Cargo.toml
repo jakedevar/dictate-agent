@@ -3,9 +3,32 @@ name = "dictate-fmt"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Live LLM eval tier: `just eval-llm [model]` runs the corpus against a real
+# Ollama and can re-record the committed fixtures. Off by default — unit tests
+# need no network.
+eval-live = []
+# Optional local real-history tier: reads a history DB read-only and reports
+# aggregates only. Pulls in rusqlite, so it is separate from eval-live.
+eval-history = ["eval-live", "dep:rusqlite"]
+
 [dependencies]
 anyhow = { workspace = true }
 ollama-rs = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+# S21 LLM layer (src/llm/). `dictate-proto` supplies AppCategory/Tone/Route/
+# SkipReason (it depends on nothing in the workspace, so the direction stays
+# one-way). reqwest is already in the graph through ollama-rs and dictate-stt;
+# the thin client needs its async API, status codes and raw bodies.
+dictate-proto = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+regex = { workspace = true }
+toml = { workspace = true }
+rusqlite = { workspace = true, optional = true }
+
+[[example]]
+name = "eval_llm"
+required-features = ["eval-live"]

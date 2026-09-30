@@ -520,6 +520,12 @@ fn golden_stage_timings() {
         StageTiming::NotReported,
         json!({"status": "not_reported"}),
     );
+    // S21: the LLM pass skips inputs above its length limit.
+    pin(
+        "timings/skipped_too_long",
+        StageTiming::skipped(SkipReason::TooLong),
+        json!({"status": "skipped", "reason": "too_long"}),
+    );
     pin(
         "timings/failed",
         StageTiming::Failed {
@@ -691,6 +697,7 @@ fn golden_enum_vocabularies() {
                 "not_permitted",
                 "dependency_unavailable",
                 "cancelled",
+                "too_long",
             ],
         ),
         (

@@ -35,6 +35,12 @@ open_str_enum! {
         DependencyUnavailable => "dependency_unavailable",
         /// The session was cancelled before this stage was reached.
         Cancelled => "cancelled",
+        /// The input exceeded the stage's configured length limit, and the
+        /// pipeline kept the previous stage's output. The LLM formatting pass
+        /// uses it above `[format.llm.chunking] max_words`: decode time grows
+        /// linearly with length, so a very long dictation would otherwise
+        /// wait seconds for formatting.
+        TooLong => "too_long",
     }
 }
 
