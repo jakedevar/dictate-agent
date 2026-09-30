@@ -148,7 +148,9 @@ append in your own block; do not reorder or reformat others' entries.
   end ≤ 1.0 s for a 10 s utterance. Measure; do not assume.
 - **Quality gates for every slice:** `cargo test --workspace --all-targets`
   (no new failures, count ≥ base + new tests), `cargo clippy --workspace
-  --all-targets -- -D warnings`, `cargo fmt --all -- --check`, and
+  --all-targets -- -D warnings` plus the feature-gated targets
+  (`-p dictated --features e2e-real`, `-p dictate-context --features
+  x11-tests`), `cargo fmt --all -- --check`, and
   `cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'` empty (the
   hotkey CLI must not link the transcription stack).
 

@@ -56,6 +56,9 @@ slice section of
 ```bash
 cargo test --workspace --all-targets 2>&1 | tee /tmp/<slice>-test.log   # 0 failures
 cargo clippy --workspace --all-targets -- -D warnings
+# feature-gated targets are invisible to the line above; compile them too
+cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
+cargo clippy -p dictate-context --features x11-tests --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'          # must print nothing
 ```
