@@ -345,8 +345,13 @@ impl Formatter for GrammarFormatter {
 /// consent request. X11 is currently immediate, but keeping this boundary
 /// async avoids making a future consent flow a breaking redesign.
 pub trait TextInjector: Send + Sync + 'static {
-    /// Inject `text`, reporting what actually happened.
-    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome>;
+    /// Inject `text`, reporting what actually happened. An absent per-call
+    /// policy inherits the global default; overrides still obey backend caps.
+    fn inject(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+    ) -> BoxFuture<'_, InjectionOutcome>;
 
     /// Whether injection is possible here at all. `false` on a headless host,
     /// and the reason the outcome becomes `Unavailable` rather than `Failed`.
@@ -371,8 +376,12 @@ impl HostInjector {
 }
 
 impl TextInjector for HostInjector {
-    fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
-        let policy = self.inner.default_policy();
+    fn inject(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+    ) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = policy.unwrap_or_else(|| self.inner.default_policy());
         let inner = self.inner.clone();
         let text = text.to_owned();
         Box::pin(async move {
@@ -975,6 +984,7 @@ pub mod mock {
     #[derive(Debug)]
     pub struct MockInjector {
         injected: Arc<Mutex<Vec<String>>>,
+        policies: Arc<Mutex<Vec<Option<dictate_inject::InjectionPolicy>>>>,
         available: bool,
         availability_gate: Option<Arc<Gate>>,
         gate: Option<Arc<Gate>>,
@@ -985,6 +995,7 @@ pub mod mock {
         fn default() -> Self {
             Self {
                 injected: Arc::new(Mutex::new(Vec::new())),
+                policies: Arc::new(Mutex::new(Vec::new())),
                 available: true,
                 availability_gate: None,
                 gate: None,
@@ -994,6 +1005,13 @@ pub mod mock {
     }
 
     impl MockInjector {
+        /// Per-call policies observed by the double.
+        pub fn policies(&self) -> Vec<Option<dictate_inject::InjectionPolicy>> {
+            self.policies
+                .lock()
+                .expect("mock injector poisoned")
+                .clone()
+        }
         /// A working injector.
         #[must_use]
         pub fn new() -> Self {
@@ -1054,8 +1072,16 @@ pub mod mock {
     }
 
     impl TextInjector for MockInjector {
-        fn inject(&self, text: &str) -> BoxFuture<'_, InjectionOutcome> {
+        fn inject(
+            &self,
+            text: &str,
+            policy: Option<dictate_inject::InjectionPolicy>,
+        ) -> BoxFuture<'_, InjectionOutcome> {
             let text = text.to_string();
+            self.policies
+                .lock()
+                .expect("mock injector poisoned")
+                .push(policy);
             let injected = self.injected.clone();
             let gate = self.gate.clone();
             let available = self.available;
@@ -1087,7 +1113,11 @@ pub mod mock {
                         .expect("mock injector poisoned")
                         .push(text.to_string());
                     InjectionOutcome::Injected {
-                        method: InjectMethod::Paste,
+                        method: if policy == Some(dictate_inject::InjectionPolicy::Type) {
+                            InjectMethod::Keystroke
+                        } else {
+                            InjectMethod::Paste
+                        },
                         chars: text.trim().chars().count() as u32,
                     }
                 })
@@ -1225,7 +1255,7 @@ mod tests {
         use mock::MockInjector;
         let i = MockInjector::new();
         assert!(i.injected().is_empty());
-        let outcome = i.inject("hello there").await;
+        let outcome = i.inject("hello there", None).await;
         assert!(matches!(outcome, InjectionOutcome::Injected { .. }));
         assert_eq!(i.injected(), vec!["hello there".to_string()]);
     }

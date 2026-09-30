@@ -29,6 +29,7 @@ COMMANDS:
     stop                Stop recording and run the pipeline
     cancel              Abandon the current session, injecting nothing
     status              Show daemon and session state
+    context             Discover the focused app and resolved profile
     tail                Stream events until interrupted
     history             List past dictations, or purge with --purge
     dict                Personal dictionary (not implemented until S22)
@@ -112,6 +113,11 @@ async fn run() -> Result<i32> {
         }
         "status" => {
             let result = client.request(Command::GetStatus).await?;
+            render::result(&result, args.json);
+            Ok(0)
+        }
+        "context" => {
+            let result = client.request(Command::GetContext).await?;
             render::result(&result, args.json);
             Ok(0)
         }

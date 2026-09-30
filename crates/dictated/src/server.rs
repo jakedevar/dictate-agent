@@ -205,6 +205,9 @@ impl Conn {
     }
 
     fn wants(&self, event: &Event) -> bool {
+        if matches!(event, Event::ContextResolved { .. }) && !self.features().context_read {
+            return false;
+        }
         self.subscription
             .as_ref()
             .is_some_and(|filter| event.matches_filter(filter))
@@ -478,6 +481,10 @@ async fn dispatch(
             let status = deps.engine.status(capabilities).await?;
             Ok(CommandResult::Status(status))
         }
+
+        Command::GetContext => Ok(CommandResult::Context(Box::new(
+            deps.engine.get_context().await?,
+        ))),
 
         Command::Subscribe { events } => {
             conn.subscription = Some(events);

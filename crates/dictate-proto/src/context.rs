@@ -100,6 +100,43 @@ impl AppContext {
     }
 }
 
+open_str_enum! {
+    /// Per-app injection override; absent means inherit the global policy.
+    pub enum ContextInjection {
+        /// Clipboard paste, subject to backend capability downgrade.
+        Paste => "paste",
+        /// Direct keystrokes.
+        Type => "type",
+        /// Suppress host injection.
+        Off => "off",
+    }
+    default = Paste;
+}
+
+/// Immutable context decision shared by session consumers and discovery.
+/// Overrides remain optional so they do not accidentally disable global rules.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResolvedProfile {
+    /// None is the ordinary headless/Wayland baseline.
+    #[serde(default)]
+    pub context: Option<AppContext>,
+    /// Register; neutral unless a profile opts into a tone shift.
+    #[serde(default)]
+    pub tone: Tone,
+    /// Whether to run the LLM formatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_format: Option<bool>,
+    /// Per-call injection policy, absent to inherit the global default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject: Option<ContextInjection>,
+    /// Whether to translate spoken punctuation commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoken_punctuation: Option<bool>,
+    /// Whether to translate spoken line-break commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spoken_line_breaks: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

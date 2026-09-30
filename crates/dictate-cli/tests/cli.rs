@@ -133,6 +133,12 @@ async fn stub_daemon_with_command_count(
                         Command::Cancel => Ok(CommandResult::SessionCancelled {
                             session_id: dictate_proto::SessionId("stub-1".into()),
                         }),
+                        Command::GetContext => Ok(CommandResult::Context(Box::new(
+                            dictate_proto::ResolvedProfile {
+                                context: Some(dictate_proto::AppContext::new("synthetic-app")),
+                                ..Default::default()
+                            },
+                        ))),
                         other => Err(ProtoError::unsupported_command(other.name())),
                     };
                     let out = match result {
@@ -310,4 +316,20 @@ async fn help_and_version_work_without_a_daemon() {
     let (code, stdout, _) = run_dictate(&missing, &["--version"]).await;
     assert_eq!(code, 0);
     assert!(stdout.starts_with("dictate "), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_is_one_protocol_request_and_renders_the_resolved_profile() {
+    let (socket, server, calls) = stub_daemon_with_command_count(State::Idle).await;
+    for args in [vec!["context"], vec!["context", "--json"]] {
+        let (code, stdout, stderr) = run_dictate(&socket, &args).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("synthetic-app"));
+        if args.contains(&"--json") {
+            let result: CommandResult = serde_json::from_str(stdout.trim()).unwrap();
+            assert!(matches!(result, CommandResult::Context(_)));
+        }
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    server.abort();
 }

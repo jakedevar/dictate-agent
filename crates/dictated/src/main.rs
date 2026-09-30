@@ -48,6 +48,7 @@ fn init_tracing() -> Result<()> {
         "dictate_fmt",
         "dictate_history",
         "dictate_inject",
+        "dictate_context",
         "dictated",
     ] {
         filter = filter.add_directive(format!("{target}=info").parse()?);
