@@ -10,10 +10,12 @@
 //! operation used by SIGUSR1 and avoiding a `get_status`-then-act race.
 
 mod client;
+mod doctor;
 mod render;
+mod upload;
 
 use anyhow::{bail, Result};
-use dictate_proto::{Command, DictationMode, Event, HistoryQuery};
+use dictate_proto::{Command, CommandResult, DictationMode, Event, HistoryQuery};
 
 use crate::client::Client;
 
@@ -32,6 +34,8 @@ COMMANDS:
     tail                Stream events until interrupted
     history             List past dictations, or purge with --purge
     dict                Personal dictionary (not implemented until S22)
+    transcribe <FILE>   Transcribe a WAV file through the daemon and print the text
+    doctor              Check every dependency and say how to fix what is broken
     model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
     model list          List catalog models and local verification state
 
@@ -42,6 +46,10 @@ OPTIONS:
     --purge             history: permanently delete all stored dictations
     --analytics         history: show WPM, daily words, and streaks
     --events <A,B>      tail: only these event types
+    --inject            transcribe: type the result into the focused window
+    --route <R>         transcribe: force a route (type, local, timer, ...)
+    --privacy           transcribe: persist nothing about this session
+    --quick             doctor: skip the slow checks (hashing the model file)
     --json              print raw protocol JSON instead of a summary
     --socket <PATH>     override the control socket
     -h, --help          this help
@@ -86,6 +94,9 @@ async fn run() -> Result<i32> {
     if command == "model" {
         return model(&args);
     }
+    if command == "doctor" {
+        return doctor(&args).await;
+    }
     let mut client = Client::connect_default().await?;
 
     match command.as_str() {
@@ -118,12 +129,66 @@ async fn run() -> Result<i32> {
         "tail" => tail(&mut client, &args).await,
         "history" => history(&mut client, &args).await,
         "dict" => dict(&mut client, &args).await,
+        "transcribe" => {
+            let Some(file) = args.file.clone() else {
+                eprintln!("dictate: transcribe needs a WAV file\n");
+                eprint!("{USAGE}");
+                return Ok(2);
+            };
+            upload::run(
+                &mut client,
+                &upload::TranscribeArgs {
+                    file,
+                    inject: args.inject,
+                    route: args.route.clone(),
+                    privacy: args.privacy,
+                    json: args.json,
+                },
+            )
+            .await
+        }
         other => {
             eprintln!("dictate: unknown command '{other}'\n");
             eprint!("{USAGE}");
             Ok(2)
         }
     }
+}
+
+/// `dictate doctor`: run the daemon's self-diagnosis and say how to fix what
+/// it finds. Works with no daemon at all — that is the first thing it reports.
+async fn doctor(args: &Args) -> Result<i32> {
+    let report = match Client::connect_default().await {
+        Err(e) => doctor::unreachable_report(&e),
+        Ok(mut client) => {
+            let daemon = doctor::daemon_check(&mut client).await;
+            match client
+                .try_request(Command::Diagnose { quick: args.quick })
+                .await?
+            {
+                Ok(CommandResult::Diagnostics(mut report)) => {
+                    report.checks.insert(0, daemon);
+                    *report
+                }
+                Ok(other) => bail!("expected diagnostics, the daemon answered {}", other.name()),
+                Err(e) => {
+                    // An older daemon has no `diagnose`; say so instead of
+                    // pretending the machine is healthy.
+                    bail!(
+                        "the daemon cannot run diagnostics: {} ({}) — is it an older build?",
+                        e.message,
+                        e.code.as_str()
+                    )
+                }
+            }
+        }
+    };
+    if args.json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        print!("{}", doctor::render(&report));
+    }
+    Ok(i32::from(doctor::is_failure(&report)))
 }
 
 /// Atomically start if idle, or stop if recording.
@@ -297,6 +362,11 @@ struct Args {
     events: Option<String>,
     socket: Option<String>,
     errors: bool,
+    file: Option<String>,
+    route: Option<String>,
+    inject: bool,
+    privacy: bool,
+    quick: bool,
     purge: bool,
     analytics: bool,
     json: bool,
@@ -314,6 +384,15 @@ impl Args {
                 "-V" | "--version" => out.version = true,
                 "--json" => out.json = true,
                 "--errors" => out.errors = true,
+                "--inject" => out.inject = true,
+                "--privacy" => out.privacy = true,
+                "--quick" => out.quick = true,
+                "--route" => {
+                    out.route = Some(
+                        args.next()
+                            .ok_or_else(|| anyhow::anyhow!("--route needs a value"))?,
+                    )
+                }
                 "--purge" => out.purge = true,
                 "--analytics" => out.analytics = true,
                 "--limit" => {
@@ -349,6 +428,9 @@ impl Args {
                 }
                 other if out.command.as_deref() == Some("model") && out.model_name.is_none() => {
                     out.model_name = Some(other.to_string())
+                }
+                other if out.command.as_deref() == Some("transcribe") && out.file.is_none() => {
+                    out.file = Some(other.to_string())
                 }
                 other => bail!("unexpected argument '{other}'"),
             }
@@ -422,6 +504,41 @@ mod tests {
         assert_eq!(pull.model_name.as_deref(), Some("tiny.en"));
         let list = parse(&["model", "list"]).unwrap();
         assert_eq!(list.model_action.as_deref(), Some("list"));
+    }
+
+    #[test]
+    fn transcribe_takes_a_file_and_its_flags() {
+        let a = parse(&[
+            "transcribe",
+            "clip.wav",
+            "--json",
+            "--inject",
+            "--route",
+            "type",
+            "--privacy",
+        ])
+        .unwrap();
+        assert_eq!(a.command.as_deref(), Some("transcribe"));
+        assert_eq!(a.file.as_deref(), Some("clip.wav"));
+        assert!(a.json && a.inject && a.privacy);
+        assert_eq!(a.route.as_deref(), Some("type"));
+
+        // Flags may come first, like every other subcommand.
+        let b = parse(&["--inject", "transcribe", "clip.wav"]).unwrap();
+        assert_eq!(b.file.as_deref(), Some("clip.wav"));
+        assert!(!parse(&["transcribe", "clip.wav"]).unwrap().inject);
+    }
+
+    #[test]
+    fn transcribe_flags_missing_a_value_or_a_second_file_are_errors() {
+        assert!(parse(&["transcribe", "a.wav", "--route"]).is_err());
+        assert!(parse(&["transcribe", "a.wav", "b.wav"]).is_err());
+    }
+
+    #[test]
+    fn doctor_accepts_quick_and_json() {
+        let a = parse(&["doctor", "--quick", "--json"]).unwrap();
+        assert!(a.quick && a.json);
     }
 
     #[test]

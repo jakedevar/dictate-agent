@@ -128,6 +128,16 @@ fn print_status(status: &Status) {
     }
 }
 
+/// The one-line route/injection/timing summary that follows a transcript.
+pub fn transcript_summary(t: &Transcript) -> String {
+    format!(
+        "route {}  {}  {}",
+        t.route.as_str(),
+        injection(&t.injection),
+        timings(&t.timings)
+    )
+}
+
 fn print_transcript(t: &Transcript) {
     println!("{}", t.text.as_str());
     println!(
