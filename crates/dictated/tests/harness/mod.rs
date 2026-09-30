@@ -30,6 +30,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
 
+/// Root for per-test unix-socket directories.
+///
+/// `sockaddr_un` caps a socket path at 108 bytes. Sandboxed runners routinely
+/// export a deep `TMPDIR` (the RSI harness uses an 83-byte one), which makes a
+/// socket under `temp_dir()` fail to bind with `InvalidInput` before a test
+/// even starts. Keep `temp_dir()` when it leaves room for this fixture's own
+/// `/<name>-<pid>-<n>/dictated.sock` components, and fall back to `/tmp`
+/// otherwise.
+fn socket_root() -> PathBuf {
+    let tmp = std::env::temp_dir();
+    if tmp.as_os_str().len() <= 48 {
+        tmp
+    } else {
+        PathBuf::from("/tmp")
+    }
+}
+
 /// Every await in these tests is bounded. A control-plane bug should fail as a
 /// clear assertion, not as a suite that hangs until CI times out.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
@@ -143,7 +160,7 @@ impl Harness {
         // harness's socket out from under it.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("dictated-it-{}-{n}", std::process::id()));
+        let dir = socket_root().join(format!("dictated-it-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

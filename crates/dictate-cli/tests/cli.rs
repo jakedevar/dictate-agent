@@ -18,6 +18,23 @@ use dictate_proto::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
+/// Root for per-test unix-socket directories.
+///
+/// `sockaddr_un` caps a socket path at 108 bytes. Sandboxed runners routinely
+/// export a deep `TMPDIR` (the RSI harness uses an 83-byte one), which makes a
+/// socket under `temp_dir()` fail to bind with `InvalidInput` before a test
+/// even starts. Keep `temp_dir()` when it leaves room for this fixture's own
+/// `/<name>-<pid>-<n>/dictated.sock` components, and fall back to `/tmp`
+/// otherwise.
+fn socket_root() -> PathBuf {
+    let tmp = std::env::temp_dir();
+    if tmp.as_os_str().len() <= 48 {
+        tmp
+    } else {
+        PathBuf::from("/tmp")
+    }
+}
+
 /// A daemon stub that answers the handshake and one command.
 ///
 /// Returns the socket path and a handle that keeps it alive.
@@ -37,7 +54,7 @@ async fn stub_daemon_with_command_count(
 ) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("dictate-cli-it-{}-{n}", std::process::id()));
+    let dir = socket_root().join(format!("dictate-cli-it-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let socket = dir.join("dictated.sock");
@@ -252,7 +269,7 @@ async fn a_command_the_daemon_does_not_support_fails_with_a_readable_message() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_daemon_is_reported_with_a_usable_hint() {
-    let missing = std::env::temp_dir().join("dictate-cli-nothing-here.sock");
+    let missing = socket_root().join("dictate-cli-nothing-here.sock");
     let _ = std::fs::remove_file(&missing);
     let (code, _, stderr) = run_dictate(&missing, &["status"]).await;
 
@@ -285,7 +302,7 @@ async fn an_unknown_subcommand_exits_two() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn help_and_version_work_without_a_daemon() {
-    let missing = std::env::temp_dir().join("dictate-cli-nothing-here-2.sock");
+    let missing = socket_root().join("dictate-cli-nothing-here-2.sock");
     let (code, stdout, _) = run_dictate(&missing, &["--help"]).await;
     assert_eq!(code, 0, "--help must not require a running daemon");
     assert!(stdout.contains("USAGE"));
