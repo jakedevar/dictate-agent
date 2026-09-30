@@ -494,10 +494,16 @@ async fn main() {
                     println!("  {f}");
                 }
             }
-            let out = args
-                .out
-                .clone()
-                .unwrap_or_else(|| default_out(&model, style.as_str()));
+            let out = match &args.out {
+                // One file per style when sweeping.
+                Some(p) if args.masks => p.with_file_name(format!(
+                    "{}-{}.json",
+                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("report"),
+                    style.as_str()
+                )),
+                Some(p) => p.clone(),
+                None => default_out(&model, style.as_str()),
+            };
             write_json(&out, &serde_json::json!({"report": report, "results": results}));
             if args.record {
                 let path = eval::recordings_path(&crate_dir().join("tests/eval/recordings"), &model);

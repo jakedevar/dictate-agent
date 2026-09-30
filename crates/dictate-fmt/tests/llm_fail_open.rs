@@ -395,7 +395,7 @@ async fn each_validator_rejects_and_fails_open() {
         (
             "/create_plan uh actually no /research_codebase first, look at the config",
             Terminal,
-            Box::new(|_| chat("⟦1⟧ ⟦2⟧ first, look at the config.")),
+            Box::new(|_| chat("<k1/> <k2/> first, look at the config.")),
             false,
             Validator::SpanCorrection,
         ),
@@ -443,8 +443,8 @@ async fn leading_slash_command_is_never_sent_and_paths_are_masked() {
         "/research_codebase I would like you to look at src/auth/session.rs and parse_token."
     );
     let sent = dictation(&fake.chat_requests()[0]);
-    assert_eq!(sent, "i would like you to look at ⟦1⟧ and ⟦2⟧");
-    for leaked in ["research", "/", "session", "parse_token"] {
+    assert_eq!(sent, "i would like you to look at <k1/> and <k2/>");
+    for leaked in ["research", "src/", "auth", "session", "parse_token"] {
         assert!(!sent.contains(leaked), "model saw {leaked:?}: {sent:?}");
     }
 }
@@ -467,7 +467,7 @@ async fn caller_spans_are_honoured_and_invalid_ones_fail_open() {
     };
     let out = f.format(&req).await;
     assert_eq!(out.text, "Tell kubernetes team the deploy failed.");
-    assert!(dictation(&fake.chat_requests()[0]).contains("⟦1⟧"));
+    assert!(dictation(&fake.chat_requests()[0]).contains("<k1/>"));
 
     let bad = LlmRequest {
         protected: vec![0..999],

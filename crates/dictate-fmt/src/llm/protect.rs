@@ -24,8 +24,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-/// Placeholder representation. See the research note for the evaluation
-/// that picked the default.
+/// Placeholder representation. [`super::DEFAULT_MASK`] records which one the
+/// evaluation picked and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskStyle {
     /// `⟦1⟧` — mathematical white square brackets. Rare in text, one or two

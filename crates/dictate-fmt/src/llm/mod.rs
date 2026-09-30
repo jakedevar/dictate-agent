@@ -157,8 +157,11 @@ impl std::fmt::Debug for LlmFormatter {
     }
 }
 
-/// The mask style chosen by the S21 evaluation (research note §Masking).
-pub const DEFAULT_MASK: MaskStyle = MaskStyle::Brackets;
+/// The mask style chosen by the S21 evaluation (research note §Masking):
+/// `<k1/>` had zero span rejections over 316 corpus + stress cases and the
+/// best stress-set pass rate, and inline XML placeholder tags are the
+/// convention models are trained to carry through (machine translation).
+pub const DEFAULT_MASK: MaskStyle = MaskStyle::XmlTag;
 
 /// A tiny synthetic dictation used to prime the prompt cache on warm-up.
 const PRIME_TEXT: &str = "okay thanks";
