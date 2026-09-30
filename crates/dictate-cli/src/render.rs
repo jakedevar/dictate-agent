@@ -32,6 +32,14 @@ pub fn result(result: &CommandResult, json: bool) {
             println!("cancelled  (session {})", session_id.as_str());
         }
         CommandResult::Status(status) => print_status(status),
+        CommandResult::Context(profile) => {
+            // JSON includes all overrides, making discovery useful for writing
+            // profiles without linking the context/X11 implementation.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(profile).expect("profile is serializable")
+            );
+        }
         CommandResult::History(page) => print_history(page),
         CommandResult::HistoryAnalytics(analytics) => print_history_analytics(analytics),
         CommandResult::Transcript(t) => print_transcript(t),
@@ -206,6 +214,13 @@ pub fn event(event: &Event, json: bool) {
             println!("{:<12} {activity:?}", "audio");
         }
         Event::Unknown => println!("{:<12} (from a newer daemon)", "unknown"),
+        Event::ContextResolved { context, .. } => {
+            println!(
+                "{:<12} {}",
+                "context",
+                context.as_ref().map_or("none", |c| c.app.as_str())
+            );
+        }
     }
 }
 

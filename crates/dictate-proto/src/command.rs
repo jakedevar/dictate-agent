@@ -57,6 +57,10 @@ pub enum Command {
     /// Report the current state, capabilities, and daemon information.
     GetStatus,
 
+    /// Discover the focused app and resolved profile. Local-only: titles can
+    /// contain private document names. Requires Features::context_read.
+    GetContext,
+
     /// Begin receiving events on this connection.
     Subscribe {
         /// Event type names to receive; empty means all of them.
@@ -195,6 +199,7 @@ impl Command {
             Self::Stop => "stop",
             Self::Cancel => "cancel",
             Self::GetStatus => "get_status",
+            Self::GetContext => "get_context",
             Self::Subscribe { .. } => "subscribe",
             Self::Unsubscribe => "unsubscribe",
             Self::GetConfig { .. } => "get_config",
@@ -265,6 +270,7 @@ impl Command {
             Self::BeginAudioStream { .. } | Self::EndAudioStream { .. } => features.streaming_audio,
 
             Self::GetConfig { .. } => features.config_read,
+            Self::GetContext => features.context_read,
             Self::SetConfig { .. } => features.config_write,
 
             Self::ListDictionary { .. } => features.dictionary_read,

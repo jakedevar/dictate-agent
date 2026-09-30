@@ -105,6 +105,9 @@ pub enum CommandResult {
     /// Boxed for layout only; invisible on the wire.
     Status(Box<Status>),
 
+    /// Focused application and the immutable profile decision for it.
+    Context(Box<crate::ResolvedProfile>),
+
     /// A session was created.
     SessionStarted {
         /// The new session.
@@ -191,6 +194,7 @@ impl CommandResult {
             Self::Ack => "ack",
             Self::Handshake(_) => "handshake",
             Self::Status(_) => "status",
+            Self::Context(_) => "context",
             Self::SessionStarted { .. } => "session_started",
             Self::SessionStopped { .. } => "session_stopped",
             Self::SessionCancelled { .. } => "session_cancelled",

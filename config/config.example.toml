@@ -133,3 +133,45 @@ release_grace_ms = 45
 # daemon must know whether a second press is coming, a normal release is
 # deferred for this long (or release_grace_ms, whichever is greater).
 double_tap_ms = 320
+
+# App context (S23). X11 focus is captured once, before audio starts. Headless
+# and Wayland (without a compositor adapter) use global defaults, with no title.
+# Every category uses neutral tone. Terminals disable LLM formatting and spoken
+# punctuation/line breaks by default, but keep the global Ctrl+V paste policy.
+[context]
+enabled = true
+# Profiles match in file order: first matching user profile wins, then browser
+# Gmail/Outlook title rules, then built-in class categories, then Other.
+# class/instance are case-insensitive exact matches or globs (* and ?).
+# title is a regex; all specified match fields must match. Supplied app IDs
+# from remote/upload clients have no title or instance. Unknown keys warn once
+# at load. Unknown values and invalid regexes fail with the profile name.
+# category: terminal | editor | browser | chat | email | document | other
+# tone: formal | neutral | casual | very_casual (tone shifts are opt-in)
+# Optional llm_format/spoken_punctuation/spoken_line_breaks: true | false;
+# absent inherits category/global defaults. inject: paste | type | off;
+# absent inherits output.policy. Paste still obeys backend capability downgrade.
+# No window titles are stored in history; privacy mode stores no context.
+# Use `dictate context` or `dictate context --json` to discover your app/profile.
+#
+# [[context.profiles]]
+# name = "slack-casual"
+# match = { class = "slack" }
+# category = "chat"
+# tone = "casual"
+#
+# [[context.profiles]]
+# name = "gmail-formal"
+# match = { class = "google-chrome", title = "(?i)gmail" }
+# category = "email"
+# tone = "formal"
+#
+# [[context.profiles]]
+# name = "claude-code"
+# match = { class = "com.mitchellh.ghostty", title = "(?i)claude" }
+# category = "terminal"
+# tone = "neutral"
+# llm_format = false
+# inject = "paste"
+# spoken_punctuation = false
+# spoken_line_breaks = false

@@ -691,7 +691,10 @@ dependencies = [
  "dictate-proto",
  "regex",
  "serde",
+ "serde_json",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "x11rb",
 ]
 
@@ -821,6 +824,7 @@ dependencies = [
  "signal-hook-tokio",
  "tokio",
  "tokio-stream",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

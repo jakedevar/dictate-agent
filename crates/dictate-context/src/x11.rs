@@ -135,7 +135,17 @@ impl X11Connection {
         let mut classes = class.value.split(|b| *b == 0);
         let instance = text(classes.next().unwrap_or_default());
         let class = text(classes.next().unwrap_or_default());
-        let title = text(&name.value).or_else(|| text(&old_name.value));
+        let title = text(&name.value).or_else(|| {
+            if old_name.type_ == u32::from(AtomEnum::STRING) {
+                // ICCCM STRING is ISO-8859-1, whereas _NET_WM_NAME is UTF-8.
+                (!old_name.value.is_empty())
+                    .then(|| old_name.value.iter().copied().map(char::from).collect())
+            } else if old_name.type_ == self.utf8 {
+                text(&old_name.value)
+            } else {
+                None
+            }
+        });
         let pid = pid
             .value32()
             .and_then(|mut values| values.next())
@@ -184,7 +194,7 @@ mod tests {
     }
     #[test]
     fn a_missing_display_returns_none_without_panicking() {
-        let context = X11Context::new(":54321".into());
+        let context = X11Context::new("invalid-display".into());
         assert_eq!(context.capture(), None);
         assert_eq!(context.capture(), None);
     }

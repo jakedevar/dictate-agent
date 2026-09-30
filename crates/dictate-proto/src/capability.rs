@@ -216,6 +216,10 @@ impl Capabilities {
 /// change: older peers read the new field as `false`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Features {
+    /// May discover host focus/titles and receive ContextResolved events.
+    /// Local-only; remote connections must never receive this capability.
+    #[serde(default)]
+    pub context_read: bool,
     /// This connection may cause text to be injected into the host's focused
     /// application. **False for every remote connection.**
     #[serde(default)]
@@ -298,6 +302,7 @@ impl Features {
     #[must_use]
     pub fn local_trusted() -> Self {
         Self {
+            context_read: true,
             text_injection: true,
             partial_transcripts: false,
             audio_level_events: true,

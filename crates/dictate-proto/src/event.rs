@@ -127,6 +127,14 @@ impl From<&str> for Hypothesis {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// Immutable app decision captured at session start, before transcription.
+    /// Only connections with context_read may receive this sensitive event.
+    ContextResolved {
+        /// The session this concerns.
+        session_id: SessionId,
+        /// None is the ordinary headless/remote baseline.
+        context: Option<crate::AppContext>,
+    },
     /// The session moved between states.
     StateChanged {
         /// The session this concerns.
@@ -245,6 +253,7 @@ impl Event {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
+            Self::ContextResolved { .. } => "context_resolved",
             Self::StateChanged { .. } => "state_changed",
             Self::Partial { .. } => "partial",
             Self::Final { .. } => "final",
@@ -260,6 +269,7 @@ impl Event {
     #[must_use]
     pub fn session_id(&self) -> Option<&SessionId> {
         match self {
+            Self::ContextResolved { session_id, .. } => Some(session_id),
             Self::StateChanged { session_id, .. }
             | Self::Partial { session_id, .. }
             | Self::Final { session_id, .. }

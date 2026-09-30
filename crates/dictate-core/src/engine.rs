@@ -101,6 +101,11 @@ pub enum EngineRequest {
         /// Where to send the answer.
         reply: oneshot::Sender<Box<Status>>,
     },
+    /// Discover current focus for a capability-checked local connection.
+    GetContext {
+        /// Resolved profile, including None on a headless host.
+        reply: oneshot::Sender<dictate_proto::ResolvedProfile>,
+    },
     /// A control connection went away.
     Disconnected {
         /// Which connection.
@@ -131,6 +136,10 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// Discovery only: callers must enforce Features::context_read.
+    pub async fn get_context(&self) -> Result<dictate_proto::ResolvedProfile, ProtoError> {
+        self.ask(|reply| EngineRequest::GetContext { reply }).await
+    }
     /// Subscribe to the event stream.
     #[must_use]
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Event> {
@@ -345,6 +354,9 @@ impl Engine {
                 } => {
                     let _ = reply.send(Box::new(self.status(*capabilities)));
                 }
+                EngineRequest::GetContext { reply } => {
+                    let _ = reply.send(self.pipeline.context.resolve(None, true));
+                }
                 EngineRequest::Disconnected {
                     client,
                     host_capture,
@@ -373,7 +385,7 @@ impl Engine {
         &mut self,
         actor: &Actor,
         mode: DictationMode,
-        options: ResolvedOptions,
+        mut options: ResolvedOptions,
     ) -> Result<SessionId, ProtoError> {
         // `max_concurrent_sessions` is 1. Two racing starts are not a data
         // race — they are simply ordered by the mailbox, and the second one
@@ -384,6 +396,9 @@ impl Engine {
                     .with_retry_after_ms(500),
             );
         }
+
+        // Capture on acceptance, before the first await can let focus move.
+        self.pipeline.resolve_context(&mut options);
 
         // Opening the device is awaited here, inside the serialized loop, so
         // that `session_started` is never reported for a microphone that is
@@ -680,6 +695,9 @@ pub fn resolve_options(
         allowed_routes: capabilities.routes.clone(),
         privacy: options.privacy.unwrap_or(false),
         app: options.app.clone(),
+        capture_context: capabilities.features.context_read && capabilities.features.host_capture,
+        context: None,
+        profile: Default::default(),
     })
 }
 

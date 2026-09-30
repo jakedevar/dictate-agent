@@ -1,6 +1,5 @@
 #![cfg(feature = "x11-tests")]
 use dictate_context::{ContextProvider, WindowInfo, X11Context};
-use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
@@ -17,17 +16,16 @@ impl Drop for Cleanup {
 
 #[test]
 fn private_xvfb_captures_properties_missing_focus_and_destroyed_windows_with_latency() {
+    let number = (30_000 + std::process::id() % 10_000..50_000)
+        .find(|n| {
+            !std::path::Path::new(&format!("/tmp/.X11-unix/X{n}")).exists()
+                && !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists()
+        })
+        .expect("unused private display number");
+    let display = format!(":{number}");
     let child = Command::new("Xvfb")
-        .args([
-            "-displayfd",
-            "1",
-            "-screen",
-            "0",
-            "800x600x24",
-            "-nolisten",
-            "tcp",
-        ])
-        .stdout(Stdio::piped())
+        .args([&display, "-screen", "0", "800x600x24", "-nolisten", "tcp"])
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
     let mut child = match child {
@@ -38,21 +36,21 @@ fn private_xvfb_captures_properties_missing_focus_and_destroyed_windows_with_lat
         }
         Err(e) => panic!("start private Xvfb: {e}"),
     };
-    // Xvfb chooses an unused display and reports only once ready. Bound startup.
-    let stdout = child.0.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        BufReader::new(stdout).read_line(&mut line).unwrap();
-        let _ = tx.send(line);
-    });
-    let number = rx
-        .recv_timeout(Duration::from_secs(3))
-        .expect("Xvfb ready display number");
-    let number: u32 = number.trim().parse().unwrap();
-    assert_ne!(number, 0, "test must never use :0");
-    let display = format!(":{number}");
-    let (conn, screen) = x11rb::connect(Some(&display)).unwrap();
+    let start = Instant::now();
+    let (conn, screen) = loop {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "private Xvfb exited before readiness"
+        );
+        if let Ok(connection) = x11rb::connect(Some(&display)) {
+            break connection;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "Xvfb did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let root = conn.setup().roots[screen].root;
     let active = conn
         .intern_atom(false, b"_NET_ACTIVE_WINDOW")
@@ -122,7 +120,7 @@ fn private_xvfb_captures_properties_missing_focus_and_destroyed_windows_with_lat
         window,
         AtomEnum::WM_NAME,
         AtomEnum::STRING,
-        b"Legacy fixture",
+        b"Legacy caf\xe9 fixture",
     )
     .unwrap()
     .check()
@@ -169,7 +167,7 @@ fn private_xvfb_captures_properties_missing_focus_and_destroyed_windows_with_lat
     conn.delete_property(window, name).unwrap().check().unwrap();
     assert_eq!(
         provider.capture().unwrap().title.as_deref(),
-        Some("Legacy fixture")
+        Some("Legacy café fixture")
     );
     conn.delete_property(window, AtomEnum::WM_CLASS.into())
         .unwrap()

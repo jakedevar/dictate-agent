@@ -11,7 +11,10 @@ x11-tests = []
 dictate-proto = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 x11rb = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }
+tracing-subscriber = { workspace = true }

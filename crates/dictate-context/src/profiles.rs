@@ -30,16 +30,19 @@ pub struct Profile {
 }
 
 #[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct RawConfig {
     enabled: bool,
-    profiles: Vec<RawProfile>,
+    profiles: Vec<serde_json::Value>,
+    #[serde(flatten)]
+    unknown: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
 }
 impl Default for RawConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             profiles: Vec::new(),
+            unknown: Default::default(),
         }
     }
 }
@@ -78,16 +81,27 @@ struct RawMatcher {
 impl<'de> Deserialize<'de> for ContextConfig {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = RawConfig::deserialize(d)?;
+        for key in raw.unknown.keys() {
+            tracing::warn!(section = "context", %key, "unknown configuration key");
+        }
         let mut profiles = Vec::with_capacity(raw.profiles.len());
-        for p in raw.profiles {
+        for value in raw.profiles {
+            // Decode each profile separately so even a type error (e.g. a
+            // string instead of a bool) carries its profile's name.
+            let name = value
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unnamed>");
+            let p: RawProfile = serde_json::from_value(value.clone())
+                .map_err(|e| D::Error::custom(format!("context profile {name:?}: {e}")))?;
             let invalid = |message: String| {
                 D::Error::custom(format!("context profile {:?}: {message}", p.name))
             };
             if p.name.trim().is_empty() {
                 return Err(invalid("name must not be empty".into()));
             }
-            if let Some(key) = p.unknown.keys().chain(p.matcher.unknown.keys()).next() {
-                return Err(invalid(format!("unknown key {key:?}")));
+            for key in p.unknown.keys().chain(p.matcher.unknown.keys()) {
+                tracing::warn!(profile = %p.name, %key, "unknown context profile key");
             }
             if p.category.as_ref().is_some_and(|v| !v.is_known())
                 || p.tone.as_ref().is_some_and(|v| !v.is_known())

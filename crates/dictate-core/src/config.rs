@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub use dictate_audio::AudioConfig;
+pub use dictate_context::ContextConfig;
 pub use dictate_fmt::GrammarConfig;
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
@@ -27,6 +28,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub timer: TimerConfig,
     pub hotkey: HotkeyConfig,
+    pub context: ContextConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -367,5 +369,26 @@ foo = "bar"
         assert!(result.is_ok());
         let config = result.unwrap();
         assert_eq!(config.whisper.device, "cuda"); // defaults
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn context_profiles_are_validated_by_aggregate_config_loading() {
+        let text =
+            "[context]\nenabled=true\n[[context.profiles]]\nname='broken'\nmatch={title='['}";
+        let error = toml::from_str::<Config>(text).unwrap_err().to_string();
+        assert!(error.contains("broken"), "{error}");
+        let config: Config = toml::from_str("[context]\nenabled=false").unwrap();
+        assert!(!config.context.enabled);
+    }
+    #[test]
+    fn documented_example_config_parses_with_context_defaults() {
+        let config: Config =
+            toml::from_str(include_str!("../../../config/config.example.toml")).unwrap();
+        assert!(config.context.enabled);
+        assert!(config.context.profiles.is_empty(), "examples are opt-in");
     }
 }

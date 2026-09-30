@@ -569,6 +569,7 @@ fn golden_result_handshake_capabilities() {
             "server": {"name": "dictated", "version": "0.2.0"},
             "capabilities": {
                 "features": {
+                    "context_read": false,
                     "text_injection": false,
                     "partial_transcripts": false,
                     "audio_level_events": true,
@@ -845,4 +846,60 @@ fn golden_context_enums() {
     ] {
         pin(wire, tone, json!(wire));
     }
+}
+
+#[test]
+fn golden_context_discovery_and_session_event() {
+    pin(
+        "command/get_context",
+        Command::GetContext,
+        json!({"type":"get_context"}),
+    );
+    let context = AppContext {
+        app: "ghostty".into(),
+        title: Some("Synthetic Claude fixture".into()),
+        category: AppCategory::Terminal,
+        profile: Some("coding".into()),
+    };
+    pin(
+        "event/context_resolved",
+        Event::ContextResolved {
+            session_id: "s1".into(),
+            context: Some(context.clone()),
+        },
+        json!({"type":"context_resolved","session_id":"s1","context":{"app":"ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"coding"}}),
+    );
+    pin(
+        "event/no_context",
+        Event::ContextResolved {
+            session_id: "s1".into(),
+            context: None,
+        },
+        json!({"type":"context_resolved","session_id":"s1","context":null}),
+    );
+    pin(
+        "result/context",
+        CommandResult::Context(Box::new(ResolvedProfile {
+            context: Some(context),
+            tone: Tone::Neutral,
+            llm_format: Some(false),
+            inject: Some(ContextInjection::Paste),
+            spoken_punctuation: Some(false),
+            spoken_line_breaks: Some(false),
+        })),
+        json!({"type":"context","context":{"app":"ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"coding"},"tone":"neutral","llm_format":false,"inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}),
+    );
+    pin(
+        "result/no_context",
+        CommandResult::Context(Box::default()),
+        json!({"type":"context","context":null,"tone":"neutral"}),
+    );
+    pin("context/inject_policy", ContextInjection::Off, json!("off"));
+}
+
+#[test]
+fn context_discovery_is_deny_by_default_and_remote_connections_are_denied() {
+    assert!(!Command::GetContext.is_permitted(&Features::default()));
+    assert!(!Command::GetContext.is_permitted(&Features::remote_transcription_only()));
+    assert!(Command::GetContext.is_permitted(&Features::local_trusted()));
 }

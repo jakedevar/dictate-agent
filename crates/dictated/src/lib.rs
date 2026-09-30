@@ -159,6 +159,9 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     ));
 
     let pipeline = Arc::new(Pipeline {
+        context: Arc::new(dictate_core::ContextEngine::from_config(
+            config.context.clone(),
+        )),
         audio,
         stt,
         vad,
@@ -219,6 +222,7 @@ pub async fn run(config: Config) -> Result<()> {
         allowed_routes: capabilities.routes.clone(),
         privacy: false,
         app: None,
+        ..Default::default()
     };
 
     let daemon = Daemon::start(pipeline, history, &runtime, capabilities, Some(pid)).await?;

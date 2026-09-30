@@ -61,6 +61,7 @@ pub async fn within<T>(what: &str, fut: impl std::future::Future<Output = T>) ->
 
 /// How a harness should be configured.
 pub struct Setup {
+    pub context: Arc<dictate_core::ContextEngine>,
     pub stt: Arc<dyn SttProvider>,
     pub injector: Arc<MockInjector>,
     pub audio: Arc<MockAudio>,
@@ -68,6 +69,7 @@ pub struct Setup {
     pub vad: Arc<dyn VoiceActivityGate>,
     pub capabilities: Capabilities,
     pub history_enabled: bool,
+    pub history_privacy: bool,
     pub media: Arc<dyn MediaController>,
     pub earcons: Arc<dyn AudioFeedback>,
 }
@@ -75,6 +77,7 @@ pub struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         Self {
+            context: Arc::new(dictate_core::ContextEngine::disabled()),
             stt: Arc::new(MockStt::returning("hello there")),
             injector: Arc::new(MockInjector::new()),
             audio: Arc::new(MockAudio::with_seconds(1.5)),
@@ -89,6 +92,7 @@ impl Default for Setup {
             ),
             capabilities: dictated::server::local_capabilities(true),
             history_enabled: false,
+            history_privacy: false,
             media: Arc::new(NullMedia),
             earcons: Arc::new(NullEarcons),
         }
@@ -167,6 +171,7 @@ impl Harness {
         let history = Arc::new(Mutex::new(
             HistoryStore::new(&HistoryConfig {
                 enabled: setup.history_enabled,
+                privacy_mode: setup.history_privacy,
                 db_path: dir.join("history.db").to_string_lossy().into_owned(),
                 max_response_length: 10_000,
                 ..Default::default()
@@ -176,6 +181,7 @@ impl Harness {
         let notifier = Arc::new(RecordingNotifier::default());
 
         let pipeline = Arc::new(Pipeline {
+            context: setup.context,
             audio: setup.audio.clone(),
             stt: setup.stt.clone(),
             vad: setup.vad.clone(),

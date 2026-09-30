@@ -145,7 +145,8 @@ fn invalid_profile_values_report_the_profile_name_at_load() {
         "match = { class = '*' }\ninject = 'typo'",
         "match = {}",
         "match = { clas = '*' }",
-        "match = { class = '*' }\nllm_formt = false",
+        "match = { class = '*' }\nllm_format = 'false'",
+        "match = { class = 123 }",
     ] {
         let text = format!("[[profiles]]\nname = 'broken-profile'\n{setting}");
         let e = toml::from_str::<ContextConfig>(&text)
@@ -221,4 +222,42 @@ fn caller_app_and_remote_sessions_never_capture_host_titles() {
         "slack",
         "resolved decisions must remain immutable"
     );
+}
+
+#[test]
+fn unknown_context_keys_warn_once_at_load_with_the_profile_name() {
+    use std::io::Write;
+    use std::sync::Mutex;
+    #[derive(Clone)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Sink(bytes.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || sink.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let c = config("enabled=true\nunknown_option=true\n[[profiles]]\nname='named-profile'\nmatch={class='slack'}\nunknown_override=true\ninject='off'");
+        for _ in 0..3 {
+            assert_eq!(
+                c.resolve(Some(&window("slack", "slack", "synthetic")))
+                    .inject,
+                Some(ContextInjection::Off)
+            );
+        }
+    });
+    let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert_eq!(log.matches("unknown_option").count(), 1, "{log}");
+    assert_eq!(log.matches("unknown_override").count(), 1, "{log}");
+    assert!(log.contains("named-profile"), "{log}");
 }

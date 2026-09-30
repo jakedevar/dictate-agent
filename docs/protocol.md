@@ -589,3 +589,37 @@ missing context as an ordinary input with a defined default, never as an error.
 - [ ] Reject oversized `payload_len` before allocating
 - [ ] Populate `capabilities.routes` explicitly
 - [ ] Report every stage timing, using `skipped`/`not_reported` rather than zero
+
+### App context and profiles (S23)
+
+`get_context` is an additive discovery command requiring `features.context_read`.
+Trusted local connections receive this capability; remote connections do not.
+The response is `{"type":"context","context":null,"tone":"neutral"}` when
+focus is unavailable/disabled, or includes an `AppContext` and the resolved
+profile overrides, for example:
+
+```json
+{"type":"context","context":{"app":"com.mitchellh.ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"claude-code"},"tone":"neutral","llm_format":false,"inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}
+```
+
+Overrides are optional: omitted means inherit category/global configuration.
+`inject` accepts `paste`, `type`, or `off`. All category tones are neutral;
+terminal defaults disable LLM formatting and spoken punctuation/line breaks,
+while inheriting the configured paste policy. A profile may override these.
+The thin `dictate context [--json]` CLI sends only this protocol command.
+
+Sessions publish an additive `context_resolved` event before `transcribing`:
+
+```json
+{"type":"context_resolved","session_id":"s1","context":{"app":"slack","title":"Synthetic chat fixture","category":"chat"}}
+```
+
+`context` is explicitly `null` when absent. Focus/profile resolution happens
+once at local session acceptance, before opening audio, and is immutable for
+that session. Caller-supplied `SessionOptions.app` resolves without a host
+window title; uploads and remote clients must never query host focus.
+`ContextResolved` events are withheld entirely from connections lacking
+`context_read`, including subscribers to all events. Context titles are
+sensitive. History stores only the stable app ID; privacy mode persists no
+context. Wayland compositor adapters are deferred; absent context follows the
+same default path as headless operation.

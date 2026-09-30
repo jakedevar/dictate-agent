@@ -155,9 +155,15 @@ pub struct ResolvedOptions {
     pub allowed_routes: Vec<Route>,
     /// Suppress persistence of transcript text for this session.
     pub privacy: bool,
-    /// Caller-supplied app context; S23 will populate this from focus when it
-    /// is absent, but remote clients may already know their target app.
+    /// Caller-supplied app ID; it resolves without querying host focus/titles.
     pub app: Option<String>,
+    /// Host focus may only be read for trusted local live capture sessions.
+    /// Upload callers must set this false before resolving context.
+    pub capture_context: bool,
+    /// Immutable context snapshot; filled before the first device await.
+    pub context: Option<dictate_proto::AppContext>,
+    /// Resolved overrides consumed by formatting and injection.
+    pub profile: dictate_proto::ResolvedProfile,
 }
 
 impl Default for ResolvedOptions {
@@ -168,6 +174,9 @@ impl Default for ResolvedOptions {
             allowed_routes: Route::known().to_vec(),
             privacy: false,
             app: None,
+            capture_context: true,
+            context: None,
+            profile: dictate_proto::ResolvedProfile::default(),
         }
     }
 }
@@ -185,6 +194,8 @@ pub struct PipelineOutcome {
 
 /// Everything a session needs to run, shared by `Arc` across session tasks.
 pub struct Pipeline {
+    /// Bounded focus provider and validated profiles.
+    pub context: Arc<dictate_context::ContextEngine>,
     /// Microphone.
     pub audio: Arc<dyn AudioSource>,
     /// Recognizer.
@@ -211,6 +222,20 @@ pub struct Pipeline {
     pub local_model: String,
 }
 
+/// Wire profile policy mapped to the existing capability-aware injector.
+fn context_policy(
+    profile: &dictate_proto::ResolvedProfile,
+) -> Option<dictate_inject::InjectionPolicy> {
+    use dictate_inject::InjectionPolicy;
+    use dictate_proto::ContextInjection;
+    match profile.inject.as_ref() {
+        Some(ContextInjection::Paste) => Some(InjectionPolicy::Paste),
+        Some(ContextInjection::Type) => Some(InjectionPolicy::Type),
+        Some(ContextInjection::Off | ContextInjection::Unknown(_)) => Some(InjectionPolicy::Off),
+        None => None,
+    }
+}
+
 /// The result of one stage that may have been cut short.
 enum Step<T> {
     Continue(T),
@@ -218,6 +243,14 @@ enum Step<T> {
 }
 
 impl Pipeline {
+    /// Resolve once at session acceptance, before audio/media can move focus.
+    /// Headless/upload consumers call this with capture_context = false.
+    pub fn resolve_context(&self, options: &mut ResolvedOptions) {
+        options.profile = self
+            .context
+            .resolve(options.app.as_deref(), options.capture_context);
+        options.context = options.profile.context.clone();
+    }
     /// Run one session to a terminal state.
     ///
     /// The session begins in `Recording` (the engine has already opened the
@@ -232,6 +265,11 @@ impl Pipeline {
     ) -> PipelineOutcome {
         let mut stages = Stages::new();
         let token = handle.token().clone();
+
+        handle.publish(Event::ContextResolved {
+            session_id: handle.id().clone(),
+            context: opts.context.clone(),
+        });
 
         self.notifier.notify(Notice::Recording);
         self.earcon(&handle, EarconCue::Start, AudioActivity::EarconStart);
@@ -269,7 +307,11 @@ impl Pipeline {
             store.begin()
         };
         interaction.no_store = opts.privacy;
-        interaction.app_context = opts.app.clone();
+        interaction.app_context = if opts.privacy {
+            None
+        } else {
+            opts.context.as_ref().map(|c| c.app.clone())
+        };
         interaction.stt_model = Some(self.stt.model().name);
 
         // --- Capture flush --------------------------------------------------
@@ -836,6 +878,12 @@ impl Pipeline {
             stages.timings.inject = StageTiming::skipped(SkipReason::NotPermitted);
             return Step::Continue(InjectionOutcome::Delivered);
         }
+        if context_policy(&opts.profile) == Some(dictate_inject::InjectionPolicy::Off) {
+            stages.timings.inject = StageTiming::skipped(SkipReason::Disabled);
+            return Step::Continue(InjectionOutcome::Skipped {
+                reason: SkipReason::Disabled,
+            });
+        }
         // Probing the backend can block — a Wayland portal check is IPC — so
         // it goes to the blocking pool rather than stalling an async worker.
         // It also runs *before* the commit point, which is what keeps a cancel
@@ -871,7 +919,10 @@ impl Pipeline {
         // X11 performs its clipboard/key work on the blocking pool inside its
         // adapter. Portal backends instead await an authorization response;
         // keeping the port async preserves both contracts.
-        let outcome = self.injector.inject(text).await;
+        let outcome = self
+            .injector
+            .inject(text, context_policy(&opts.profile))
+            .await;
         drop(guard);
 
         stages.timings.inject = match &outcome {

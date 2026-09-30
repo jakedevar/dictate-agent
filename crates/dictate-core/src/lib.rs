@@ -44,3 +44,8 @@ pub use engine::{resolve_options, Engine, EngineHandle, ToggleOutcome};
 pub use event_bus::EventBus;
 pub use pipeline::{Pipeline, PipelineOutcome, ResolvedOptions};
 pub use session::{Actor, ClientId, ClientIdGen, SessionHandle, SessionOwner};
+
+pub use dictate_context::{
+    ContextConfig, ContextEngine, ContextProvider, NoContext, TestContext, WindowInfo,
+};
+pub use dictate_inject::InjectionPolicy;
