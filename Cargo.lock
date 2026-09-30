@@ -685,12 +685,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-context"
+version = "0.2.0"
+dependencies = [
+ "dictate-proto",
+ "regex",
+ "serde",
+ "toml",
+ "x11rb",
+]
+
+[[package]]
 name = "dictate-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
  "dictate-audio",
+ "dictate-context",
  "dictate-fmt",
  "dictate-history",
  "dictate-inject",

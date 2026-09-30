@@ -59,6 +59,7 @@ ollama-rs = { version = "0.3", features = ["stream"] }
 # Clipboard + keyboard
 arboard = "3"
 enigo = { version = "0.3", features = ["x11rb"] }
+x11rb = "0.13"
 
 # Desktop notifications
 notify-rust = "4"
@@ -75,6 +76,7 @@ evdev = "0.13"
 dictate-audio = { path = "crates/dictate-audio" }
 dictate-cli = { path = "crates/dictate-cli" }
 dictate-core = { path = "crates/dictate-core" }
+dictate-context = { path = "crates/dictate-context" }
 dictate-fmt = { path = "crates/dictate-fmt" }
 dictate-history = { path = "crates/dictate-history" }
 dictate-inject = { path = "crates/dictate-inject" }

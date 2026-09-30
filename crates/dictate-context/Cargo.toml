@@ -1,0 +1,17 @@
+[package]
+name = "dictate-context"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Live tests always allocate a private display; never read the user's desktop.
+x11-tests = []
+
+[dependencies]
+dictate-proto = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+x11rb = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
