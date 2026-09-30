@@ -272,8 +272,8 @@ impl Doctor {
             );
         }
 
-        // "cuda" is what was *requested* of whisper.cpp. Whether it actually
-        // ran on the GPU is a question for the driver.
+        // ModelInfo observes whisper.cpp initialization. Independently verify
+        // residency through the driver as a second diagnostic signal.
         match gpu_memory_of(std::process::id()).await {
             GpuProbe::Held(mib) => DiagnosticCheck::ok(
                 ID,
