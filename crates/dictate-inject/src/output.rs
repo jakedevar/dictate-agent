@@ -91,6 +91,16 @@ pub struct X11Injector {
     clipboard: Arc<Mutex<Option<Clipboard>>>,
 }
 
+impl std::fmt::Debug for X11Injector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("X11Injector")
+            .field("enabled", &self.enabled)
+            .field("default_policy", &self.default_policy)
+            .field("chunk_chars", &self.chunk_chars)
+            .finish_non_exhaustive()
+    }
+}
+
 impl X11Injector {
     #[must_use]
     pub fn new(config: &crate::config::OutputConfig) -> Self {
@@ -196,17 +206,7 @@ impl X11Injector {
         paste.claim()?;
         let paste_result = self.send_paste().and_then(|()| paste.transfer(text));
         let restore_result = saved.restore(clipboard);
-        match (paste_result, restore_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Ok(()), Err(restore_error)) => {
-                warn!("text was pasted, but clipboard restoration failed: {restore_error}");
-                Ok(())
-            }
-            (Err(paste_error), Ok(())) => Err(paste_error),
-            (Err(paste_error), Err(restore_error)) => Err(anyhow!(
-                "paste failed: {paste_error}; clipboard restoration also failed: {restore_error}"
-            )),
-        }
+        settle_paste(paste_result, restore_result)
     }
 
     fn send_paste(&self) -> Result<()> {
@@ -230,6 +230,22 @@ impl X11Injector {
             enigo.text(chunk)?;
         }
         Ok(())
+    }
+}
+
+// An error here enables the typing fallback. Once delivery succeeded, only
+// warn about restore errors: returning an error would duplicate the text.
+fn settle_paste(paste_result: Result<()>, restore_result: Result<()>) -> Result<()> {
+    match (paste_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(restore_error)) => {
+            warn!("text was pasted, but clipboard restoration failed: {restore_error}");
+            Ok(())
+        }
+        (Err(paste_error), Ok(())) => Err(paste_error),
+        (Err(paste_error), Err(restore_error)) => Err(anyhow!(
+            "paste failed: {paste_error}; clipboard restoration also failed: {restore_error}"
+        )),
     }
 }
 
@@ -315,6 +331,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_paste_restore_failure_never_enables_duplicate_typing() {
+        assert!(settle_paste(Ok(()), Err(anyhow!("restore unavailable"))).is_ok());
+    }
+
+    #[test]
+    fn failed_paste_enables_fallback_and_preserves_restore_failure_details() {
+        assert_eq!(
+            settle_paste(Err(anyhow!("no paste")), Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "no paste"
+        );
+        let error = settle_paste(Err(anyhow!("no paste")), Err(anyhow!("no restore")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no paste") && error.contains("no restore"));
+    }
 
     #[test]
     fn paste_policy_falls_back_to_type_without_clipboard_restore() {

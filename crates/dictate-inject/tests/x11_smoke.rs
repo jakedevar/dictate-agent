@@ -89,7 +89,9 @@ fn xvfb_xterm_pastes_and_restores_empty_text_html_and_png_clipboards() {
         xvfb,
         socket: socket.into(),
     };
-    for case in ["empty", "text", "png", "html", "long", "delayed", "direct"] {
+    for case in [
+        "empty", "text", "png", "html", "long", "delayed", "direct", "fallback",
+    ] {
         match case {
             "empty" => clipboard.clear().unwrap(),
             "png" => {
@@ -127,7 +129,11 @@ fn xvfb_xterm_pastes_and_restores_empty_text_html_and_png_clipboards() {
                 "-title",
                 &stamp,
                 "-xrm",
-                "XTerm*VT100.translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD)",
+                if case == "fallback" {
+                    "XTerm*VT100.translations: #override Ctrl<Key>v: ignore()"
+                } else {
+                    "XTerm*VT100.translations: #override Ctrl<Key>v: insert-selection(CLIPBOARD)"
+                },
                 "-e",
                 "bash",
                 "-c",
@@ -194,7 +200,7 @@ fn xvfb_xterm_pastes_and_restores_empty_text_html_and_png_clipboards() {
         );
         assert!(
             matches!(outcome, InjectionOutcome::Injected { ref method, .. }
-            if *method == if case == "direct" { InjectMethod::Keystroke } else { InjectMethod::Paste }),
+            if *method == if matches!(case, "direct" | "fallback") { InjectMethod::Keystroke } else { InjectMethod::Paste }),
             "{case}: {outcome:?}"
         );
         if let Some(resume) = resume {
