@@ -24,11 +24,26 @@
 //! # Capabilities are per connection
 //!
 //! Every connection negotiates its own [`Capabilities`] at handshake and they
-//! are never cached across transports. Today every connection is a local unix
-//! socket and gets [`Capabilities::local_trusted`] adjusted for what the host
-//! can actually do; S33's TCP listener will hand out
-//! `remote_transcription_only` from the same dispatch code.
+//! are never cached across transports. A unix-socket connection gets
+//! [`Capabilities::local_trusted`] adjusted for what the host can actually do;
+//! a network connection (S33, [`NetworkConnection`]) is offered the network
+//! grant instead, through this same dispatch code.
+//!
+//! # Network connections (S33)
+//!
+//! `dictate-server` owns the TCP transport; it executes every command through
+//! [`NetworkConnection`], which is a [`Conn`] driven by the same `process` and
+//! `dispatch` the socket uses. Three things differ, all decided here:
+//!
+//! - the handshake offers the network grant, and the connection is never the
+//!   owner, so [`restrict_to_owner`] withdraws config authority a second time;
+//! - events are forwarded only for sessions the connection started — a phone
+//!   must never receive the text of a dictation made at the desk;
+//! - `get_status` drops host detail (pid, audio device, formatter host).
+//!
+//! `raw_text` is redacted by capability on both transports.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -41,7 +56,8 @@ use dictate_core::EngineHandle;
 use dictate_history::HistoryStore;
 use dictate_proto::{
     Capabilities, ClientKind, Command, CommandResult, DiagnosticsReport, ErrorCode, Event,
-    Features, Message, ProtoError, RequestId, ServerHello, ServerInfo, State,
+    Features, Message, ProtoError, RequestId, ServerHello, ServerInfo, SessionId, State, Status,
+    Transcript,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -50,6 +66,9 @@ use tracing::{debug, error, info, warn};
 
 /// Message ceiling applied before a connection has negotiated its own limits.
 const PRE_HANDSHAKE_MAX_BYTES: usize = 64 * 1024;
+
+/// Sessions a network connection remembers starting, for event scoping.
+const OWNED_SESSIONS: usize = 16;
 
 /// Answers `diagnose`. A trait so the server does not depend on the daemon's
 /// configuration, and so tests can substitute a fixed report.
@@ -229,11 +248,21 @@ struct Conn {
     /// with `handshake_required` until then — a client must learn what it is
     /// allowed to do before doing it.
     capabilities: Option<Capabilities>,
-    /// The peer's effective uid matches the daemon's (`SO_PEERCRED`).
+    /// The peer's effective uid matches the daemon's (`SO_PEERCRED`). Always
+    /// `false` for a network connection.
     owner: bool,
     /// `None` when not subscribed; `Some(filter)` when subscribed, where an
     /// empty filter means every event.
     subscription: Option<Vec<String>>,
+    /// Arrived over the network API (S33): events are scoped to sessions this
+    /// connection started, and `get_status` is scrubbed of host detail.
+    network: bool,
+    /// Capabilities offered at handshake. `None` is the socket's default
+    /// (`ServerDeps::capabilities`); a network connection carries its grant.
+    offered: Option<Capabilities>,
+    /// Sessions this connection started, oldest first, at most
+    /// [`OWNED_SESSIONS`].
+    owned: VecDeque<SessionId>,
 }
 
 impl Conn {
@@ -263,9 +292,58 @@ impl Conn {
         if matches!(event, Event::ContextResolved { .. }) && !self.features().context_read {
             return false;
         }
+        // A network peer sees its own sessions and nothing else — not the
+        // desk's dictations, and not session-less bus errors.
+        if self.network && !event.session_id().is_some_and(|id| self.owned.contains(id)) {
+            return false;
+        }
         self.subscription
             .as_ref()
             .is_some_and(|filter| event.matches_filter(filter))
+    }
+
+    /// The event as this connection may see it, or `None` if it may not.
+    fn visible(&self, mut event: Event) -> Option<Event> {
+        if !self.wants(&event) {
+            return None;
+        }
+        if let Event::Final { transcript, .. } = &mut event {
+            redact_transcript(transcript, &self.features());
+        }
+        Some(event)
+    }
+
+    /// Remember a session this connection started.
+    fn record_owned(&mut self, session_id: SessionId) {
+        if self.owned.len() == OWNED_SESSIONS {
+            self.owned.pop_front();
+        }
+        self.owned.push_back(session_id);
+    }
+}
+
+/// Strip what the connection may not see from a transcript. `raw_text` is the
+/// recognizer's unformatted output — the most sensitive field a transcript
+/// carries — and is shown only to connections holding `Features::raw_text`.
+fn redact_transcript(transcript: &mut Transcript, features: &Features) {
+    if !features.raw_text {
+        transcript.raw_text = None;
+    }
+}
+
+/// Drop host detail a network peer has no use for: the pid (for signalling a
+/// local process), the audio device, the formatter's host and model, and any
+/// session it did not start. `state` stays: a peer needs it to avoid `busy`.
+fn scrub_for_network(status: &mut Status, owned: &VecDeque<SessionId>) {
+    status.daemon.pid = None;
+    status.audio = None;
+    status.formatter = None;
+    if status
+        .session
+        .as_ref()
+        .is_some_and(|s| !owned.contains(&s.session_id))
+    {
+        status.session = None;
     }
 }
 
@@ -283,6 +361,9 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
         capabilities: None,
         owner,
         subscription: None,
+        network: false,
+        offered: None,
+        owned: VecDeque::new(),
     };
 
     let result = connection_loop(&mut reader, &mut write_half, &mut events, &mut conn, &deps).await;
@@ -343,7 +424,7 @@ async fn connection_loop(
             }
             event = events.recv() => match event {
                 Ok(event) => {
-                    if conn.wants(&event) {
+                    if let Some(event) = conn.visible(event) {
                         write(write_half, &Message::event(event)).await?;
                     }
                 }
@@ -703,7 +784,10 @@ async fn dispatch(
             if let Some(on) = deps.config.as_ref().and_then(|c| c.running_privacy_mode()) {
                 capabilities.features.privacy_mode = on;
             }
-            let status = deps.engine.status(capabilities).await?;
+            let mut status = deps.engine.status(capabilities).await?;
+            if conn.network {
+                scrub_for_network(&mut status, &conn.owned);
+            }
             Ok(CommandResult::Status(status))
         }
 
@@ -854,7 +938,7 @@ async fn dispatch(
 async fn transcribe_audio(
     audio: dictate_proto::AudioSource,
     options: Option<dictate_proto::SessionOptions>,
-    conn: &Conn,
+    conn: &mut Conn,
     capabilities: &Capabilities,
     deps: &ServerDeps,
     hangup: &mut Hangup<'_>,
@@ -870,6 +954,10 @@ async fn transcribe_audio(
         .engine
         .transcribe(conn.actor(), supplied, resolved)
         .await?;
+    // Recorded before the outcome is awaited, so the session's events — which
+    // are forwarded only after this request is answered — are recognized as
+    // this connection's.
+    conn.record_owned(ticket.session_id.clone());
 
     let outcome = tokio::select! {
         biased;
@@ -887,7 +975,10 @@ async fn transcribe_audio(
     };
 
     match (outcome.state, outcome.transcript, outcome.error) {
-        (State::Done, Some(transcript), _) => Ok(CommandResult::Transcript(Box::new(transcript))),
+        (State::Done, Some(mut transcript), _) => {
+            redact_transcript(&mut transcript, &capabilities.features);
+            Ok(CommandResult::Transcript(Box::new(transcript)))
+        }
         (_, _, Some(error)) => Err(error),
         (State::Cancelled, ..) => Err(ProtoError::new(
             ErrorCode::Cancelled,
@@ -965,7 +1056,11 @@ fn handshake(
         "handshake"
     );
 
-    let granted = restrict_to_owner(deps.capabilities.clone(), conn.owner);
+    let offered = conn
+        .offered
+        .clone()
+        .unwrap_or_else(|| deps.capabilities.clone());
+    let granted = restrict_to_owner(offered, conn.owner);
     conn.capabilities = Some(granted.clone());
     Ok(CommandResult::Handshake(Box::new(ServerHello {
         protocol_version: negotiated,
@@ -973,6 +1068,108 @@ fn handshake(
         server: ServerInfo::new("dictated", env!("CARGO_PKG_VERSION")),
         capabilities: granted,
     })))
+}
+
+/// A control connection that arrived over the network API (S33) instead of the
+/// unix socket.
+///
+/// It is a [`Conn`] driven by the socket's own [`process`] and [`dispatch`]:
+/// same parser, same handshake, same `is_implemented` / `is_permitted` gates,
+/// same option resolution, upload decoding and session ownership. What makes
+/// it a *network* connection is decided at [`NetworkConnection::open`]: the
+/// grant it is offered, `owner = false`, and session-scoped events.
+///
+/// Dropping it is the disconnect: the engine is told, and an upload this
+/// connection still owns is cancelled — the same rule as a socket peer hanging
+/// up.
+pub struct NetworkConnection {
+    conn: Conn,
+    deps: Arc<ServerDeps>,
+    events: tokio::sync::broadcast::Receiver<Event>,
+}
+
+impl NetworkConnection {
+    /// A fresh, not-yet-handshaken connection offered `grant`.
+    ///
+    /// The id comes from the daemon's one [`ClientIdGen`], so a network peer
+    /// can never be mistaken for a socket peer's session owner.
+    #[must_use]
+    pub fn open(deps: Arc<ServerDeps>, grant: Capabilities) -> Self {
+        let id = deps.ids.next();
+        info!(%id, "network control connection opened");
+        let events = deps.engine.subscribe();
+        Self {
+            conn: Conn {
+                id,
+                capabilities: None,
+                owner: false,
+                subscription: None,
+                network: true,
+                offered: Some(grant),
+                owned: VecDeque::new(),
+            },
+            deps,
+            events,
+        }
+    }
+
+    /// Answer one envelope given as text, exactly as the socket answers one
+    /// line. `hangup` resolves if the peer goes away mid-request.
+    pub async fn handle_line(
+        &mut self,
+        line: &str,
+        hangup: impl std::future::Future<Output = ()> + Send,
+    ) -> Message {
+        let mut hangup: Hangup<'_> = Box::pin(hangup);
+        process(line, &mut self.conn, &self.deps, &mut hangup).await
+    }
+
+    /// Execute one typed command.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the socket would answer: `handshake_required`, `forbidden`,
+    /// `unsupported_command`, or the command's own failure.
+    pub async fn execute(
+        &mut self,
+        command: Command,
+        hangup: impl std::future::Future<Output = ()> + Send,
+    ) -> Result<CommandResult, ProtoError> {
+        let mut hangup: Hangup<'_> = Box::pin(hangup);
+        dispatch(command, &mut self.conn, &self.deps, &mut hangup).await
+    }
+
+    /// The next event this connection may see: subscribed, about one of its
+    /// own sessions, and redacted to its capabilities. `None` once the bus
+    /// closes. Cancel-safe.
+    pub async fn next_event(&mut self) -> Option<Event> {
+        loop {
+            match self.events.recv().await {
+                Ok(event) => {
+                    if let Some(event) = self.conn.visible(event) {
+                        return Some(event);
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    warn!(id = %self.conn.id, "network subscriber lagged; dropped {n} events");
+                }
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    }
+}
+
+impl Drop for NetworkConnection {
+    fn drop(&mut self) {
+        let engine = self.deps.engine.clone();
+        let id = self.conn.id;
+        // A network connection never has `host_capture`, so the engine
+        // cancels (rather than orphans) anything it owns.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { engine.disconnected(id, false).await });
+        }
+        info!(%id, "network control connection closed");
+    }
 }
 
 #[cfg(test)]
@@ -1049,6 +1246,9 @@ mod tests {
             capabilities: None,
             owner: true,
             subscription: None,
+            network: false,
+            offered: None,
+            owned: VecDeque::new(),
         };
         let event = Event::Error {
             session_id: None,
@@ -1064,6 +1264,9 @@ mod tests {
             capabilities: None,
             owner: true,
             subscription: Some(Vec::new()),
+            network: false,
+            offered: None,
+            owned: VecDeque::new(),
         };
         assert!(conn.wants(&Event::Error {
             session_id: None,
@@ -1078,6 +1281,9 @@ mod tests {
             capabilities: None,
             owner: true,
             subscription: Some(vec!["state_changed".into()]),
+            network: false,
+            offered: None,
+            owned: VecDeque::new(),
         };
         assert!(conn.wants(&Event::StateChanged {
             session_id: dictate_proto::SessionId("s".into()),
@@ -1234,5 +1440,115 @@ mod tests {
         assert_eq!(mode, 0o600);
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn network_conn(owned: &[&str]) -> Conn {
+        Conn {
+            id: ClientId(9),
+            capabilities: Some(Capabilities::remote_transcription_only()),
+            owner: false,
+            subscription: Some(Vec::new()),
+            network: true,
+            offered: None,
+            owned: owned.iter().map(|s| SessionId((*s).into())).collect(),
+        }
+    }
+
+    fn final_event(session: &str) -> Event {
+        let mut transcript = Transcript::delivered("Hello there.");
+        transcript.raw_text = Some("hello there".into());
+        Event::Final {
+            session_id: SessionId(session.into()),
+            transcript: Box::new(transcript),
+        }
+    }
+
+    #[test]
+    fn a_network_subscriber_sees_only_its_own_sessions() {
+        let conn = network_conn(&["mine"]);
+        assert!(conn.visible(final_event("mine")).is_some());
+        assert!(
+            conn.visible(final_event("the-desk")).is_none(),
+            "a phone must never receive a dictation made at the desk"
+        );
+        // Session-less bus errors belong to no one it owns.
+        assert!(conn
+            .visible(Event::Error {
+                session_id: None,
+                error: ProtoError::new(ErrorCode::Internal, "x"),
+            })
+            .is_none());
+        // A socket subscriber is unchanged: it sees everything it asked for.
+        let local = Conn {
+            network: false,
+            capabilities: Some(Capabilities::local_trusted()),
+            ..network_conn(&[])
+        };
+        assert!(local.visible(final_event("the-desk")).is_some());
+    }
+
+    #[test]
+    fn raw_text_follows_the_capability_on_every_transport() {
+        let conn = network_conn(&["mine"]);
+        match conn.visible(final_event("mine")) {
+            Some(Event::Final { transcript, .. }) => {
+                assert_eq!(transcript.raw_text, None);
+                assert_eq!(transcript.text.as_str(), "Hello there.");
+            }
+            other => panic!("expected a final event, got {other:?}"),
+        }
+        let mut granted = network_conn(&["mine"]);
+        granted.capabilities.as_mut().unwrap().features.raw_text = true;
+        match granted.visible(final_event("mine")) {
+            Some(Event::Final { transcript, .. }) => {
+                assert_eq!(transcript.raw_text.as_deref(), Some("hello there"));
+            }
+            other => panic!("expected a final event, got {other:?}"),
+        }
+        // Local connections hold the flag: unchanged behavior.
+        assert!(local_capabilities(true).features.raw_text);
+    }
+
+    #[test]
+    fn owned_sessions_are_bounded() {
+        let mut conn = network_conn(&[]);
+        for i in 0..(OWNED_SESSIONS + 5) {
+            conn.record_owned(SessionId(format!("s{i}")));
+        }
+        assert_eq!(conn.owned.len(), OWNED_SESSIONS);
+        assert!(conn
+            .owned
+            .contains(&SessionId(format!("s{}", OWNED_SESSIONS + 4))));
+        assert!(!conn.owned.contains(&SessionId("s0".into())));
+    }
+
+    #[test]
+    fn network_status_drops_host_detail_and_foreign_sessions() {
+        let status_json = serde_json::json!({
+            "state": "recording",
+            "session": {"session_id": "the-desk", "state": "recording", "mode": "toggle"},
+            "daemon": {"name": "dictated", "version": "0", "protocol_version": 1, "pid": 42},
+            "capabilities": {},
+            "audio": {"capture_enabled": true, "input_open": true},
+        });
+        let mut status: Status = serde_json::from_value(status_json).unwrap();
+        scrub_for_network(&mut status, &VecDeque::new());
+        assert_eq!(status.daemon.pid, None);
+        assert!(status.audio.is_none());
+        assert!(status.formatter.is_none());
+        assert!(status.session.is_none());
+        assert_eq!(
+            status.state,
+            State::Recording,
+            "state stays: it explains busy"
+        );
+
+        let mut own: Status = serde_json::from_value(serde_json::json!({
+            "session": {"session_id": "mine", "state": "transcribing"},
+            "daemon": {"name": "dictated", "version": "0", "protocol_version": 1},
+        }))
+        .unwrap();
+        scrub_for_network(&mut own, &[SessionId("mine".into())].into_iter().collect());
+        assert!(own.session.is_some(), "its own session is its business");
     }
 }

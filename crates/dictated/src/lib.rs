@@ -8,6 +8,10 @@
 //! - the **SIGUSR1/SIGUSR2 shim** that keeps `scripts/dictate-toggle` working
 //!   ([`signals`]).
 //!
+//! The optional **network API** (S33, `[api]`, off by default) is a third
+//! surface over the same dispatch: `dictate-server` owns the transport and
+//! [`network`] hands it connections that run through [`server`].
+//!
 //! It also owns the runtime paths ([`paths`]) that keep this daemon and the
 //! Python reference daemon from standing on each other while both are
 //! installed.
@@ -22,6 +26,7 @@
 
 pub mod config_rpc;
 pub mod doctor;
+pub mod network;
 pub mod paths;
 pub mod server;
 pub mod signals;
@@ -66,6 +71,11 @@ pub struct Daemon {
     engine_task: tokio::task::JoinHandle<()>,
     dictionary_flush: Option<tokio::task::JoinHandle<()>>,
     dictionary: Option<Arc<dictate_dict::Dictionary>>,
+    /// What every control connection shares; the network API (S33) opens its
+    /// connections over the same state.
+    deps: Arc<ServerDeps>,
+    /// The network API, when `[api]` enabled it.
+    api: Option<dictate_server::ApiServer>,
     /// Held for the daemon's lifetime; released on drop.
     _pid: Option<PidFile>,
 }
@@ -139,9 +149,10 @@ impl Daemon {
 
         let shutdown = Arc::new(Notify::new());
         let server_shutdown = shutdown.clone();
+        let server_deps = deps.clone();
         let server = tokio::spawn(async move {
             server
-                .serve(deps, async move { server_shutdown.notified().await })
+                .serve(server_deps, async move { server_shutdown.notified().await })
                 .await;
         });
 
@@ -165,6 +176,8 @@ impl Daemon {
         Ok(Self {
             dictionary_flush,
             dictionary,
+            deps,
+            api: None,
             socket,
             engine: handle,
             shutdown,
@@ -186,10 +199,48 @@ impl Daemon {
         &self.engine
     }
 
+    /// Start the network API (S33) as `[api]` describes, serving this
+    /// daemon's engine through the same dispatch as the socket. Returns the
+    /// bound address, or `None` when the API is disabled. Calling it again
+    /// while the API runs changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal in the security design (§4): a bind beyond loopback
+    /// without `allow_lan` and TLS or the tunnel acknowledgment, an
+    /// every-interface bind, a missing or insecure token, unusable TLS, or a
+    /// failed bind. The caller treats each as fatal.
+    pub async fn start_network_api(
+        &mut self,
+        api: &dictate_server::ApiConfig,
+    ) -> Result<Option<std::net::SocketAddr>, dictate_server::StartError> {
+        if let Some(running) = &self.api {
+            return Ok(Some(running.local_addr()));
+        }
+        let backend = Arc::new(network::NetworkBackend::new(self.deps.clone(), api));
+        self.api = dictate_server::ApiServer::start(api, backend).await?;
+        Ok(self.api.as_ref().map(dictate_server::ApiServer::local_addr))
+    }
+
+    /// The network API's address, while it is running.
+    #[must_use]
+    pub fn network_api_addr(&self) -> Option<std::net::SocketAddr> {
+        self.api.as_ref().map(dictate_server::ApiServer::local_addr)
+    }
+
     /// Stop accepting, cancel any session in flight, and wait for the tasks.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         info!("shutting down");
-        self.shutdown.notify_waiters();
+        // The network API first: its sessions are dropped (cancelling what
+        // they own) while the engine can still hear about it.
+        if let Some(api) = self.api.take() {
+            api.shutdown().await;
+        }
+        // `notify_one`, not `notify_waiters`: the socket server is the only
+        // waiter, and a stored permit reaches it even if it has not been
+        // polled since it was spawned (a daemon shut down before its first
+        // yield would otherwise wait for that task forever).
+        self.shutdown.notify_one();
         // Cancels an in-flight session, which is what releases the microphone
         // — a daemon that exits while recording leaves the device open.
         self.engine.shutdown().await;
@@ -384,7 +435,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         runtime.clone(),
         pipeline.clone(),
     ));
-    let daemon = Daemon::start_with(
+    let mut daemon = Daemon::start_with(
         pipeline,
         history,
         &runtime,
@@ -396,6 +447,13 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         },
     )
     .await?;
+    // S33. A refusal is fatal: an operator who enabled the API is told why
+    // there is none, rather than finding the port silently closed.
+    if let Err(e) = daemon.start_network_api(&config.api).await {
+        error!("{e}");
+        daemon.shutdown().await;
+        return Err(anyhow::anyhow!(e));
+    }
     info!(
         socket = %daemon.socket().display(),
         pid = std::process::id(),

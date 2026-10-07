@@ -34,6 +34,7 @@ dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
 dictate-hotkey = { workspace = true }
 dictate-proto = { workspace = true }
+dictate-server = { workspace = true }
 dictate-stt = { workspace = true }
 libc = { workspace = true }
 serde_json = { workspace = true }
@@ -47,6 +48,10 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }
+# S33 network API tests: the WebSocket client, the same version axum links.
+tokio-tungstenite = "0.29"
+futures-util = { workspace = true }
+base64 = { workspace = true }
 # `test-support` compiles the port doubles into dictate-core so the integration
 # tests can start a real daemon with no microphone, GPU, or desktop.
 dictate-core = { workspace = true, features = ["test-support"] }

@@ -28,6 +28,10 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--check-config") {
         return check_config(config_path.as_deref());
     }
+    let rotate = args.iter().any(|a| a == "--rotate-api-token");
+    if rotate || args.iter().any(|a| a == "--api-token") {
+        return api_token(config_path.as_deref(), rotate);
+    }
 
     let (config, report) = config::load_config_with_report(config_path.as_deref())?;
     for warning in &report.warnings {
@@ -64,6 +68,7 @@ fn init_tracing() -> Result<()> {
         "dictate_history",
         "dictate_inject",
         "dictate_context",
+        "dictate_server",
         "dictated",
     ] {
         filter = filter.add_directive(format!("{target}=info").parse()?);
@@ -85,6 +90,11 @@ OPTIONS:
                             exit (non-zero if the configuration is invalid)
     --config <PATH>         Read this config file instead of
                             $XDG_CONFIG_HOME/dictate-agent/config.toml
+    --api-token             Print the network API bearer token, creating it if
+                            there is none (token on stdout; file, URL and TLS
+                            fingerprint on stderr). Pair a client with this.
+    --rotate-api-token      Replace the token; a running daemon accepts only the
+                            new one from its next request on
     --version               Print the version
     --help                  Print this help
 
@@ -92,6 +102,8 @@ CONTROL:
     dictate toggle | cancel | status | tail     (unix socket)
     kill -USR1 <pid>                            (toggle, same code path)
     kill -USR2 <pid>                            (cancel, same code path)
+    [api] enabled = true                        (network API, S33: loopback,
+                                                 bearer token, transcription only)
 ",
         env!("CARGO_PKG_VERSION")
     );
@@ -141,6 +153,48 @@ fn check_config(path: Option<&std::path::Path>) -> Result<()> {
         }
         std::process::exit(1);
     }
+}
+
+/// `dictated --api-token` / `--rotate-api-token`: issue the network API's
+/// bearer token (design §5). The token is the only thing on stdout, so it can
+/// be piped; everything a pairing needs besides it goes to stderr.
+fn api_token(path: Option<&std::path::Path>, rotate: bool) -> Result<()> {
+    let (config, _report) = config::load_config_with_report(path)?;
+    let api = &config.api;
+    let file = api.token_path();
+    let token = if rotate {
+        dictate_server::token::rotate(&file)?
+    } else {
+        let (token, created) = dictate_server::token::ensure(&file)?;
+        if created {
+            eprintln!("created a new API token");
+        }
+        token
+    };
+    println!("{token}");
+    eprintln!("token file  : {}", file.display());
+    let scheme = if api.tls_cert.trim().is_empty() {
+        "http"
+    } else {
+        "https"
+    };
+    if api.enabled {
+        eprintln!("API         : {scheme}://{}/v1/", api.bind.trim());
+    } else {
+        eprintln!("API         : disabled (set [api] enabled = true)");
+    }
+    if !api.tls_cert.trim().is_empty() {
+        match dictate_server::tls::certificate_fingerprint(std::path::Path::new(
+            api.tls_cert.trim(),
+        )) {
+            Ok(fp) => eprintln!("TLS SHA-256 : {fp}  (pin this in the client)"),
+            Err(e) => eprintln!("TLS         : {e}"),
+        }
+    }
+    if rotate {
+        eprintln!("the previous token stops working on a running daemon's next request");
+    }
+    Ok(())
 }
 
 /// Check each external program still used as a subprocess.
