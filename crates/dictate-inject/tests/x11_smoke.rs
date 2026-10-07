@@ -132,7 +132,21 @@ fn run_smoke(display: &str) {
                 .unwrap(),
             _ => clipboard.set_text("Synthetic prior λ\nclipboard").unwrap(),
         }
-        let prior_image = (case == "png").then(|| clipboard.get_image().unwrap());
+        let prior_image = if case == "png" {
+            // xclip forks its selection owner: launcher exit is not readiness.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            Some(loop {
+                match clipboard.get_image() {
+                    Ok(image) => break image,
+                    Err(arboard::Error::ContentNotAvailable) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("PNG fixture owner did not become ready: {error}"),
+                }
+            })
+        } else {
+            None
+        };
         let text = if case == "long" {
             "synthetic ".repeat(1500).trim().to_owned()
         } else {
