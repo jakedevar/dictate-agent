@@ -101,7 +101,9 @@ pub async fn list_dictionary(
     query: Option<String>,
     limit: Option<u32>,
 ) -> Reply {
-    bridge.request(Command::ListDictionary { query, limit }).await
+    bridge
+        .request(Command::ListDictionary { query, limit })
+        .await
 }
 
 /// `list_dictionary_suggestions`

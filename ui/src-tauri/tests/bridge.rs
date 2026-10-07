@@ -130,7 +130,10 @@ async fn results_and_errors_pass_through_intact() {
     connected(&recorder).await;
 
     let result = bridge.request(Command::Toggle).await.unwrap();
-    assert_eq!(result, json!({"type": "session_started", "session_id": "stub-1"}));
+    assert_eq!(
+        result,
+        json!({"type": "session_started", "session_id": "stub-1"})
+    );
 
     let err = bridge
         .request(Command::SetConfig {
@@ -143,11 +146,18 @@ async fn results_and_errors_pass_through_intact() {
         .unwrap_err();
     assert_eq!(err.code, "config_invalid");
     assert!(err.message.contains("grammar.timeout_s"));
-    assert_eq!(err.detail.unwrap()["path"], "grammar.timeout_s", "detail survives for the UI to highlight the field");
+    assert_eq!(
+        err.detail.unwrap()["path"],
+        "grammar.timeout_s",
+        "detail survives for the UI to highlight the field"
+    );
 
     // The command reached the daemon in its protocol shape.
     let sent = stub.requests();
-    let set = sent.iter().find(|r| r["command"]["type"] == "set_config").unwrap();
+    let set = sent
+        .iter()
+        .find(|r| r["command"]["type"] == "set_config")
+        .unwrap();
     assert_eq!(set["command"]["entries"][0]["path"], "grammar.timeout_s");
     stub.stop();
 }
@@ -160,9 +170,12 @@ async fn events_are_relayed_raw_including_ones_this_build_does_not_know() {
     connected(&recorder).await;
 
     stub.state("idle", "recording");
-    let future = json!({"type": "wake_word_heard", "session_id": "s", "keyword": "hey", "extra": {"x": 1}});
+    let future =
+        json!({"type": "wake_word_heard", "session_id": "s", "keyword": "hey", "extra": {"x": 1}});
     stub.emit(future.clone());
-    recorder.until("two events", |r| r.events().len() >= 2).await;
+    recorder
+        .until("two events", |r| r.events().len() >= 2)
+        .await;
     let events = recorder.events();
     assert_eq!(events[0]["to"], "recording");
     assert_eq!(events[1], future, "a relay must not flatten unknown events");
@@ -280,7 +293,10 @@ async fn an_unanswered_request_times_out_and_the_connection_survives() {
     let (bridge, recorder) = start(path);
     connected(&recorder).await;
     let err = bridge
-        .request_within(Command::Diagnose { quick: true }, Duration::from_millis(150))
+        .request_within(
+            Command::Diagnose { quick: true },
+            Duration::from_millis(150),
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code, "timeout");

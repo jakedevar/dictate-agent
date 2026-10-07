@@ -23,7 +23,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[tokio::main]
 async fn main() {
-    let socket = std::env::args().nth(1).expect("usage: stub_daemon <socket>");
+    let socket = std::env::args()
+        .nth(1)
+        .expect("usage: stub_daemon <socket>");
     let daemon = stub::StubDaemon::start(std::path::Path::new(&socket)).await;
     eprintln!("stub-daemon listening on {socket}");
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -45,8 +47,9 @@ async fn main() {
                 for i in 0..frames {
                     let t = f64::from(i) / 60.0;
                     // Syllable-rate modulation over a slower phrase envelope.
-                    let rms = (0.05 + 0.35 * ((t * 7.0).sin().abs()) * (0.6 + 0.4 * (t * 1.3).sin()))
-                        .clamp(0.0, 1.0);
+                    let rms = (0.05
+                        + 0.35 * ((t * 7.0).sin().abs()) * (0.6 + 0.4 * (t * 1.3).sin()))
+                    .clamp(0.0, 1.0);
                     daemon.emit(json!({"type": "audio_level", "session_id": "stub-1", "rms": rms}));
                     tokio::time::sleep(Duration::from_millis(16)).await;
                 }

@@ -44,7 +44,9 @@ impl StubDaemon {
             let received = received.clone();
             tokio::spawn(async move {
                 loop {
-                    let Ok((stream, _)) = listener.accept().await else { return };
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
                     let events = events.subscribe();
                     let kick = kick.subscribe();
                     let received = received.clone();
@@ -152,12 +154,16 @@ fn answer(command: &str, request: &Value) -> Option<Result<CommandResult, ProtoE
             },
         }))),
         "diagnose" => return None,
-        "set_config" if request.pointer("/command/entries/0/path") == Some(&json!("grammar.timeout_s")) => {
+        "set_config"
+            if request.pointer("/command/entries/0/path") == Some(&json!("grammar.timeout_s")) =>
+        {
             let mut e = ProtoError::new(
                 ErrorCode::ConfigInvalid,
                 "invalid configuration at 'grammar.timeout_s': must be positive",
             );
-            e.detail = Some(Box::new(json!({"path": "grammar.timeout_s", "errors": ["must be positive"]})));
+            e.detail = Some(Box::new(
+                json!({"path": "grammar.timeout_s", "errors": ["must be positive"]}),
+            ));
             Err(e)
         }
         "toggle" => Ok(CommandResult::SessionStarted {

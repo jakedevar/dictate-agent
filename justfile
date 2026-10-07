@@ -81,3 +81,36 @@ smoke:
 # Live LLM eval (S21): corpus, latency, warm-up, mask sweep, re-record
 eval-llm model="" *args="":
     cargo run --release -p dictate-fmt --features eval-live --example eval_llm -- --model "{{model}}" {{args}}
+
+# --- Desktop UI (S32): ui/, a Tauri v2 app outside the cargo workspace -------
+# None of these touch the root workspace build; see ui/README.md.
+
+# Install the UI's frontend dependencies from the committed lockfile
+ui-deps:
+    cd ui && bun install --frozen-lockfile
+
+# Run the UI against the running daemon with a hot-reloading frontend
+ui-dev: ui-deps
+    cd ui/src-tauri && cargo tauri dev
+
+# Release binary at target/release/dictate-ui (no installer bundle)
+ui-build: ui-deps
+    cd ui/src-tauri && cargo tauri build --no-bundle
+
+# Frontend typecheck + unit tests, then the Rust bridge/HUD tests and clippy
+ui-test: ui-deps
+    cd ui && bun run typecheck && bun test
+    cd ui/src-tauri && cargo test --all-targets && cargo clippy --all-targets -- -D warnings
+
+# The Flow bar focus/click-through test: i3 inside a private Xvfb, never the
+# real display. Needs `just ui-build` and the stub daemon example.
+ui-test-x11:
+    cd ui/src-tauri && cargo build --example stub_daemon
+    ui/tests/x11/hud-focus.sh
+
+# Synthetic-data screenshots of the hub against an isolated real dictated
+# (private Xvfb, audio-less, temp paths); writes ui/docs/screenshots/.
+# The Flow bar crops come from: ui/tests/x11/hud-focus.sh --shots ui/docs/screenshots
+ui-screenshots:
+    cargo build -p dictated -p dictate-cli
+    ui/tests/x11/screenshots.sh

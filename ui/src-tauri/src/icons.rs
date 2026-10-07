@@ -123,8 +123,14 @@ mod tests {
 
     #[test]
     fn session_states_map_to_tray_states() {
-        assert_eq!(TrayState::from_session(&State::Recording), TrayState::Recording);
-        assert_eq!(TrayState::from_session(&State::Formatting), TrayState::Processing);
+        assert_eq!(
+            TrayState::from_session(&State::Recording),
+            TrayState::Recording
+        );
+        assert_eq!(
+            TrayState::from_session(&State::Formatting),
+            TrayState::Processing
+        );
         assert_eq!(TrayState::from_session(&State::Error), TrayState::Error);
         assert_eq!(TrayState::from_session(&State::Done), TrayState::Idle);
         assert_eq!(TrayState::from_session(&State::Cancelled), TrayState::Idle);

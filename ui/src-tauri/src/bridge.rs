@@ -154,7 +154,10 @@ impl BridgeError {
     }
 
     fn unavailable(reason: &str) -> Self {
-        Self::new("daemon_unavailable", format!("dictated is not running: {reason}"))
+        Self::new(
+            "daemon_unavailable",
+            format!("dictated is not running: {reason}"),
+        )
     }
 }
 
@@ -311,7 +314,10 @@ impl LevelThrottle {
     #[must_use]
     pub fn due_at(&self) -> Option<Instant> {
         self.pending.as_ref()?;
-        Some(self.last_emit.map_or_else(Instant::now, |t| t + self.interval))
+        Some(
+            self.last_emit
+                .map_or_else(Instant::now, |t| t + self.interval),
+        )
     }
 
     /// Release the held event if it is due.
@@ -419,14 +425,14 @@ type Writer = tokio::net::unix::OwnedWriteHalf;
 async fn connect(
     config: &BridgeConfig,
 ) -> Result<((Reader, Writer), dictate_proto::ServerHello), String> {
-    let stream = UnixStream::connect(&config.socket).await.map_err(|e| {
-        match e.kind() {
+    let stream = UnixStream::connect(&config.socket)
+        .await
+        .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
                 format!("no daemon listening on {}", config.socket.display())
             }
             _ => format!("cannot reach {}: {e}", config.socket.display()),
-        }
-    })?;
+        })?;
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
 
@@ -639,7 +645,11 @@ mod tests {
         assert_eq!(th.offer(t0 + Duration::from_millis(10), lvl(0.9)), None);
         assert_eq!(th.offer(t0 + Duration::from_millis(15), lvl(0.3)), None);
         assert_eq!(th.due_at(), Some(t0 + Duration::from_millis(33)));
-        assert_eq!(th.flush(t0 + Duration::from_millis(20)), None, "not due yet");
+        assert_eq!(
+            th.flush(t0 + Duration::from_millis(20)),
+            None,
+            "not due yet"
+        );
         let out = th.flush(t0 + Duration::from_millis(33)).expect("due");
         assert_eq!(out["rms"], json!(0.9), "the peak of the window survives");
         assert_eq!(th.due_at(), None);

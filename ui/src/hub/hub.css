@@ -58,7 +58,8 @@
 }
 
 html,
-body {
+body,
+#app {
   margin: 0;
   height: 100%;
   background: var(--bg);
@@ -447,9 +448,10 @@ input[type="checkbox"] {
   stroke-width: 2;
 }
 
+/* SVG user units: the chart scales with its card, about 1.5x at 1000 px. */
 .chart .axis-label,
 .chart .value-label {
-  font-size: 11px;
+  font-size: 8.5px;
   fill: var(--muted);
 }
 
@@ -627,6 +629,10 @@ th.num {
 .form-actions .status-text {
   margin-right: auto;
   font-size: 12.5px;
+}
+
+.dict-table td {
+  vertical-align: middle;
 }
 
 .dict-table td.phrase {
