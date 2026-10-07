@@ -349,8 +349,12 @@ fn markup(c: &Check<'_>) -> Result<(), Rejection> {
 }
 
 fn new_lines(c: &Check<'_>) -> Result<(), Rejection> {
+    // CR submits terminal input just like LF. Other newly introduced control
+    // characters (ESC, backspace, etc.) also have no formatting purpose.
+    let unsafe_control = c.output.chars().filter(|ch| ch.is_control() && *ch != '\n')
+        .any(|ch| c.output.matches(ch).count() > c.input.matches(ch).count());
     let added = c.output.matches('\n').count() > c.input.matches('\n').count();
-    if added && !c.policy.allows_new_lines() {
+    if unsafe_control || (added && !c.policy.allows_new_lines()) {
         return Err(Rejection::new(
             Validator::NewLines,
             "line breaks are not allowed for this category",
@@ -1354,6 +1358,17 @@ mod tests {
             )),
             Validator::NewLines
         );
+    }
+
+    #[test]
+    fn rejects_carriage_return_and_other_introduced_controls() {
+        for category in ["terminal", "editor", "chat", "document"] {
+            for control in ['\r', '\u{1b}', '\u{8}', '\0'] {
+                let output = format!("Please check{control} the logs.");
+                assert_eq!(rejected_by(run("please check the logs", &output, category)), Validator::NewLines);
+            }
+        }
+        run("please check\r the logs", "Please check\r the logs.", "terminal").unwrap();
     }
 
     #[test]
