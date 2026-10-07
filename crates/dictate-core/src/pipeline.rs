@@ -922,7 +922,6 @@ impl Pipeline {
                 self.notifier
                     .notify(Notice::Processing(self.local_model.clone()));
                 interaction.prompt_sent = Some(route_text.to_string());
-                interaction.execution_model = Some(self.local_model.clone());
 
                 let started = Instant::now();
                 let result = match self.race(token, self.local.execute(route_text, None)).await {
@@ -931,6 +930,10 @@ impl Pipeline {
                 };
                 interaction.execution_duration_s = Some(started.elapsed().as_secs_f64());
                 interaction.execution_success = Some(result.success);
+                // The model the ladder actually resolved to, which is not
+                // `[local].model` when that one is missing; `None` when no
+                // model could be asked at all.
+                interaction.execution_model = result.model.clone();
 
                 if !result.success {
                     let msg = result.error.clone().unwrap_or_default();

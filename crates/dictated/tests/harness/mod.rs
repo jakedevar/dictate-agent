@@ -80,6 +80,8 @@ pub struct Setup {
     pub audio_source: Option<Arc<dyn AudioSource>>,
     /// When set, the daemon gets a real `Doctor` built from this config.
     pub doctor: Option<(Config, ConfigReport)>,
+    /// The LOCAL route's Ollama settings (point `host` at a fake server).
+    pub local: dictate_core::config::LocalConfig,
 }
 
 impl Default for Setup {
@@ -108,6 +110,7 @@ impl Default for Setup {
             earcons: Arc::new(NullEarcons),
             audio_source: None,
             doctor: None,
+            local: dictate_core::config::LocalConfig::default(),
         }
     }
 }
@@ -147,6 +150,10 @@ impl Setup {
     }
     pub fn with_audio_source(mut self, source: Arc<dyn AudioSource>) -> Self {
         self.audio_source = Some(source);
+        self
+    }
+    pub fn with_local(mut self, local: dictate_core::config::LocalConfig) -> Self {
+        self.local = local;
         self
     }
     pub fn with_doctor(mut self, config: Config, report: ConfigReport) -> Self {
@@ -226,13 +233,11 @@ impl Harness {
             media: setup.media,
             earcons: setup.earcons,
             history: history.clone(),
-            local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
-                &dictate_core::config::LocalConfig::default(),
-            )),
+            local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&setup.local)),
             timer: Arc::new(dictate_core::timer::TimerExecutor::new(
                 &dictate_core::config::TimerConfig::default(),
             )),
-            local_model: "mock".into(),
+            local_model: setup.local.model.clone(),
         });
 
         let runtime = RuntimePaths::under(&dir);
