@@ -30,7 +30,7 @@ impl Default for GrammarConfig {
 ///
 /// `[grammar]` remains the LLM pass's section; S21 owns its evolution (and may
 /// add `[format.llm]` here through the integrator).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct FormatConfig {
     /// Run the deterministic rules at all. When `false` the session reports
@@ -62,7 +62,7 @@ impl Default for FormatConfig {
 /// never changes what the speaker meant. The two spoken-command rules are off
 /// because Jake dictates code prompts in which "new line" and "period" are
 /// often literal words; S23 profiles enable them per app.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct RulesConfig {
     /// The historical Whisper mis-hearing fixes (`cloud` → `Claude`,

@@ -9,7 +9,7 @@
 use std::sync::Once;
 
 use dictate_proto::AppCategory;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 /// Default model ladder, most preferred first. Chosen by the S21 benchmark
@@ -20,7 +20,7 @@ use tracing::warn;
 pub const DEFAULT_MODELS: &[&str] = &["gemma4:e4b", "gemma4:12b"];
 
 /// How a category's text is treated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Style {
     /// Technical text (terminals, editors, coding-agent prompts): remove
@@ -39,7 +39,7 @@ pub enum Style {
 /// Per-category defaults. A profile (S23) or the session can still turn the
 /// pass off; they cannot turn on a category disabled here except through an
 /// explicit `SessionOptions.format_llm = Some(true)`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CategoryPolicy {
     /// Run the LLM pass for this category at all.
@@ -88,7 +88,7 @@ impl CategoryPolicy {
 }
 
 /// One [`CategoryPolicy`] per [`AppCategory`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CategoryPolicies {
     pub terminal: CategoryPolicy,
@@ -141,7 +141,7 @@ impl CategoryPolicies {
 /// `gemma4:e4b` on the RTX 5080, ~1.35 tokens/word), so one fixed timeout is
 /// either too tight for long utterances or lets a stalled short one burn
 /// seconds of the user's latency budget.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TimeoutPolicy {
     pub base_ms: u64,
@@ -172,7 +172,7 @@ impl TimeoutPolicy {
 
 /// Long inputs: split at paragraph/sentence boundaries, format each chunk,
 /// and above a hard limit skip the pass with an explicit reason.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ChunkPolicy {
     /// Inputs up to this many words go to the model in one request.
@@ -201,7 +201,7 @@ impl Default for ChunkPolicy {
 }
 
 /// `[format.llm]`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LlmConfig {
     /// Master switch. Off by default in code (contract §4: no network
