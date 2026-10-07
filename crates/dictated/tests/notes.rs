@@ -105,6 +105,97 @@ async fn the_dictation_is_logged_as_a_note_route_in_history() {
     h.stop().await;
 }
 
+/// Every place a dictation's text could have been copied: the interaction row
+/// columns and the FTS index.
+fn history_copies_of(h: &Harness, needle: &str) -> (i64, i64) {
+    let store = h.history.lock().unwrap();
+    let conn = store.connection();
+    let like = format!("%{needle}%");
+    let columns: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM interactions WHERE
+                 raw_transcription LIKE ?1 OR corrected_transcription LIKE ?1 OR
+                 grammar_input LIKE ?1 OR grammar_output LIKE ?1 OR
+                 prompt_sent LIKE ?1 OR response_text LIKE ?1 OR
+                 error_summary LIKE ?1 OR execution_error LIKE ?1",
+            [&like],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let fts: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM interactions_fts WHERE interactions_fts MATCH ?1",
+            [needle],
+            |r| r.get(0),
+        )
+        .unwrap();
+    (columns, fts)
+}
+
+#[tokio::test]
+async fn deleting_a_note_removes_its_only_copy() {
+    let h = Harness::with(setup("note: the zebra password is hunter2")).await;
+    let transcript = run(&h, None).await;
+    assert_eq!(transcript.route, Route::Note);
+    let stored = notes(&h, Some("zebra")).await;
+    assert_eq!(stored.len(), 1);
+
+    // The dictation is logged (route, word count) but holds no note text and
+    // is not searchable by it.
+    assert_eq!(history_copies_of(&h, "zebra"), (0, 0));
+    let (rows, route): (i64, String) = h
+        .history
+        .lock()
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT COUNT(*), MAX(route_type) FROM interactions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((rows, route.as_str()), (1, "note"));
+
+    let mut c = h.client().await;
+    c.request(Command::DeleteNote { id: stored[0].id })
+        .await
+        .unwrap();
+    assert!(notes(&h, Some("zebra")).await.is_empty());
+    assert_eq!(history_copies_of(&h, "zebra"), (0, 0));
+    // The same query through the protocol's history search finds nothing.
+    let page = h
+        .history
+        .lock()
+        .unwrap()
+        .query(&dictate_proto::HistoryQuery {
+            text: Some("zebra".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(page.items.is_empty());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn ordinary_dictation_text_is_still_logged_and_searchable() {
+    let h = Harness::with(setup("the quokka meeting moved to friday")).await;
+    run(&h, None).await;
+    let (columns, fts) = history_copies_of(&h, "quokka");
+    assert!(columns >= 1 && fts >= 1, "only note rows are scrubbed");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn purge_history_over_the_protocol_removes_notes_too() {
+    let h = Harness::with(setup("unused")).await;
+    h.history.lock().unwrap().add_note("Buy oat milk").unwrap();
+    assert_eq!(notes(&h, None).await.len(), 1);
+    let mut c = h.client().await;
+    c.request(Command::PurgeHistory).await.unwrap();
+    assert!(notes(&h, None).await.is_empty());
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn a_forced_note_route_keeps_the_whole_utterance() {
     let h = Harness::with(setup("remember to water the plants")).await;
@@ -123,6 +214,8 @@ async fn ordinary_prose_that_mentions_note_is_still_typed() {
         "note that the deadline moved",
         "I made a note of it",
         "Take a notebook",
+        "New note-taking apps are useful.",
+        "Take a note-taking class this summer.",
     ] {
         let h = Harness::with(setup(said)).await;
         let transcript = run(&h, None).await;

@@ -582,6 +582,7 @@ failed before producing text) is distinct from an **empty string** (the user
 said nothing). Do not conflate them.
 
 `purge_history` removes every persisted interaction (and its FTS index entry)
+and every scratchpad note, and reports the combined count,
 while keeping the daemon's SQLite connection open. A daemon in global privacy
 mode, or a `start_dictation` request with `options.privacy: true`, stores no
 row at all; this is stronger than masking transcript text after the fact.
@@ -884,8 +885,9 @@ Privacy and retention apply. While privacy mode is on (globally or for the
 session) or history is disabled, nothing is stored: the transcript's `text` is
 empty, `injection` is `skipped` with reason `not_permitted`, and a desktop
 notification says why — the words are never typed instead. Notes expire with
-`[history] retention_days` like dictations. `purge_history` removes dictations
-only; notes are deleted one at a time with `delete_note`.
+`[history] retention_days` like dictations. `purge_history` removes notes
+along with dictations; one note is deleted with `delete_note`. The note's text is
+kept only in `notes`: its dictation row (route `note`) has no transcript text.
 
 Notes live in `history.db` (table `notes`, schema version 3). The CLI is
 `dictate notes list|search|show|copy|rm|new`; `dictate start --route note`

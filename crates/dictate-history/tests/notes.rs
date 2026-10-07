@@ -236,7 +236,7 @@ fn without_a_retention_window_notes_are_kept_indefinitely() {
 }
 
 #[test]
-fn clearing_history_does_not_touch_notes() {
+fn purge_clears_notes_too_and_counts_them() {
     let (store, path) = store("purge");
     store.add_note("keep me").unwrap();
     store.commit(&Interaction {
@@ -246,8 +246,10 @@ fn clearing_history_does_not_touch_notes() {
         completed: true,
         ..Default::default()
     });
-    assert_eq!(store.purge().unwrap(), 1);
-    assert_eq!(store.note_count().unwrap(), 1);
+    store.add_note("and me").unwrap();
+    assert_eq!(store.purge().unwrap(), 3, "one dictation + two notes");
+    assert_eq!(store.note_count().unwrap(), 0);
+    assert!(store.list_notes(None, Some(10), None).unwrap().is_empty());
     let _ = std::fs::remove_file(path);
 }
 
@@ -292,5 +294,44 @@ fn migration_adds_the_notes_table_and_keeps_every_dictation() {
     drop(store);
     let again = HistoryStore::new(&config(&path)).unwrap();
     assert_eq!(again.note_count().unwrap(), 1);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_note_route_interaction_is_logged_without_any_text() {
+    let (store, path) = store("scrub");
+    let said = "the quokka rendezvous is at noon";
+    let row = |route: &str| Interaction {
+        session_id: route.into(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        raw_transcription: Some(said.into()),
+        corrected_transcription: Some(said.into()),
+        grammar_input: Some(said.into()),
+        response_text: Some(said.into()),
+        route_type: Some(route.into()),
+        word_count: Some(6),
+        completed: true,
+        ..Default::default()
+    };
+    store.commit(&row("note"));
+    store.commit(&row("type"));
+    let c = store.connection();
+    let (text, words): (Option<String>, i64) = c
+        .query_row(
+            "SELECT corrected_transcription, word_count FROM interactions WHERE route_type = 'note'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((text, words), (None, 6));
+    // Only the ordinary dictation is in the full-text index.
+    let hits: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM interactions_fts WHERE interactions_fts MATCH 'quokka'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1);
     let _ = std::fs::remove_file(path);
 }

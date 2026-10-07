@@ -51,10 +51,15 @@ its rules:
   notification says it was not saved. History disabled behaves the same way.
 - **Retention** (`[history] retention_days`) expires old notes along with old
   dictations. With no window, notes are kept until you delete them.
-- `dictate history --purge` removes dictations only. Notes are explicit saves, so
-  they are deleted one at a time with `dictate notes rm`.
-- Note text is also part of the dictation's history row (like any other
-  transcript) and is subject to the same privacy/retention there.
+- `dictate history --purge` (`purge_history`) removes dictations **and notes**,
+  and its count includes both. Individual notes are deleted with
+  `dictate notes rm` (`delete_note`).
+- A note's text is stored once, in `notes`. The dictation row that records the
+  session (route `note`, timings, word count) carries no transcript text and is
+  not in the full-text index, so deleting a note removes its only copy.
+- Trigger phrases end at whitespace or sentence punctuation. A hyphen or
+  apostrophe glues the next word on, so "new note-taking apps" and "take a
+  note-taking class" are typed as ordinary dictation.
 
 A connection granted only the `type` route (a remote client) cannot write to the
 scratchpad by saying a trigger; the `note` route has to be granted.

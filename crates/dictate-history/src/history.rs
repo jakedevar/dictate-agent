@@ -195,18 +195,23 @@ impl HistoryStore {
         crate::query::query(&self.conn, q)
     }
 
-    /// Remove every persisted interaction and return the number removed.
+    /// Remove every persisted interaction **and note** and return the number of
+    /// rows removed (dictations plus notes).
     pub fn purge(&self) -> Result<u64> {
         if !self.enabled {
             return Ok(0);
         }
         let removed = self.conn.execute("DELETE FROM interactions", [])? as u64;
+        // An explicit privacy purge clears the scratchpad too: notes are
+        // history-class data in the same file, and a purge that left them
+        // behind would not do what it says.
+        let notes = self.conn.execute("DELETE FROM notes", [])? as u64;
         // secure_delete overwrites deleted cells in the main database. A WAL
         // checkpoint plus VACUUM removes residual pages from both files so an
         // explicit privacy purge is stronger than ordinary retention cleanup.
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM")?;
-        Ok(removed)
+        Ok(removed + notes)
     }
 
     /// Enforce the configured retention window now and after each commit.
@@ -378,6 +383,18 @@ impl HistoryStore {
     }
 
     fn insert(&self, i: &Interaction, total_duration: f64) -> rusqlite::Result<()> {
+        // A scratchpad note's body lives in `notes` and nowhere else, so that
+        // deleting the note removes its only copy. Its interaction row keeps
+        // the route, timings and word count but no text, and so nothing for
+        // `interactions_fts` to index.
+        let is_note = i.route_type.as_deref() == Some("note");
+        let text = |value: &Option<String>| -> Option<String> {
+            if is_note {
+                None
+            } else {
+                value.clone()
+            }
+        };
         self.conn.execute(
             "INSERT INTO interactions (
                 session_id, timestamp, audio_duration_s,
@@ -401,11 +418,11 @@ impl HistoryStore {
                 i.session_id,
                 i.timestamp,
                 i.audio_duration_s,
-                i.raw_transcription,
-                i.corrected_transcription,
+                text(&i.raw_transcription),
+                text(&i.corrected_transcription),
                 i.transcription_duration_s,
-                i.grammar_input,
-                i.grammar_output,
+                text(&i.grammar_input),
+                text(&i.grammar_output),
                 i.grammar_changed as i32,
                 i.grammar_error,
                 i.grammar_duration_s,
@@ -413,8 +430,8 @@ impl HistoryStore {
                 i.route_model,
                 i.route_trigger,
                 i.route_confidence,
-                i.prompt_sent,
-                i.response_text,
+                text(&i.prompt_sent),
+                text(&i.response_text),
                 i.execution_model,
                 i.execution_duration_s,
                 i.execution_success.map(|b| b as i32),
@@ -463,9 +480,11 @@ fn stored_version(conn: &Connection) -> Result<i64> {
     if !table_exists(conn, "schema_version")? {
         return Ok(0);
     }
-    Ok(conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| {
-        r.get(0)
-    })?)
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |r| r.get(0),
+    )?)
 }
 
 /// Install the schema, migrate old shapes and stamp the version atomically.
@@ -816,7 +835,9 @@ mod tests {
             .unwrap();
         }
         let before = std::fs::read(&path).unwrap();
-        let err = HistoryStore::new(&config(path.clone())).err().expect("must refuse");
+        let err = HistoryStore::new(&config(path.clone()))
+            .err()
+            .expect("must refuse");
         let msg = err.to_string();
         assert!(msg.contains("newer") && msg.contains('4'), "{msg}");
         let conn = Connection::open(&path).unwrap();

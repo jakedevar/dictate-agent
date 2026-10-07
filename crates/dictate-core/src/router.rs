@@ -57,8 +57,9 @@ fn ends_trigger(rest: &str) -> bool {
 
 /// If `text` opens with a scratchpad trigger, the note body that follows it.
 fn note_body(text: &str) -> Option<&str> {
-    let is_sep =
-        |c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '.' | '!' | '?' | '-' | '–' | '—');
+    let is_sep = |c: char| {
+        c.is_whitespace() || matches!(c, ':' | ',' | ';' | '.' | '!' | '?' | '-' | '–' | '—')
+    };
     // "note:" / "note," (also unspaced, "note:buy milk").
     for opener in ["note:", "note,"] {
         if text

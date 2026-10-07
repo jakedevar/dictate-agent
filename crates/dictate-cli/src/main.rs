@@ -53,7 +53,7 @@ OPTIONS:
     --limit <N>         history / notes list: rows to return (default 20 / 100)
     --text <QUERY>      history / notes list: substring to match
     --errors            history: only sessions that failed
-    --purge             history: permanently delete all stored dictations
+    --purge             history: permanently delete all stored dictations and notes
     --analytics         history: show WPM, daily words, and streaks
     --events <A,B>      tail: only these event types
     --inject            transcribe: type the result into the focused window
