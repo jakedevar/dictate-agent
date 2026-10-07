@@ -229,6 +229,10 @@ impl Real {
         config.audio.capture = false;
         config.audio.pre_roll_ms = 0;
         config.notifications.enabled = false;
+        // No dictionary is wired below (`dictionary: None`); say so in the
+        // config too, so the doctor reports it as disabled rather than as a
+        // database that failed to open (and never names the real data dir).
+        config.dictionary.enabled = false;
         // The LLM pass is off unless a run asks for it: this test is about the
         // speech path, and must not depend on which Ollama models are installed.
         config.format.llm.enabled = false;
