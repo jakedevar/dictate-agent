@@ -407,33 +407,7 @@ impl Doctor {
 
         checks.push(check_formatter_ladder(llm, &llm_probe));
 
-        checks.push(if !local_probe.reachable {
-            DiagnosticCheck::skipped(
-                "local_model",
-                "Local-route model",
-                "Ollama is unreachable, so installed models are unknown",
-            )
-        } else if local_probe.has_model(&local.model) {
-            DiagnosticCheck::ok(
-                "local_model",
-                "Local-route model",
-                format!("'{}' is installed", local.model),
-            )
-        } else {
-            let installed = ollama::describe_installed(&local_probe.models);
-            DiagnosticCheck::warn(
-                "local_model",
-                "Local-route model",
-                format!(
-                    "model '{}' is not installed (installed: {installed}); the `local` route will fail",
-                    local.model
-                ),
-                format!(
-                    "`ollama pull {}`, or set local.model to one of: {installed}",
-                    local.model
-                ),
-            )
-        });
+        checks.push(check_local_ladder(local, &local_probe));
         checks
     }
 
@@ -865,6 +839,64 @@ fn check_formatter_ladder(
                 ),
                 format!(
                     "`ollama pull {head}`, or put one of these in format.llm.models: {installed}"
+                ),
+            )
+        }
+    }
+}
+
+/// The `local_model` check: walk the LOCAL route's ladder (`[local].model`,
+/// then `[local].models`) the way `LocalExecutor` resolves it. Ok when the head
+/// is installed, Warn when a fallback rung will answer, Fail when none is.
+fn check_local_ladder(
+    local: &dictate_core::config::LocalConfig,
+    probe: &ollama::OllamaProbe,
+) -> DiagnosticCheck {
+    const ID: &str = "local_model";
+    const TITLE: &str = "Local-route model";
+    if !probe.reachable {
+        return DiagnosticCheck::skipped(
+            ID,
+            TITLE,
+            "Ollama is unreachable, so installed models are unknown",
+        );
+    }
+    let mut ladder: Vec<&str> = Vec::new();
+    for m in std::iter::once(&local.model).chain(&local.models) {
+        if !m.trim().is_empty() && !ladder.contains(&m.as_str()) {
+            ladder.push(m);
+        }
+    }
+    let Some(&head) = ladder.first() else {
+        return DiagnosticCheck::fail(
+            ID,
+            TITLE,
+            "local.model is empty and local.models lists nothing — the `local` route has no model",
+            "set local.model, or list installed models in local.models",
+        );
+    };
+    let chain = ladder.join(" → ");
+    match ladder.iter().position(|m| probe.has_model(m)) {
+        Some(0) => DiagnosticCheck::ok(ID, TITLE, format!("'{head}' is installed")),
+        Some(i) => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!(
+                "preferred '{head}' is not installed; the `local` route falls back to '{}' (ladder: {chain})",
+                ladder[i]
+            ),
+            format!("`ollama pull {head}` to use the preferred model"),
+        ),
+        None => {
+            let installed = ollama::describe_installed(&probe.models);
+            DiagnosticCheck::fail(
+                ID,
+                TITLE,
+                format!(
+                    "no model in the ladder ({chain}) is installed (installed: {installed}); the `local` route will fail"
+                ),
+                format!(
+                    "`ollama pull {head}`, or put one of these in local.model / local.models: {installed}"
                 ),
             )
         }
