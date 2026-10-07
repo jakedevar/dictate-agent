@@ -705,7 +705,9 @@ impl Pipeline {
             .next()
             .and_then(|c| doc.span_for(c))
             .is_some_and(|s| s.kind == SpanKind::Snippet);
-        let routed = if opens_with_snippet {
+        // An uploaded recording never triggers a route by its spoken words
+        // (global ruling 9): plain `type` unless the caller forced a route.
+        let routed = if opens_with_snippet || (handle.is_upload() && opts.forced_route.is_none()) {
             router::RouteResult {
                 route: RouteType::Type,
                 model: String::new(),

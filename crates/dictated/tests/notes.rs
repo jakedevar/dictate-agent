@@ -422,3 +422,67 @@ async fn a_cancelled_session_stores_no_note() {
     assert!(notes(&h, None).await.is_empty());
     h.stop().await;
 }
+
+// --- Uploads never route by their spoken words (ruling 9) -----------------
+
+fn tiny_wav() -> Vec<u8> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = hound::WavWriter::new(&mut buf, spec).unwrap();
+        for i in 0..16_000 {
+            w.write_sample(((i as f64 * 0.05).sin() * 3000.0) as i16)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    buf.into_inner()
+}
+
+async fn upload(h: &Harness, options: Option<SessionOptions>) -> dictate_proto::Transcript {
+    let mut client = h.client().await;
+    match client
+        .request(Command::TranscribeAudio {
+            audio: dictate_proto::AudioSource::Inline {
+                format: dictate_proto::AudioFormat::wav(),
+                data: tiny_wav(),
+            },
+            options,
+        })
+        .await
+        .unwrap()
+    {
+        CommandResult::Transcript(t) => *t,
+        other => panic!("expected a transcript, got {}", other.name()),
+    }
+}
+
+#[tokio::test]
+async fn an_upload_saying_a_trigger_is_text_only() {
+    for said in [
+        "note: x",
+        "timer ten minutes",
+        "new note",
+        "edit: make it formal",
+    ] {
+        let h = Harness::with(setup(said)).await;
+        let t = upload(&h, None).await;
+        assert_eq!(t.route, Route::Type, "{said:?}");
+        assert!(notes(&h, None).await.is_empty(), "{said:?} saved a note");
+        h.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn an_upload_with_an_explicit_note_route_still_saves_a_note() {
+    let h = Harness::with(setup("note: x")).await;
+    let t = upload(&h, note_route()).await;
+    assert_eq!(t.route, Route::Note);
+    assert_eq!(notes(&h, None).await.len(), 1);
+    h.stop().await;
+}
