@@ -202,6 +202,12 @@ pub struct Snippet {
     /// Optional grouping label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Application identifiers in scope (case-insensitive). Empty means global.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
+    /// Times this snippet has expanded. Server-maintained; ignored on upsert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_count: Option<u64>,
 }
 
 impl Snippet {
@@ -213,6 +219,8 @@ impl Snippet {
             expansion: expansion.into(),
             enabled: true,
             category: None,
+            apps: Vec::new(),
+            hit_count: None,
         }
     }
 }
