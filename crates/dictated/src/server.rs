@@ -72,6 +72,9 @@ pub struct ServerDeps {
     pub capabilities: Capabilities,
     /// The `diagnose` implementation, when this daemon has one.
     pub diagnostics: Option<Arc<dyn DiagnosticsProvider>>,
+    /// The `get_config` / `set_config` implementation, when this daemon has
+    /// one.
+    pub config: Option<Arc<crate::config_rpc::ConfigService>>,
 }
 
 /// Capabilities for a trusted local connection, adjusted for what this host
@@ -97,8 +100,10 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     caps.features.dictionary_write = true;
     caps.features.snippets_read = false;
     caps.features.snippets_write = false;
-    caps.features.config_read = false;
-    caps.features.config_write = false;
+    // S32. Local only: `remote_transcription_only` never grants these, and
+    // `Daemon::start_with` withdraws them when no config service is wired.
+    caps.features.config_read = true;
+    caps.features.config_write = true;
     caps.features.wake_word = false;
     // `routes` is populated explicitly: deny-by-default means an omitted list
     // permits nothing at all.
@@ -532,8 +537,35 @@ async fn dispatch(
         }
 
         Command::GetStatus => {
+            let mut capabilities = capabilities;
+            // Privacy mode can be switched live through `set_config`; report
+            // what is in force, not what was true at handshake.
+            if let Some(on) = deps.config.as_ref().and_then(|c| c.running_privacy_mode()) {
+                capabilities.features.privacy_mode = on;
+            }
             let status = deps.engine.status(capabilities).await?;
             Ok(CommandResult::Status(status))
+        }
+
+        Command::GetConfig { path } => {
+            let service = config_service(deps)?;
+            let snapshot = tokio::task::spawn_blocking(move || service.read(path.as_deref()))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Config(snapshot))
+        }
+
+        Command::SetConfig {
+            entries,
+            document,
+            dry_run,
+        } => {
+            let service = config_service(deps)?;
+            let snapshot =
+                tokio::task::spawn_blocking(move || service.write(entries, document, dry_run))
+                    .await
+                    .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Config(snapshot))
         }
 
         Command::GetContext => Ok(CommandResult::Context(Box::new(
@@ -709,22 +741,25 @@ async fn transcribe_audio(
 /// Whether this build can actually perform a command, as distinct from whether
 /// this connection is allowed to ask for it.
 ///
-/// The unimplemented set is owned by later slices: S24 brings snippets, S33 audio
-/// streaming, and config CRUD needs the
-/// validation layer that arrives with them. Until then the honest answer is
+/// The unimplemented set is owned by later slices: S24 brings snippets and S33
+/// audio streaming (S32 implemented config). Until then the honest answer is
 /// `unsupported_command` — never a stub that returns an empty list, which a
 /// client would reasonably read as "you have no dictionary entries".
 fn is_implemented(command: &Command) -> bool {
     !matches!(
         command,
-        Command::GetConfig { .. }
-            | Command::SetConfig { .. }
-            | Command::ListSnippets { .. }
+        Command::ListSnippets { .. }
             | Command::UpsertSnippet { .. }
             | Command::DeleteSnippet { .. }
             | Command::BeginAudioStream { .. }
             | Command::EndAudioStream { .. }
     )
+}
+
+fn config_service(deps: &ServerDeps) -> Result<Arc<crate::config_rpc::ConfigService>, ProtoError> {
+    deps.config.clone().ok_or_else(|| {
+        ProtoError::capability_unavailable("configuration is not managed by this daemon")
+    })
 }
 
 fn dictionary(deps: &ServerDeps) -> Result<&Arc<dictate_dict::Dictionary>, ProtoError> {
@@ -802,7 +837,9 @@ mod tests {
         assert!(caps.features.dictionary_read);
         assert!(caps.features.dictionary_write);
         assert!(!caps.features.snippets_read);
-        assert!(!caps.features.config_read);
+        // S32 implements configuration over the socket, for local peers.
+        assert!(caps.features.config_read);
+        assert!(caps.features.config_write);
         assert!(
             !caps.features.partial_transcripts,
             "advertising partials would make a HUD wait for events that never come"
@@ -826,7 +863,7 @@ mod tests {
             query: None,
             limit: None
         }));
-        assert!(!is_implemented(&Command::GetConfig { path: None }));
+        assert!(is_implemented(&Command::GetConfig { path: None }));
         assert!(!is_implemented(&Command::ListSnippets {
             query: None,
             limit: None

@@ -190,7 +190,7 @@ All commands are objects tagged with `type`.
 | `subscribe` | `events?` (names; empty = all) | — |
 | `unsubscribe` | — | — |
 | `get_config` | `path?` | `config_read` |
-| `set_config` | `entries[]` | `config_write` |
+| `set_config` | `entries[]`, `document?`, `dry_run?` | `config_write` |
 | `list_dictionary` | `query?`, `limit?` | `dictionary_read` |
 | `upsert_dictionary_entry` | `entry` | `dictionary_write` |
 | `delete_dictionary_entry` | `id` | `dictionary_write` |
@@ -246,6 +246,42 @@ later slice adds would otherwise be a protocol change, and the UI would need a
 rebuild to expose a setting the daemon already supports. The cost is that the
 protocol cannot type-check a setting; validation is the daemon's job, reported
 as `config_invalid`.
+
+**Implemented by `dictated` since S32**, for local connections only
+(`remote_transcription_only` grants neither capability):
+
+- `get_config` answers a `config` result. `values` is every key with the value
+  the configuration file resolves to, built-in defaults included — what the
+  daemon runs after a restart. A whole-tree read also carries
+  `file: {path, exists, document}` (the user's file, comments and all) and the
+  loader's `warnings` (unknown keys, mapped legacy spellings — the list
+  `dictated --check-config` prints). If the file on disk cannot be resolved,
+  `errors` says why and `values` falls back to the running configuration.
+  `path` reads a subtree; a path that names nothing is `not_found`.
+- `set_config` either edits `entries` in place or replaces the file with
+  `document` (the raw-editor path; send one or the other, never both —
+  `invalid_params`). A `null` value removes the key so its default applies;
+  an object value is merged key by key into that section. Entry edits keep the
+  file's comments, ordering, legacy sections and unknown keys, and keep the
+  inline comment of a replaced value.
+- Every write is validated by the same loader the daemon starts with. Anything
+  it would refuse — wrong type, bad value, unknown key, unparseable TOML — is
+  `config_invalid` with `detail: {"path": <offending key or null>, "errors":
+  [...]}`, and nothing is written.
+- Writes are atomic (temp file, fsync, rename; a symlinked file is written
+  through to its target) and keep one backup, `<file>.bak`.
+- The result lists `applied` (keys whose resolved value changed) and
+  `restart_required` (keys whose value on disk differs from what the running
+  daemon uses — a plain read reports these too). Only `history.privacy_mode`
+  applies live today; `get_status` reports the privacy mode in force.
+- `dry_run: true` validates and reports without writing; `file.document` is
+  then the text that would have been written.
+
+```json
+{"type":"set_config","entries":[],"document":"[grammar]\nenabled = true\n","dry_run":true}
+← {"type":"config","values":{...},"applied":["grammar.enabled"],"restart_required":["grammar.enabled"],
+   "file":{"path":".../config.toml","exists":true,"document":"[grammar]\nenabled = true\n"},"dry_run":true}
+```
 
 ---
 
@@ -497,7 +533,7 @@ the protocol crate — bearer-token auth is S33's mechanism.
 | `handshake` | ServerHello |
 | `status` | Status |
 | `session_started` / `session_stopped` / `session_cancelled` | `session_id` |
-| `config` | `values`, `path?`, `applied[]`, `restart_required[]` |
+| `config` | `values`, `path?`, `applied[]`, `restart_required[]`, `file?` (`path`, `exists`, `document`), `warnings[]`, `errors[]`, `dry_run?` |
 | `dictionary` / `snippets` | `entries[]` / `snippets[]` |
 | `dictionary_entry` / `snippet` | the stored record, with server-assigned `id` |
 | `deleted` | `id` |
@@ -546,8 +582,8 @@ row at all; this is stronger than masking transcript text after the fact.
 Served by `dictated` over `$XDG_RUNTIME_DIR/dictate-agent/dictated.sock`.
 Connections there are granted `Capabilities::local_trusted`, minus anything the
 host cannot actually do (no display server withdraws `text_injection` and sets
-`headless`) and minus features this build does not have (snippets,
-config). Those last are answered `unsupported_command` rather than `forbidden`
+`headless`) and minus features this build does not have (snippets, audio
+streaming; config is implemented since S32). Those last are answered `unsupported_command` rather than `forbidden`
 — "this build cannot" is a different fact from "you may not", and only one of
 them is worth showing the user a setting for.
 

@@ -1,0 +1,43 @@
+[package]
+name = "dictate-ui"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "dictate-agent desktop UI: Flow bar HUD, tray, hub window (S32)"
+license = "MIT"
+
+# Deliberately NOT a member of the root workspace (see its `exclude`):
+# `cargo test --workspace` must never need webkit2gtk, and this crate must never
+# link whisper, CUDA or dictate-core. Its only workspace dependency is the wire
+# contract.
+[workspace]
+
+[lib]
+name = "dictate_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dictate-ui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+dictate-proto = { path = "../../crates/dictate-proto" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

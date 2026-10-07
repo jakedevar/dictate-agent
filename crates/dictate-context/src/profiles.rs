@@ -1,6 +1,6 @@
 use dictate_proto::{AppCategory, AppContext, ContextInjection, ResolvedProfile, Tone};
 use regex::{Regex, RegexBuilder};
-use serde::{de::Error, Deserialize, Deserializer};
+use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::WindowInfo;
 
@@ -27,6 +27,27 @@ pub struct Profile {
     title: Option<Regex>,
     category: Option<AppCategory>,
     options: ResolvedProfile,
+    /// The profile exactly as configured, so the effective configuration can
+    /// be shown (and written back) without reconstructing it from compiled
+    /// regexes.
+    raw: serde_json::Value,
+}
+
+/// Serialized in the shape it is configured in, so `get_config` shows a
+/// profile the way the user wrote it.
+impl Serialize for ContextConfig {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Shape<'a> {
+            enabled: bool,
+            profiles: Vec<&'a serde_json::Value>,
+        }
+        Shape {
+            enabled: self.enabled,
+            profiles: self.profiles.iter().map(|p| &p.raw).collect(),
+        }
+        .serialize(s)
+    }
 }
 
 #[derive(Deserialize)]
@@ -139,6 +160,7 @@ impl<'de> Deserialize<'de> for ContextConfig {
                 .transpose()
                 .map_err(|e| invalid(e.to_string()))?;
             profiles.push(Profile {
+                raw: value,
                 name: p.name,
                 class,
                 instance,

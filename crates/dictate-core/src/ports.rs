@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
+use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer, Level, LevelMeter};
 pub use dictate_fmt::FormatContext;
 use dictate_proto::InjectionOutcome;
 pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
@@ -81,6 +81,13 @@ pub trait AudioSource: Send + Sync + 'static {
     /// The microphone's state for `get_status`, including whether an input
     /// device is open *right now*. `None` when the source does not report it.
     fn input_status(&self) -> Option<dictate_proto::AudioStatus> {
+        None
+    }
+
+    /// Input level since the previous call, while recording — what the
+    /// pipeline publishes as `audio_level` for HUD meters. `None` (the
+    /// default) publishes nothing.
+    fn level(&self) -> Option<Level> {
         None
     }
 }
@@ -167,6 +174,7 @@ pub struct HostAudioSource {
     input_open: Arc<AtomicBool>,
     pre_roll_ms: u32,
     diagnostics: Arc<Mutex<CaptureDiagnostics>>,
+    meter: LevelMeter,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -178,7 +186,7 @@ impl HostAudioSource {
     /// Propagates a device-open failure from the capture thread.
     pub fn new(config: crate::config::AudioConfig) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<AudioCmd>();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<LevelMeter>>();
         let recording = Arc::new(AtomicBool::new(false));
         let flag = recording.clone();
         let input_open = Arc::new(AtomicBool::new(false));
@@ -193,7 +201,7 @@ impl HostAudioSource {
                 let mut capture = match AudioCapture::new(config) {
                     Ok(c) => {
                         open_flag.store(c.is_armed(), Ordering::Release);
-                        let _ = ready_tx.send(Ok(()));
+                        let _ = ready_tx.send(Ok(c.level_meter()));
                         c
                     }
                     Err(e) => {
@@ -245,7 +253,7 @@ impl HostAudioSource {
                 capture.cancel();
             })?;
 
-        ready_rx
+        let meter = ready_rx
             .recv()
             .map_err(|_| anyhow::anyhow!("audio capture thread died during startup"))??;
 
@@ -255,6 +263,7 @@ impl HostAudioSource {
             input_open,
             pre_roll_ms,
             diagnostics,
+            meter,
             thread: Mutex::new(Some(thread)),
         })
     }
@@ -327,6 +336,10 @@ impl AudioSource for HostAudioSource {
             input_open: self.input_open.load(Ordering::Acquire),
             pre_roll_ms: Some(self.pre_roll_ms),
         })
+    }
+
+    fn level(&self) -> Option<Level> {
+        self.meter.take()
     }
 }
 
@@ -762,6 +775,7 @@ pub mod mock {
         pub cancels: AtomicUsize,
         stop_delay: std::time::Duration,
         snapshot_available: bool,
+        level: Option<Level>,
     }
 
     impl MockAudio {
@@ -774,6 +788,7 @@ pub mod mock {
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
                 snapshot_available: true,
+                level: None,
             }
         }
 
@@ -786,6 +801,7 @@ pub mod mock {
                 cancels: AtomicUsize::new(0),
                 stop_delay: std::time::Duration::ZERO,
                 snapshot_available: true,
+                level: None,
             }
         }
 
@@ -794,6 +810,13 @@ pub mod mock {
         #[must_use]
         pub fn with_stop_delay(mut self, delay: std::time::Duration) -> Self {
             self.stop_delay = delay;
+            self
+        }
+
+        /// Report this input level on every read while recording.
+        #[must_use]
+        pub fn with_level(mut self, rms: f32) -> Self {
+            self.level = Some(Level { rms, peak: rms });
             self
         }
 
@@ -844,6 +867,11 @@ pub mod mock {
                 (self.snapshot_available && self.recording.load(Ordering::Acquire))
                     .then(|| self.samples.clone())
             })
+        }
+
+        fn level(&self) -> Option<Level> {
+            self.level
+                .filter(|_| self.recording.load(Ordering::Acquire))
         }
     }
 

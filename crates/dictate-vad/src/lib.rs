@@ -5,7 +5,7 @@
 //! provides a stateful tracker for hands-free end-of-speech detection.
 
 use anyhow::{bail, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use voice_activity_detector::VoiceActivityDetector;
 
 /// The only sample rate supported by Dictate Agent's capture path and Silero
@@ -15,7 +15,7 @@ pub const SAMPLE_RATE_HZ: usize = 16_000;
 pub const WINDOW_SAMPLES: usize = 512;
 
 /// Configuration for speech gating, trim padding, and hands-free stopping.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VadConfig {
     /// Enables VAD. Disabled is intentionally a pass-through so accessibility

@@ -280,6 +280,7 @@ impl Real {
             None,
             DaemonExtras {
                 diagnostics: Some(doctor),
+                ..Default::default()
             },
         )
         .await

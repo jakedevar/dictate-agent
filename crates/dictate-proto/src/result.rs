@@ -364,8 +364,7 @@ mod tests {
             CommandResult::Config(ConfigSnapshot {
                 values: serde_json::json!({"whisper": {"model": "large-v3-turbo"}}),
                 path: None,
-                applied: vec![],
-                restart_required: vec![],
+                ..Default::default()
             }),
             CommandResult::Dictionary {
                 entries: vec![DictionaryEntry::new("Kubernetes")],

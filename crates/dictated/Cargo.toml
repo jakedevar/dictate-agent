@@ -38,6 +38,7 @@ signal-hook = { workspace = true }
 signal-hook-tokio = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+toml_edit = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

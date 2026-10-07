@@ -237,7 +237,12 @@ fn omitted_capabilities_fail_safe_to_denied() {
             .unwrap();
     assert!(!caps.features.text_injection);
     assert!(
-        !Command::SetConfig { entries: vec![] }.is_permitted(&caps.features),
+        !Command::SetConfig {
+            entries: vec![],
+            document: None,
+            dry_run: false,
+        }
+        .is_permitted(&caps.features),
         "an unknown capability must never imply a known one"
     );
 }

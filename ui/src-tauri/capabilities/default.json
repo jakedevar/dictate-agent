@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Both windows may listen to the daemon's events and call this app's own commands. No filesystem, shell, HTTP or opener access is granted.",
+  "windows": ["hub", "hud"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
+}

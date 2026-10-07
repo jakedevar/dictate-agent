@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, SampleRate, StreamConfig};
 use rodio::{source::SineWave, OutputStream, Sink, Source};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,7 +90,7 @@ impl SampleRing {
 
 /// Software gain controls.  The limiter is deliberately simple: it is a
 /// fail-safe for quiet speech, not S11's VAD/noise-suppression work.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GainConfig {
     /// Apply RMS-normalizing gain after capture.
@@ -119,7 +119,7 @@ impl Default for GainConfig {
 
 /// Capture behavior kept independent of the daemon so fixture tests do not
 /// need a microphone or PipeWire.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AudioConfig {
     /// Whether this daemon may use the microphone at all. `false` starts it in
@@ -163,7 +163,7 @@ impl Default for AudioConfig {
 
 /// Optional Wispr-style chimes.  They are non-blocking and never affect a
 /// recording or a pipeline result when the audio output is unavailable.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EarconConfig {
     pub enabled: bool,
@@ -243,6 +243,49 @@ struct CaptureState {
     ring: SampleRing,
     samples: Vec<f32>,
     recording: bool,
+    /// Input level accumulated since the meter was last read.
+    level: LevelWindow,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct LevelWindow {
+    sum_sq: f64,
+    count: u64,
+    peak: f32,
+}
+
+/// Input amplitude over a window, before gain: what a level meter shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Level {
+    /// Root-mean-square amplitude, `0.0..=1.0`.
+    pub rms: f32,
+    /// Largest absolute sample, `0.0..=1.0`.
+    pub peak: f32,
+}
+
+/// A read-only tap on the capture callback's level, shareable across threads
+/// (the capture itself lives on its own thread because a CPAL stream is not
+/// `Send`).
+#[derive(Clone)]
+pub struct LevelMeter {
+    state: Arc<Mutex<CaptureState>>,
+}
+
+impl LevelMeter {
+    /// The level since the previous call, and reset. `None` when not
+    /// recording or when no audio has arrived since the last read.
+    #[must_use]
+    pub fn take(&self) -> Option<Level> {
+        let mut state = self.state.lock().ok()?;
+        let window = std::mem::take(&mut state.level);
+        if !state.recording || window.count == 0 {
+            return None;
+        }
+        Some(Level {
+            rms: ((window.sum_sq / window.count as f64).sqrt() as f32).clamp(0.0, 1.0),
+            peak: window.peak.clamp(0.0, 1.0),
+        })
+    }
 }
 
 /// Pick a configured device name, falling back to the default only when no
@@ -330,6 +373,7 @@ impl AudioCapture {
             ring: SampleRing::for_duration(SAMPLE_RATE_HZ, config.pre_roll_ms),
             samples: Vec::new(),
             recording: false,
+            level: LevelWindow::default(),
         }));
         let mut capture = Self {
             config,
@@ -547,6 +591,14 @@ impl AudioCapture {
         self.last_diagnostics
     }
 
+    /// A tap on the live input level, for HUD meters.
+    #[must_use]
+    pub fn level_meter(&self) -> LevelMeter {
+        LevelMeter {
+            state: self.state.clone(),
+        }
+    }
+
     #[must_use]
     pub fn duration_secs(samples: &[f32]) -> f64 {
         samples.len() as f64 / f64::from(SAMPLE_RATE_HZ)
@@ -560,6 +612,11 @@ fn record_samples(state: &Arc<Mutex<CaptureState>>, data: &[f32]) {
     state.ring.extend(data);
     if state.recording {
         state.samples.extend_from_slice(data);
+        for &sample in data {
+            state.level.sum_sq += f64::from(sample) * f64::from(sample);
+            state.level.peak = state.level.peak.max(sample.abs());
+        }
+        state.level.count += data.len() as u64;
     }
 }
 
@@ -604,12 +661,41 @@ mod tests {
     #[test]
     fn multichannel_capture_is_downmixed_to_mono() {
         let state = Arc::new(Mutex::new(CaptureState {
+            level: LevelWindow::default(),
             ring: SampleRing::with_capacity(8),
             samples: Vec::new(),
             recording: true,
         }));
         record_interleaved(&state, &[1.0, -1.0, 0.5, 0.25], 2);
         assert_eq!(state.lock().unwrap().samples, vec![0.0, 0.375]);
+    }
+
+    #[test]
+    fn the_level_meter_reports_each_window_once_and_only_while_recording() {
+        let state = Arc::new(Mutex::new(CaptureState {
+            level: LevelWindow::default(),
+            ring: SampleRing::with_capacity(8),
+            samples: Vec::new(),
+            recording: false,
+        }));
+        let meter = LevelMeter {
+            state: state.clone(),
+        };
+        record_samples(&state, &[0.9, -0.9]);
+        assert_eq!(meter.take(), None, "idle pre-roll is not metered");
+
+        state.lock().unwrap().recording = true;
+        record_samples(&state, &[0.5, -0.5, 0.5, -0.5]);
+        record_samples(&state, &[0.0, -0.8]);
+        let level = meter.take().expect("a level while recording");
+        let expected = ((4.0 * 0.25 + 0.64) / 6.0f64).sqrt() as f32;
+        assert!((level.rms - expected).abs() < 1e-6, "{level:?}");
+        assert!((level.peak - 0.8).abs() < 1e-6);
+        assert_eq!(meter.take(), None, "a window is reported once");
+
+        record_samples(&state, &[0.1]);
+        state.lock().unwrap().recording = false;
+        assert_eq!(meter.take(), None, "nothing after recording stops");
     }
 
     #[test]

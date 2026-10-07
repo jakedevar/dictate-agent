@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub use dictate_audio::AudioConfig;
@@ -16,7 +16,7 @@ const CONFIG_FILE: &str = "config.toml";
 const PID_FILE: &str = "dictate.pid";
 const MEDIA_STATE_FILE: &str = "media_was_playing";
 
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub audio: AudioConfig,
@@ -43,7 +43,7 @@ pub struct Config {
 /// The defaults comfortably cover Jake's longest dictation (about ten minutes
 /// of speech) and a CD-quality stereo WAV of it is *not* expected to fit —
 /// raise `max_bytes` for that.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct UploadConfig {
     /// Longest accepted clip, in seconds of audio.
@@ -81,7 +81,7 @@ impl UploadConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct LocalConfig {
     pub host: String,
@@ -92,14 +92,14 @@ pub struct LocalConfig {
     pub timeout_s: f64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct NotificationConfig {
     pub enabled: bool,
     pub timeout_ms: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct TimerConfig {
     pub sound_enabled: bool,
@@ -110,7 +110,7 @@ pub struct TimerConfig {
 ///
 /// Key values are Linux input-event key codes (the values named `KEY_*` in
 /// `/usr/include/linux/input-event-codes.h`). Empty chords are disabled.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct HotkeyConfig {
     pub enabled: bool,
