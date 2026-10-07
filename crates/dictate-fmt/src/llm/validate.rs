@@ -195,6 +195,7 @@ pub fn validate(c: &Check<'_>) -> Result<(), Rejection> {
     let output_words = words(&output_text);
 
     numbers(&input_words, &output_words)?;
+    number_values(c)?;
     novel_words(c, &input_words, &output_words)?;
     edit_distance(c, &input_words, &output_words)?;
     dropped_words(c, &input_words, &output_words)?;
@@ -708,6 +709,98 @@ fn numbers(input: &[String], output: &[String]) -> Result<(), Rejection> {
             return Err(Rejection::new(Validator::Numbers, format!("added {w}")));
         }
     }
+    Ok(())
+}
+
+/// Numeric atoms retain their punctuation, sign, order and multiplicity.
+/// Word-number runs are composed only as complete runs, never a bag of their
+/// individual digits. Ambiguous spoken times/years have explicit alternatives.
+struct NumericAtom {
+    values: Vec<String>,
+    end: usize,
+    start: usize,
+}
+
+fn spoken_values(run: &[&str]) -> Vec<String> {
+    if let Some(point) = run.iter().position(|w| *w == "point") {
+        let left = compose(&run[..point]);
+        let right = run[point + 1..].concat();
+        if let Some(left) = left {
+            if !right.is_empty() && right.bytes().all(|b| b.is_ascii_digit()) {
+                return vec![format!("{left}.{right}")];
+            }
+        }
+        return vec![run.join(" ")];
+    }
+    if run.iter().any(|w| matches!(*w, "hundred" | "thousand" | "million")) {
+        return compose(run).map(|v| vec![v.to_string()]).unwrap_or_default();
+    }
+    let groups = group_values(run);
+    let mut values = vec![groups.iter().map(u64::to_string).collect::<Vec<_>>().join("|")];
+    if let [a, b] = groups.as_slice() {
+        if (10..100).contains(a) && *b < 100 { values.push(format!("{a}{b:02}")); }
+        if *a <= 23 && *b < 60 { values.push(format!("{a}:{b:02}")); }
+    }
+    values
+}
+
+fn numeric_atoms(text: &str) -> Vec<NumericAtom> {
+    static TOKEN: OnceLock<Regex> = OnceLock::new();
+    let re = TOKEN.get_or_init(|| Regex::new(r"[+-]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th)?|[\p{L}]+").unwrap());
+    let tokens: Vec<_> = re.find_iter(text).collect();
+    let mut atoms = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        let w = t.as_str().to_lowercase();
+        if w.chars().any(|ch| ch.is_ascii_digit()) {
+            let mut value = canonical_number(&w);
+            if value.ends_with(":00") && tokens.get(i + 1).is_some_and(|next| matches!(next.as_str().to_lowercase().as_str(), "am" | "pm")) {
+                value.truncate(value.len() - 3);
+            }
+            atoms.push(NumericAtom { values: vec![value], start: t.start(), end: t.end() });
+            i += 1;
+        } else if number_word_value(&w).is_some() || matches!(w.as_str(), "hundred" | "thousand" | "million") {
+            let start = i;
+            let mut run = vec![canonical_number(&w)];
+            i += 1;
+            while i < tokens.len() {
+                let w = tokens[i].as_str().to_lowercase();
+                let gap = &text[tokens[i - 1].end()..tokens[i].start()];
+                let number = number_word_value(&w).is_some() || matches!(w.as_str(), "hundred" | "thousand" | "million");
+                let connector = matches!(w.as_str(), "and" | "point") && tokens.get(i + 1).is_some_and(|next| number_word_value(&next.as_str().to_lowercase()).is_some());
+                if !gap.chars().all(|ch| ch.is_whitespace() || ch == '-') || !(number || connector) { break; }
+                run.push(canonical_number(&w));
+                i += 1;
+            }
+            let refs: Vec<_> = run.iter().map(String::as_str).collect();
+            atoms.push(NumericAtom { values: spoken_values(&refs), start: tokens[start].start(), end: tokens[i - 1].end() });
+        } else { i += 1; }
+    }
+    atoms
+}
+
+fn number_values(c: &Check<'_>) -> Result<(), Rejection> {
+    let input = strip_placeholders(c.input, c.mask);
+    let output = strip_placeholders(c.output, c.mask);
+    let a = numeric_atoms(&input);
+    let b = numeric_atoms(&output);
+    let mut j = 0;
+    for (i, atom) in a.iter().enumerate() {
+        let matches = b.get(j).is_some_and(|out| atom.values.iter().any(|v| out.values.contains(v)));
+        if matches { j += 1; continue; }
+        // Only a numeric retraction followed by another dictated value may
+        // be removed. A value cannot disappear merely because it was licensed
+        // somewhere else in the utterance.
+        let correction = a.get(i + 1).is_some_and(|next| {
+            let between = words(&input[atom.end..next.start]);
+            between.len() <= 6 && between.iter().any(|w| matches!(w.as_str(), "actually" | "sorry" | "correction" | "no"))
+        });
+        if !correction {
+            return Err(Rejection::new(Validator::Numbers, "numeric values, order or occurrences changed"));
+        }
+    }
+    if j != b.len() { return Err(Rejection::new(Validator::Numbers, "numeric values, order or occurrences changed")); }
     Ok(())
 }
 
@@ -1504,6 +1597,28 @@ mod tests {
             )),
             Validator::Numbers
         );
+    }
+
+    #[test]
+    fn numeric_values_and_occurrences_survive_formatting() {
+        for category in ["terminal", "chat", "document"] {
+            for (input, output) in [
+                ("use 3.5 liters", "Use 5.3 liters."),
+                ("use 15 liters", "Use 15.15 liters."),
+                ("use three point five liters", "Use 5.3 liters."),
+                ("set 15 and 20", "Set 20 and 15."),
+                ("use 15 liters", "Use 15 15 liters."),
+                ("use 15 liters today", "Use liters today."),
+                ("use -15 liters", "Use 15 liters."),
+                ("meet at 5:30", "Meet at 30:5."),
+                ("use 1/2 liter", "Use 2/1 liter."),
+                ("use twenty five liters", "Use 5 liters."),
+            ] {
+                assert_eq!(rejected_by(run(input, output, category)), Validator::Numbers, "{input} → {output}");
+            }
+            run("use 3.5 liters", "Use 3.5 liters.", category).unwrap();
+            run("use fifteen liters", "Use 15 liters.", category).unwrap();
+        }
     }
 
     #[test]
