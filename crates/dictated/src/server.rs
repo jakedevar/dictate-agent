@@ -1046,13 +1046,14 @@ fn handshake(
     // transport this connection arrived on, never from what it calls itself:
     // a client claiming `kind: "cli"` over a LAN socket is still remote.
     let kind = hello.client.kind.clone();
-    if kind == ClientKind::Remote {
+    if kind == ClientKind::Remote && !conn.network {
         debug!(%conn.id, "client self-describes as remote on a local socket");
     }
     info!(
         %conn.id,
         client = %hello.client.name,
         version = %hello.client.version.clone().unwrap_or_else(|| "?".into()),
+        transport = if conn.network { "network" } else { "socket" },
         "handshake"
     );
 
