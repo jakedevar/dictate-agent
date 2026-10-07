@@ -233,7 +233,9 @@ impl Harness {
             media: setup.media,
             earcons: setup.earcons,
             history: history.clone(),
-            local: Arc::new(dictate_core::local_executor::LocalExecutor::new(&setup.local)),
+            local: Arc::new(dictate_core::local_executor::LocalExecutor::new(
+                &setup.local,
+            )),
             timer: Arc::new(dictate_core::timer::TimerExecutor::new(
                 &dictate_core::config::TimerConfig::default(),
             )),

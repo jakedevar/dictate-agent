@@ -762,7 +762,6 @@ fn process_name(pid: u32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-
 /// The `grammar_model` check (the id predates S21 and is kept for `doctor
 /// --json` consumers): walk the `[format.llm]` ladder the way the formatter
 /// resolves it. Ok when the preferred (head) model is installed, Warn when a

@@ -458,13 +458,22 @@ mod tests {
 
     #[test]
     fn parse_host_port_splits_an_explicit_port() {
-        assert_eq!(parse_host_port("http://localhost:11434"), ("http://localhost".into(), 11434));
-        assert_eq!(parse_host_port("http://192.168.1.100:8080"), ("http://192.168.1.100".into(), 8080));
+        assert_eq!(
+            parse_host_port("http://localhost:11434"),
+            ("http://localhost".into(), 11434)
+        );
+        assert_eq!(
+            parse_host_port("http://192.168.1.100:8080"),
+            ("http://192.168.1.100".into(), 8080)
+        );
     }
 
     #[test]
     fn parse_host_port_defaults_a_missing_port() {
-        assert_eq!(parse_host_port("http://localhost"), ("http://localhost".into(), 11434));
+        assert_eq!(
+            parse_host_port("http://localhost"),
+            ("http://localhost".into(), 11434)
+        );
     }
 
     #[test]

@@ -203,7 +203,10 @@ mod tests {
         ] {
             assert_eq!(clean_answer(text), text);
         }
-        assert_eq!(clean_answer("Done. Thank you. /no_think"), "Done. Thank you.");
+        assert_eq!(
+            clean_answer("Done. Thank you. /no_think"),
+            "Done. Thank you."
+        );
     }
 
     #[test]

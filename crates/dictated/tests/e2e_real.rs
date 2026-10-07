@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dictate_core::config::{Config, ConfigReport};
-use dictate_core::ports::mock::{MockInjector, NullEarcons, NullMedia, RecordingNotifier};
 use dictate_core::llm_formatter::LlmFormatterPort;
+use dictate_core::ports::mock::{MockInjector, NullEarcons, NullMedia, RecordingNotifier};
 use dictate_core::ports::{AudioSource, DisabledAudioSource, WhisperStt};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};

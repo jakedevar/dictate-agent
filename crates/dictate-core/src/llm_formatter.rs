@@ -182,7 +182,10 @@ mod tests {
     }
 
     impl Fake {
-        fn new(installed: Result<Vec<&'static str>, String>, reply: Result<&str, BackendError>) -> Arc<Self> {
+        fn new(
+            installed: Result<Vec<&'static str>, String>,
+            reply: Result<&str, BackendError>,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 installed,
                 reply: Mutex::new(reply.map(str::to_owned)),
@@ -192,7 +195,10 @@ mod tests {
     }
 
     impl ChatBackend for Fake {
-        fn chat<'a>(&'a self, request: &'a ChatRequest) -> LlmFuture<'a, Result<ChatResponse, BackendError>> {
+        fn chat<'a>(
+            &'a self,
+            request: &'a ChatRequest,
+        ) -> LlmFuture<'a, Result<ChatResponse, BackendError>> {
             Box::pin(async move {
                 let prompt = request
                     .messages
@@ -233,7 +239,11 @@ mod tests {
             })
         }
 
-        fn load<'a>(&'a self, _model: &'a str, _keep_alive: &'a str) -> LlmFuture<'a, Result<Duration, BackendError>> {
+        fn load<'a>(
+            &'a self,
+            _model: &'a str,
+            _keep_alive: &'a str,
+        ) -> LlmFuture<'a, Result<Duration, BackendError>> {
             Box::pin(async { Ok(Duration::from_millis(1)) })
         }
     }
@@ -286,12 +296,19 @@ mod tests {
         let status = port.status().unwrap();
         assert_eq!(status.health, FormatterHealth::ModelMissing);
         assert!(
-            status.detail.as_deref().unwrap_or_default().contains("qwen3.6:27b"),
+            status
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("qwen3.6:27b"),
             "{status:?}"
         );
         // Known-unavailable: the pass is skipped without a connection attempt.
         assert_eq!(
-            port.plan("so we should ship the fix today", &ctx("slack", AppCategory::Chat)),
+            port.plan(
+                "so we should ship the fix today",
+                &ctx("slack", AppCategory::Chat)
+            ),
             FormatPlan::Skip(SkipReason::DependencyUnavailable)
         );
     }
@@ -366,7 +383,10 @@ mod tests {
     async fn a_dictated_thank_you_survives_formatting() {
         for (input, reply) in [
             ("i just wanted to thank you", "I just wanted to thank you."),
-            ("thanks for the report. thank you", "Thanks for the report. Thank you."),
+            (
+                "thanks for the report. thank you",
+                "Thanks for the report. Thank you.",
+            ),
         ] {
             let fake = Fake::new(Ok(vec!["gemma4:e4b"]), Ok(reply));
             let port = port(fake);

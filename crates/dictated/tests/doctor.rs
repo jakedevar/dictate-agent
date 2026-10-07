@@ -136,7 +136,11 @@ async fn an_installed_formatter_model_passes() {
 async fn a_formatter_on_a_fallback_rung_warns_and_names_the_preferred_model() {
     let ollama = fake_ollama(&["gemma4:12b"]).await;
     let h = Harness::with(Setup::default().with_doctor(
-        config_with_ladder(&std::env::temp_dir(), &ollama, &["gemma4:e4b", "gemma4:12b"]),
+        config_with_ladder(
+            &std::env::temp_dir(),
+            &ollama,
+            &["gemma4:e4b", "gemma4:12b"],
+        ),
         ConfigReport::default(),
     ))
     .await;
@@ -148,7 +152,11 @@ async fn a_formatter_on_a_fallback_rung_warns_and_names_the_preferred_model() {
         "{}",
         model.detail
     );
-    assert!(model.fix.as_deref().unwrap().contains("ollama pull gemma4:e4b"));
+    assert!(model
+        .fix
+        .as_deref()
+        .unwrap()
+        .contains("ollama pull gemma4:e4b"));
     h.stop().await;
 }
 
@@ -156,16 +164,27 @@ async fn a_formatter_on_a_fallback_rung_warns_and_names_the_preferred_model() {
 async fn a_formatter_ladder_with_no_installed_rung_fails() {
     let ollama = fake_ollama(&["qwen3.6:27b"]).await;
     let h = Harness::with(Setup::default().with_doctor(
-        config_with_ladder(&std::env::temp_dir(), &ollama, &["gemma4:e4b", "gemma4:12b"]),
+        config_with_ladder(
+            &std::env::temp_dir(),
+            &ollama,
+            &["gemma4:e4b", "gemma4:12b"],
+        ),
         ConfigReport::default(),
     ))
     .await;
     let report = diagnose(&h, true).await;
     let model = report.check("grammar_model").unwrap();
     assert_eq!(model.status, CheckStatus::Fail, "{model:?}");
-    assert!(model.detail.contains("gemma4:e4b → gemma4:12b"), "{}", model.detail);
+    assert!(
+        model.detail.contains("gemma4:e4b → gemma4:12b"),
+        "{}",
+        model.detail
+    );
     let fix = model.fix.as_deref().unwrap();
-    assert!(fix.contains("ollama pull gemma4:e4b") && fix.contains("qwen3.6:27b"), "{fix}");
+    assert!(
+        fix.contains("ollama pull gemma4:e4b") && fix.contains("qwen3.6:27b"),
+        "{fix}"
+    );
     h.stop().await;
 }
 

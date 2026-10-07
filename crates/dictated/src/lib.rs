@@ -32,8 +32,8 @@ use anyhow::{Context, Result};
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource,
-    HostEarcons, HostInjector, PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
+    AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource, HostEarcons, HostInjector,
+    PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
 use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
