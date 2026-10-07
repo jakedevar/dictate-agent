@@ -267,6 +267,11 @@ impl Real {
                 &config.local,
             )),
             timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
+            editor: Arc::new(dictate_core::edit_executor::EditExecutor::new(
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )),
             local_model: config.local.model.clone(),
         });
 

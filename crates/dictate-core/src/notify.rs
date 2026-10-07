@@ -108,6 +108,14 @@ impl Notifier {
         );
     }
 
+    pub fn edit_preview(&self, replacement: &str) {
+        self.notify("Edit preview", replacement, "document-edit", Some(10000));
+    }
+
+    pub fn edit_error(&self, message: &str) {
+        self.notify("Edit failed", message, "dialog-error", Some(10000));
+    }
+
     /// Error — 10s display, auto-copies the full error message to clipboard.
     pub fn error(&self, message: &str) {
         if !self.enabled {

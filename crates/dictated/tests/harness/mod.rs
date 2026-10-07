@@ -85,6 +85,7 @@ pub struct Setup {
     pub config_file: Option<PathBuf>,
     /// The LOCAL route's Ollama settings (point `host` at a fake server).
     pub local: dictate_core::config::LocalConfig,
+    pub editor: Option<Arc<dictate_core::edit_executor::EditExecutor>>,
 }
 
 impl Default for Setup {
@@ -115,6 +116,7 @@ impl Default for Setup {
             doctor: None,
             config_file: None,
             local: dictate_core::config::LocalConfig::default(),
+            editor: None,
         }
     }
 }
@@ -247,6 +249,13 @@ impl Harness {
             timer: Arc::new(dictate_core::timer::TimerExecutor::new(
                 &dictate_core::config::TimerConfig::default(),
             )),
+            editor: setup.editor.unwrap_or_else(|| {
+                Arc::new(dictate_core::edit_executor::EditExecutor::new(
+                    &setup.local,
+                    &setup.format.llm,
+                    &Default::default(),
+                ))
+            }),
             local_model: setup.local.model.clone(),
         });
 

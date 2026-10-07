@@ -590,6 +590,7 @@ impl Engine {
 
     fn handle_stop(&mut self, actor: &Actor) -> Result<SessionId, ProtoError> {
         let context = self.pipeline.context.clone();
+        let injector = self.pipeline.injector.clone();
         let session = self.authorize(actor)?;
         if session.stop_issued {
             return Err(ProtoError::new(
@@ -598,6 +599,17 @@ impl Engine {
             ));
         }
         if let Some(options) = &session.context_options {
+            // Snapshot the actual input widget before waking the pipeline;
+            // recognition and even the context provider may outlast focus.
+            let destination = if options.inject
+                && options.capture_context
+                && options.allowed_routes.contains(&Route::Edit)
+            {
+                injector.edit_destination()
+            } else {
+                None
+            };
+            session.handle.set_stop_edit_destination(destination);
             // This bounded capture runs at the user's stop action, before the
             // pipeline wakes. Named apps and untrusted callers do not capture.
             session

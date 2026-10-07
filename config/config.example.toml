@@ -345,3 +345,11 @@ recase_phrases = true
 fuzzy = false
 # Single-token edit similarity, 0.8..1.0; short words and ambiguous matches skip.
 fuzzy_threshold = 0.9
+
+# S25 — say "edit: make this formal" with text selected, or force route=edit.
+# Uses [local] model ladder/host and [format.llm] timeout/keep_alive.
+# Only local live sessions can edit. Terminals are excluded (Ctrl+C is unsafe).
+[edit]
+# Show a proposal in a notification without replacing the selection.
+# Privacy sessions suppress the preview notification.
+preview_only = false
