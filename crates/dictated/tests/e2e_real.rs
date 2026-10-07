@@ -290,7 +290,7 @@ impl Real {
             pipeline.clone(),
             history,
             &runtime,
-            dictated::server::host_capabilities(true, false),
+            dictated::server::local_capabilities(true),
             None,
             DaemonExtras {
                 diagnostics: Some(doctor),
