@@ -181,6 +181,7 @@ pub fn validate(c: &Check<'_>) -> Result<(), Rejection> {
     new_lines(c)?;
     question(c)?;
     span_correction(c)?;
+    span_positions(c)?;
 
     let structure = c.policy.allows_new_lines();
     let input_text = strip_placeholders(c.input, c.mask);
@@ -427,6 +428,31 @@ fn span_correction(c: &Check<'_>) -> Result<(), Rejection> {
 // ---------------------------------------------------------------------------
 // Lexical
 // ---------------------------------------------------------------------------
+
+/// Placeholders anchor the prose on both sides. Checking their mutual order
+/// alone lets "copy A to B" silently turn into "copy to A B". Validate each
+/// intervening gap against its own dictated tokens, conservatively failing
+/// open when grammar repair would need to move words across an anchor.
+fn span_positions(c: &Check<'_>) -> Result<(), Rejection> {
+    let pattern = c.mask.pattern();
+    let input_spans: Vec<_> = pattern.find_iter(c.input).collect();
+    let output_spans: Vec<_> = pattern.find_iter(c.output).collect();
+    if input_spans.is_empty() && output_spans.is_empty() { return Ok(()); }
+    let fail = || Rejection::new(Validator::ProtectedSpans, "protected span moved relative to dictated words");
+    if input_spans.len() != output_spans.len() { return Err(fail()); }
+    let (mut i, mut o) = (0, 0);
+    for (a, b) in input_spans.iter().zip(&output_spans) {
+        if a.as_str() != b.as_str() { return Err(fail()); }
+        let aw = words(&c.input[i..a.start()]);
+        let bw = words(&c.output[o..b.start()]);
+        if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) { return Err(fail()); }
+        i = a.end(); o = b.end();
+    }
+    let aw = words(&c.input[i..]);
+    let bw = words(&c.output[o..]);
+    if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) { return Err(fail()); }
+    Ok(())
+}
 
 fn strip_placeholders(text: &str, mask: MaskStyle) -> String {
     mask.pattern().replace_all(text, " ").into_owned()
@@ -1448,6 +1474,20 @@ mod tests {
             "terminal",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn protected_spans_keep_their_relationship_to_surrounding_words() {
+        for category in ["terminal", "chat", "document"] {
+            for (input, output) in [
+                ("copy ⟦1⟧ to ⟦2⟧", "Copy to ⟦1⟧ ⟦2⟧."),
+                ("send the report to ⟦1⟧ tomorrow", "Send ⟦1⟧ the report to tomorrow."),
+                ("delete ⟦1⟧ then keep ⟦2⟧", "⟦1⟧ delete then keep ⟦2⟧."),
+            ] {
+                assert_eq!(rejected_by(run(input, output, category)), Validator::ProtectedSpans);
+            }
+            run("um copy ⟦1⟧ to ⟦2⟧", "Copy ⟦1⟧ to ⟦2⟧.", category).unwrap();
+        }
     }
 
     #[test]
