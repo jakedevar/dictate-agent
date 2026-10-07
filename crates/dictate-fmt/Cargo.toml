@@ -2,6 +2,7 @@
 name = "dictate-fmt"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Live LLM eval tier: `just eval-llm [model]` runs the corpus against a real

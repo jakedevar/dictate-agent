@@ -83,6 +83,7 @@ install -m 0644 "$repo/config/config.example.toml" "$root/share/dictate-agent/"
 install -m 0644 "$repo/docs/protocol.md" "$repo/docs/INSTALL.md" "$repo/docs/MIGRATION-FROM-PYTHON.md" \
     "$root/share/dictate-agent/docs/"
 install -m 0755 "$repo/packaging/install.sh" "$root/install.sh"
+install -m 0644 "$repo/LICENSE" "$repo/THIRD_PARTY.md" "$root/"
 if [ -n "$ui" ]; then
     install -d "$root/share/applications" "$root/share/icons"
     install -m 0755 "$ui" "$root/bin/dictate-ui"

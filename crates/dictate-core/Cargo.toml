@@ -2,6 +2,7 @@
 name = "dictate-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Compiles the deterministic port doubles in `ports::mock` into the library so

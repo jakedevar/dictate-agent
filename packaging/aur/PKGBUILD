@@ -18,9 +18,7 @@ pkgrel=1
 pkgdesc='Local-first voice dictation daemon: whisper.cpp STT, local-LLM cleanup, X11 text injection'
 arch=('x86_64')
 url='https://github.com/jakedevar/dictate-agent'
-# The repository has no LICENSE file yet (the UI crate declares MIT); pick one
-# before publishing.
-license=('custom')
+license=('MIT')
 depends=('alsa-lib' 'openssl' 'systemd')
 makedepends=('git' 'rust' 'cmake' 'clang' 'pkgconf')
 optdepends=('cuda: GPU transcription when built with _cuda=1'
@@ -69,4 +67,6 @@ package() {
   make install-files install-unit \
     DESTDIR="$pkgdir" PREFIX=/usr SYSTEMD_USER_DIR=/usr/lib/systemd/user \
     TARGET_DIR=target/release
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 THIRD_PARTY.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
 }
