@@ -229,6 +229,11 @@ keep it out of the Python daemon's namespace until the v1.0 cutover gate.
 
 ## Where to look next
 
+- `docs/INSTALL.md` — install / upgrade / rollback (`just install`, `install-unit`,
+  `install-ui`, `scripts/package.sh`, `packaging/aur/PKGBUILD`);
+  `docs/MIGRATION-FROM-PYTHON.md` — the cutover and its rollback;
+  `.github/workflows/ci.yml` — CPU-only CI (S42). `scripts/install-smoke.sh`
+  tests the install targets in a temp HOME.
 - `AGENTS.md` — architecture, pipeline diagram, per-component design.
 - `thoughts/shared/plans/2026-08-07-wisprflow-parity-master-slice-map.md` —
   the full Wispr Flow parity rebuild plan (ground truth, target
