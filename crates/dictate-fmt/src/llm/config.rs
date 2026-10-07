@@ -511,10 +511,12 @@ struct LegacyGrammar {
 
 impl LegacyGrammar {
     fn into_config(self) -> LlmConfig {
-        let mut config = LlmConfig::default();
         // The historical [grammar] table enabled the pass unless explicitly
         // opted out; the new default (no table) remains disabled.
-        config.enabled = self.enabled.unwrap_or(true);
+        let mut config = LlmConfig {
+            enabled: self.enabled.unwrap_or(true),
+            ..LlmConfig::default()
+        };
         if let Some(host) = self.host {
             config.host = host;
         }
