@@ -721,7 +721,17 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
             let e = BackendError::Timeout(timeout);
             return unchanged(trace, Some(e.to_string()), None, Some(e));
         }
-        Ok(Err(e)) => return unchanged(trace, Some(e.to_string()), None, Some(e)),
+        Ok(Err(e)) => {
+            // A server error body can echo its prompt. Preserve the error
+            // class for health reporting, but never forward private text to
+            // the resolver, pipeline timings or status notifier.
+            let e = if ctx.private {
+                private_backend_error(e, &ctx.model)
+            } else {
+                e
+            };
+            return unchanged(trace, Some(e.to_string()), None, Some(e));
+        }
         Ok(Ok(r)) => r,
     };
 
@@ -774,6 +784,20 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
         formatted: Some(format!("{lead}{restored}{trail}")),
         backend_error: None,
         trace,
+    }
+}
+
+fn private_backend_error(error: BackendError, model: &str) -> BackendError {
+    let suppressed = || "private session; detail suppressed".to_string();
+    match error {
+        BackendError::Unreachable(_) => BackendError::Unreachable(suppressed()),
+        BackendError::ModelMissing(_) => BackendError::ModelMissing(model.to_string()),
+        BackendError::Timeout(duration) => BackendError::Timeout(duration),
+        BackendError::Http { status, .. } => BackendError::Http {
+            status,
+            message: suppressed(),
+        },
+        BackendError::Malformed(_) => BackendError::Malformed(suppressed()),
     }
 }
 

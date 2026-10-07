@@ -7,10 +7,13 @@ use dictate_fmt::llm::{
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-struct RejectingBackend;
+struct RejectingBackend(Option<BackendError>);
 impl ChatBackend for RejectingBackend {
     fn chat<'a>(&'a self, _: &'a ChatRequest) -> BoxFuture<'a, Result<ChatResponse, BackendError>> {
         Box::pin(async {
+            if let Some(error) = &self.0 {
+                return Err(error.clone());
+            }
             Ok(ChatResponse {
                 content: "Please check the logs.".into(),
                 done_reason: Some("stop".into()),
@@ -53,21 +56,34 @@ async fn private_rejection_logs_no_dictated_words() {
         .with_writer(move || writer.clone())
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
-    let f = LlmFormatter::with_backend(
-        LlmConfig {
-            enabled: true,
-            ..Default::default()
-        },
-        Arc::new(RejectingBackend),
-    );
     let req = LlmRequest {
         private: true,
         ..LlmRequest::new("please check the logs for syntheticsecret")
     };
-    let out = f.format(&req).await;
-    assert_eq!(out.text, req.text);
-    assert!(out.validator_rejection.is_some());
-    assert!(!out.error.unwrap().contains("syntheticsecret"));
+    for error in [
+        None,
+        Some(BackendError::Http {
+            status: 500,
+            message: "syntheticsecret".into(),
+        }),
+        Some(BackendError::Malformed("syntheticsecret".into())),
+        Some(BackendError::Unreachable("syntheticsecret".into())),
+        Some(BackendError::ModelMissing("syntheticsecret".into())),
+    ] {
+        let rejection_expected = error.is_none();
+        let f = LlmFormatter::with_backend(
+            LlmConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            Arc::new(RejectingBackend(error)),
+        );
+        let out = f.format(&req).await;
+        assert_eq!(out.text, req.text);
+        assert_eq!(out.validator_rejection.is_some(), rejection_expected);
+        assert!(!out.error.unwrap().contains("syntheticsecret"));
+        assert!(!f.health().summary().contains("syntheticsecret"));
+    }
     let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
     assert!(logged.contains("LLM pass failed open"), "{logged}");
     assert!(!logged.contains("syntheticsecret"), "{logged}");
