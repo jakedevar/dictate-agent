@@ -23,6 +23,8 @@
 //! - `E2E_RUNS` — measured runs per fixture (default 8, after one warm-up).
 //! - `E2E_MODEL` — path to the GGUF (default: the standard install location).
 //! - `E2E_WER_MAX` — word-error-rate ceiling (default 0.10).
+//! - `E2E_LLM_MODEL` — turn the LLM formatting pass on with this one Ollama
+//!   model (default: off, so the run does not depend on installed models).
 
 mod harness;
 
@@ -32,7 +34,8 @@ use std::time::{Duration, Instant};
 
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::ports::mock::{MockInjector, NullEarcons, NullMedia, RecordingNotifier};
-use dictate_core::ports::{AudioSource, DisabledAudioSource, GrammarFormatter, WhisperStt};
+use dictate_core::llm_formatter::LlmFormatterPort;
+use dictate_core::ports::{AudioSource, DisabledAudioSource, WhisperStt};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};
 use dictate_proto::{
@@ -227,9 +230,10 @@ impl Real {
         config.notifications.enabled = false;
         // The LLM pass is off unless a run asks for it: this test is about the
         // speech path, and must not depend on which Ollama models are installed.
-        config.grammar.enabled = std::env::var_os("E2E_GRAMMAR_MODEL").is_some();
-        if let Ok(m) = std::env::var("E2E_GRAMMAR_MODEL") {
-            config.grammar.model = m;
+        config.format.llm.enabled = false;
+        if let Ok(m) = std::env::var("E2E_LLM_MODEL") {
+            config.format.llm.enabled = true;
+            config.format.llm.models = vec![m];
         }
 
         let started = Instant::now();
@@ -252,7 +256,7 @@ impl Real {
             audio: Arc::new(DisabledAudioSource::new(&config.audio)) as Arc<dyn AudioSource>,
             stt: stt.clone(),
             vad: Arc::new(dictate_vad::SileroVad::new(config.vad.clone()).unwrap()),
-            formatter: Arc::new(GrammarFormatter::new(&config.grammar)),
+            formatter: Arc::new(LlmFormatterPort::new(config.format.llm.clone())),
             injector: injector.clone(),
             notifier: Arc::new(RecordingNotifier::default()),
             media: Arc::new(NullMedia),
