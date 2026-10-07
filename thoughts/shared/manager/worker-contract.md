@@ -37,6 +37,11 @@ slice section of
   a log under `/tmp`. **Never end your turn to wait for a build, test run or
   notification** — your session ends with your turn and background jobs die.
   If a command times out, rerun it; cargo resumes.
+- **Project rule, which overrides the generic RSI catalog advice to use
+  `AgentSubmitJob` for long gates:** `AgentSubmitJob` cannot run this repo's
+  gates. Its typed cargo params have no clippy, `just` recipe or feature lines.
+  Run `just check-cpu` in your own turn as described above. This gap is already
+  tracked as #1466 and reported to RSI, so do not file it again.
 - Real-hardware checks (CUDA whisper, Ollama, X11) are allowed on this machine
   but must be isolated: a private Xvfb display for anything that types or
   reads windows (never `DISPLAY=:0` for injection), a temp
