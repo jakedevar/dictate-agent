@@ -376,3 +376,41 @@ fn contractions_and_hyphenated_compounds_are_never_split() {
         assert_eq!(d.apply(input, None).text, want, "input: {input:?}");
     }
 }
+/// `recase-common-word-phrases`: with `recase_phrases` on, an entry whose
+/// phrase is an ordinary English word must not recase that word everywhere
+/// ("rust" on a bumper), while a distinctive term still recases and an
+/// explicit `sounds_like` alias is always honoured.
+#[test]
+fn recasing_skips_ordinary_words_but_not_terms_or_explicit_aliases() {
+    let d = dict(Default::default()); // recase_phrases = true
+    for e in [
+        entry("Rust", &[]),
+        entry("Swift", &[]),
+        entry("Kubernetes", &[]),
+        entry("Tauri", &[]),
+        entry("Apple", &["appel"]),
+    ] {
+        d.upsert(e).unwrap();
+    }
+    // Ordinary words are left alone.
+    for input in [
+        "the rust on the car",
+        "she was swift to reply",
+        "an apple a day",
+        "Rust is a language",
+    ] {
+        assert_eq!(d.apply(input, None).text, input, "input: {input:?}");
+    }
+    // Terms recase; an explicit alias still rewrites.
+    for (input, want) in [
+        ("deploy to kubernetes now", "deploy to Kubernetes now"),
+        ("try tauri", "try Tauri"),
+        ("I like appel pie", "I like Apple pie"),
+    ] {
+        assert_eq!(d.apply(input, None).text, want, "input: {input:?}");
+    }
+    // Opting out of the rule: recase_phrases off never recased anyway, and a
+    // multi-word phrase containing a rare word is not an ordinary word.
+    d.upsert(entry("Rust Belt", &[])).unwrap();
+    assert_eq!(d.apply("the rust belt", None).text, "the Rust Belt");
+}
