@@ -48,12 +48,18 @@ async fn fake_ollama(models: &[&str]) -> String {
 }
 
 /// A config whose paths all point into a private temp directory.
-fn config_in(dir: &std::path::Path, ollama: &str, grammar_model: &str) -> Config {
+fn config_in(dir: &std::path::Path, ollama: &str, formatter_model: &str) -> Config {
+    config_with_ladder(dir, ollama, &[formatter_model])
+}
+
+/// [`config_in`] with a whole `[format.llm]` model ladder.
+fn config_with_ladder(dir: &std::path::Path, ollama: &str, ladder: &[&str]) -> Config {
     let mut c = Config::default();
     c.whisper.model_path = dir.join("no-such-model.bin").to_string_lossy().into_owned();
     c.whisper.device = "cpu".into();
-    c.grammar.host = ollama.to_string();
-    c.grammar.model = grammar_model.to_string();
+    c.format.llm.enabled = true;
+    c.format.llm.host = ollama.to_string();
+    c.format.llm.models = ladder.iter().map(|m| (*m).to_string()).collect();
     c.local.host = ollama.to_string();
     c.local.model = "local-model:1b".into();
     c.notifications.enabled = false;
@@ -127,6 +133,43 @@ async fn an_installed_formatter_model_passes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_formatter_on_a_fallback_rung_warns_and_names_the_preferred_model() {
+    let ollama = fake_ollama(&["gemma4:12b"]).await;
+    let h = Harness::with(Setup::default().with_doctor(
+        config_with_ladder(&std::env::temp_dir(), &ollama, &["gemma4:e4b", "gemma4:12b"]),
+        ConfigReport::default(),
+    ))
+    .await;
+    let report = diagnose(&h, true).await;
+    let model = report.check("grammar_model").unwrap();
+    assert_eq!(model.status, CheckStatus::Warn, "{model:?}");
+    assert!(
+        model.detail.contains("gemma4:e4b") && model.detail.contains("gemma4:12b"),
+        "{}",
+        model.detail
+    );
+    assert!(model.fix.as_deref().unwrap().contains("ollama pull gemma4:e4b"));
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_formatter_ladder_with_no_installed_rung_fails() {
+    let ollama = fake_ollama(&["qwen3.6:27b"]).await;
+    let h = Harness::with(Setup::default().with_doctor(
+        config_with_ladder(&std::env::temp_dir(), &ollama, &["gemma4:e4b", "gemma4:12b"]),
+        ConfigReport::default(),
+    ))
+    .await;
+    let report = diagnose(&h, true).await;
+    let model = report.check("grammar_model").unwrap();
+    assert_eq!(model.status, CheckStatus::Fail, "{model:?}");
+    assert!(model.detail.contains("gemma4:e4b → gemma4:12b"), "{}", model.detail);
+    let fix = model.fix.as_deref().unwrap();
+    assert!(fix.contains("ollama pull gemma4:e4b") && fix.contains("qwen3.6:27b"), "{fix}");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_local_route_model_is_checked_separately_and_only_warns() {
     let ollama = fake_ollama(&["gemma4:12b"]).await;
     let h = Harness::with(Setup::default().with_doctor(
@@ -170,7 +213,7 @@ async fn an_unreachable_ollama_is_a_failure_when_the_formatter_needs_it() {
 
     // ...and merely a warning when nothing depends on it.
     let mut config = config_in(&dir, "http://127.0.0.1:1", "gemma4:12b");
-    config.grammar.enabled = false;
+    config.format.llm.enabled = false;
     let h2 = Harness::with(Setup::default().with_doctor(config, ConfigReport::default())).await;
     let report = diagnose(&h2, true).await;
     assert_eq!(report.check("ollama").unwrap().status, CheckStatus::Warn);

@@ -309,7 +309,7 @@ async fn doctor_exits_one_on_a_failure_and_prints_the_fix() {
             "grammar_model",
             "Formatter model",
             "model 'qwen3:14b' is not installed",
-            "`ollama pull qwen3:14b`, or set grammar.model to one of: gemma4:12b",
+            "`ollama pull qwen3:14b`, or put one of these in format.llm.models: gemma4:12b",
         )],
     }))
     .await;

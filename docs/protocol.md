@@ -627,7 +627,7 @@ Stable check `id`s (order is the order to read them):
 | `stt_backend` | the loaded backend is what the config asked for (CUDA verified against the GPU's process list when `nvidia-smi` is available) |
 | `formatter` | the formatting pass's observed health (see `status.formatter`) |
 | `ollama` | the Ollama server answers |
-| `grammar_model` | the configured formatter model is installed; lists installed alternatives when it is not |
+| `grammar_model` | the `[format.llm]` model ladder: Ok when the preferred (first) model is installed, Warn when a fallback rung will be used, Fail when none is installed (lists the installed alternatives). The id predates S21 and is kept stable |
 | `local_model` | the `local` route's model is installed |
 | `injection` | a display is present and an injection backend is available |
 | `hotkeys` | every configured input device is readable, when hotkeys are enabled |

@@ -310,7 +310,7 @@ impl Doctor {
             FormatterHealth::Disabled => DiagnosticCheck::skipped(
                 ID,
                 TITLE,
-                "disabled in config ([grammar] enabled = false)",
+                "disabled in config ([format.llm] enabled = false)",
             ),
             FormatterHealth::Ok => {
                 DiagnosticCheck::ok(ID, TITLE, format!("'{model}' is answering"))
@@ -325,19 +325,19 @@ impl Doctor {
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                format!("`ollama pull {model}`, or set grammar.model to an installed model"),
+                format!("`ollama pull {model}`, or put an installed model in format.llm.models"),
             ),
             FormatterHealth::Unreachable => DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                "start Ollama (`ollama serve`) or set grammar.enabled = false",
+                "start Ollama (`ollama serve`) or set format.llm.enabled = false",
             ),
             FormatterHealth::Failing | FormatterHealth::Unknown(_) => DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!("the last run failed: {detail}"),
-                "check the daemon log; set grammar.enabled = false to stop the failures",
+                "check the daemon log; set format.llm.enabled = false to stop the failures",
             ),
         }
     }
@@ -345,73 +345,41 @@ impl Doctor {
     /// Probe Ollama once (per distinct host) and derive the three checks that
     /// depend on it.
     async fn check_ollama(&self) -> Vec<DiagnosticCheck> {
-        let grammar = &self.config.grammar;
+        let llm = &self.config.format.llm;
         let local = &self.config.local;
-        let (grammar_probe, local_probe) = if grammar.host == local.host {
-            let p = ollama::probe(&grammar.host, PROBE_TIMEOUT).await;
+        let (llm_probe, local_probe) = if llm.host == local.host {
+            let p = ollama::probe(&llm.host, PROBE_TIMEOUT).await;
             (p.clone(), p)
         } else {
             tokio::join!(
-                ollama::probe(&grammar.host, PROBE_TIMEOUT),
+                ollama::probe(&llm.host, PROBE_TIMEOUT),
                 ollama::probe(&local.host, PROBE_TIMEOUT)
             )
         };
 
         let mut checks = Vec::new();
-        checks.push(if grammar_probe.reachable {
+        checks.push(if llm_probe.reachable {
             DiagnosticCheck::ok(
                 "ollama",
                 "Ollama server",
                 format!(
                     "reachable at {}; {} model(s) installed",
-                    grammar.host,
-                    grammar_probe.models.len()
+                    llm.host,
+                    llm_probe.models.len()
                 ),
             )
         } else {
-            let why = grammar_probe.error.clone().unwrap_or_default();
-            let detail = format!("no answer from {}: {why}", grammar.host);
+            let why = llm_probe.error.clone().unwrap_or_default();
+            let detail = format!("no answer from {}: {why}", llm.host);
             let fix = "start it with `ollama serve` (or `systemctl --user start ollama`)";
-            if grammar.enabled {
+            if llm.enabled {
                 DiagnosticCheck::fail("ollama", "Ollama server", detail, fix)
             } else {
                 DiagnosticCheck::warn("ollama", "Ollama server", detail, fix)
             }
         });
 
-        checks.push(if !grammar.enabled {
-            DiagnosticCheck::skipped(
-                "grammar_model",
-                "Formatter model",
-                "the formatting pass is disabled",
-            )
-        } else if !grammar_probe.reachable {
-            DiagnosticCheck::skipped(
-                "grammar_model",
-                "Formatter model",
-                "Ollama is unreachable, so installed models are unknown",
-            )
-        } else if grammar_probe.has_model(&grammar.model) {
-            DiagnosticCheck::ok(
-                "grammar_model",
-                "Formatter model",
-                format!("'{}' is installed", grammar.model),
-            )
-        } else {
-            let installed = ollama::describe_installed(&grammar_probe.models);
-            DiagnosticCheck::fail(
-                "grammar_model",
-                "Formatter model",
-                format!(
-                    "model '{}' is not installed (installed: {installed}) — the formatting pass fails open on every dictation",
-                    grammar.model
-                ),
-                format!(
-                    "`ollama pull {}`, or set grammar.model to one of: {installed}",
-                    grammar.model
-                ),
-            )
-        });
+        checks.push(check_formatter_ladder(llm, &llm_probe));
 
         checks.push(if !local_probe.reachable {
             DiagnosticCheck::skipped(
@@ -792,6 +760,63 @@ fn process_name(pid: u32) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+
+/// The `grammar_model` check (the id predates S21 and is kept for `doctor
+/// --json` consumers): walk the `[format.llm]` ladder the way the formatter
+/// resolves it. Ok when the preferred (head) model is installed, Warn when a
+/// fallback rung will be used, Fail when no rung is installed.
+fn check_formatter_ladder(
+    llm: &dictate_fmt::llm::LlmConfig,
+    probe: &ollama::OllamaProbe,
+) -> DiagnosticCheck {
+    const ID: &str = "grammar_model";
+    const TITLE: &str = "Formatter model";
+    if !llm.enabled {
+        return DiagnosticCheck::skipped(ID, TITLE, "the formatting pass is disabled");
+    }
+    if !probe.reachable {
+        return DiagnosticCheck::skipped(
+            ID,
+            TITLE,
+            "Ollama is unreachable, so installed models are unknown",
+        );
+    }
+    let ladder = llm.models.join(" → ");
+    let Some(head) = llm.models.first() else {
+        return DiagnosticCheck::fail(
+            ID,
+            TITLE,
+            "format.llm.models is empty — the formatting pass has no model to run",
+            "list at least one installed model in format.llm.models",
+        );
+    };
+    match llm.models.iter().position(|m| probe.has_model(m)) {
+        Some(0) => DiagnosticCheck::ok(ID, TITLE, format!("'{head}' is installed")),
+        Some(i) => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!(
+                "preferred '{head}' is not installed; falling back to '{}' (ladder: {ladder})",
+                llm.models[i]
+            ),
+            format!("`ollama pull {head}` to use the preferred model"),
+        ),
+        None => {
+            let installed = ollama::describe_installed(&probe.models);
+            DiagnosticCheck::fail(
+                ID,
+                TITLE,
+                format!(
+                    "no model in the ladder ({ladder}) is installed (installed: {installed}) — the formatting pass fails open on every dictation"
+                ),
+                format!(
+                    "`ollama pull {head}`, or put one of these in format.llm.models: {installed}"
+                ),
+            )
+        }
+    }
 }
 
 #[cfg(test)]
