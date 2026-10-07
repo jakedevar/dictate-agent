@@ -13,17 +13,15 @@ eval-live = []
 eval-history = ["eval-live", "dep:rusqlite"]
 
 [dependencies]
-anyhow = { workspace = true }
 # FormatContext carries the protocol's AppContext/Tone/Route (contract §2).
 # dictate-proto depends on nothing in the workspace, so this adds no cycle.
 dictate-proto = { workspace = true }
-ollama-rs = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 # S21 LLM layer (src/llm/); it also uses dictate-proto above (AppCategory,
-# Tone, Route, SkipReason). reqwest is already in the graph through ollama-rs
-# and dictate-stt; the thin client needs its async API, status codes and raw
+# Tone, Route, SkipReason). reqwest is already in the graph through dictate-stt
+# (and ollama-rs in dictate-core); the thin client needs its async API, status codes and raw
 # bodies.
 reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }

@@ -748,9 +748,7 @@ dependencies = [
 name = "dictate-fmt"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "dictate-proto",
- "ollama-rs",
  "regex",
  "reqwest",
  "rusqlite",

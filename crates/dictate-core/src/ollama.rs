@@ -29,7 +29,7 @@ impl OllamaProbe {
 
 /// Query `host` (a URL such as `http://localhost:11434`) with a hard timeout.
 pub async fn probe(host: &str, timeout: Duration) -> OllamaProbe {
-    let (hostname, port) = dictate_fmt::grammar::parse_host_port(host);
+    let (hostname, port) = dictate_fmt::llm::parse_host_port(host);
     let client = ollama_rs::Ollama::builder()
         .host(&hostname)
         .port(port)

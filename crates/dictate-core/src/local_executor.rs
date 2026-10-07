@@ -32,7 +32,7 @@ pub struct LocalExecutor {
 
 impl LocalExecutor {
     pub fn new(config: &crate::config::LocalConfig) -> Self {
-        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.host);
+        let (host, port) = dictate_fmt::llm::parse_host_port(&config.host);
         let mut ladder = vec![config.model.clone()];
         for m in &config.models {
             if !ladder.contains(m) && !m.trim().is_empty() {
@@ -125,8 +125,14 @@ impl LocalExecutor {
 
         let response = tokio::time::timeout(self.timeout, ollama.generate(request)).await??;
 
-        Ok(scrub_returned_text(&response.response))
+        Ok(clean_answer(&response.response))
     }
+}
+
+/// What the user sees of a LOCAL answer: the model's text minus model
+/// artifacts. Never strips a "thank you." (#1069, #1072).
+fn clean_answer(raw: &str) -> String {
+    scrub_returned_text(raw)
 }
 
 /// Check if Ollama is running by hitting /api/tags.
@@ -188,6 +194,17 @@ fn classify_error(e: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_keeps_its_thank_you() {
+        for text in [
+            "I just wanted to thank you.",
+            "Thanks for the report. Thank you.",
+        ] {
+            assert_eq!(clean_answer(text), text);
+        }
+        assert_eq!(clean_answer("Done. Thank you. /no_think"), "Done. Thank you.");
+    }
 
     #[test]
     fn test_classify_error_connection() {

@@ -40,7 +40,9 @@ use dictate_proto::{AppCategory, Route, SkipReason, Tone};
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
-pub use client::{BackendError, ChatBackend, ChatRequest, ChatResponse, HttpBackend};
+pub use client::{
+    parse_host_port, BackendError, ChatBackend, ChatRequest, ChatResponse, HttpBackend,
+};
 pub use config::{CategoryPolicy, LlmConfig, LlmConfigLoad, Style};
 pub use protect::MaskStyle;
 pub use resolve::{LlmHealth, ModelResolver};

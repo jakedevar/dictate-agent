@@ -358,4 +358,24 @@ mod tests {
         );
         assert_eq!(port.plan("ship it", &short), FormatPlan::Run);
     }
+
+    /// #1069 / #1072: the legacy grammar pass scrubbed every trailing
+    /// "thank you." from the model's answer. The LLM path must keep a
+    /// dictated one.
+    #[tokio::test]
+    async fn a_dictated_thank_you_survives_formatting() {
+        for (input, reply) in [
+            ("i just wanted to thank you", "I just wanted to thank you."),
+            ("thanks for the report. thank you", "Thanks for the report. Thank you."),
+        ] {
+            let fake = Fake::new(Ok(vec!["gemma4:e4b"]), Ok(reply));
+            let port = port(fake);
+            port.probe().await;
+            let ctx = ctx("slack", AppCategory::Chat);
+            assert_eq!(port.plan(input, &ctx), FormatPlan::Run);
+            let out = port.format(input, &ctx).await;
+            assert_eq!(out.error, None, "{input}");
+            assert_eq!(out.text, reply);
+        }
+    }
 }
