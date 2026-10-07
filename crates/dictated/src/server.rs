@@ -1010,6 +1010,13 @@ async fn dispatch(
     }
 }
 
+/// The audio-data bytes `limits` admit: the inverse of
+/// `UploadConfig::limits` (`max_message_bytes` = base64 of `max_bytes` plus a
+/// 4096-byte envelope allowance), exact for every `max_bytes`.
+fn decoded_upload_cap(limits: &dictate_proto::Limits) -> u64 {
+    u64::from(limits.max_message_bytes).saturating_sub(4096) * 3 / 4
+}
+
 /// Run an uploaded clip through the pipeline and answer with its transcript.
 ///
 /// The order is deliberate: cheap refusals first (capabilities, options), then
@@ -1028,9 +1035,12 @@ async fn transcribe_audio(
     // The pipeline never logs a network session's words, at any level.
     resolved.remote = conn.network;
 
-    if let (Some(cap), dictate_proto::AudioSource::Inline { data, .. }) =
-        (conn.max_upload_bytes, &audio)
-    {
+    // The decoded-size cap: a network connection's own, else the one the
+    // socket's `[upload] max_bytes` implies.
+    let cap = conn
+        .max_upload_bytes
+        .unwrap_or_else(|| decoded_upload_cap(&capabilities.limits));
+    if let dictate_proto::AudioSource::Inline { data, .. } = &audio {
         if data.len() as u64 > cap {
             return Err(ProtoError::new(
                 ErrorCode::PayloadTooLarge,

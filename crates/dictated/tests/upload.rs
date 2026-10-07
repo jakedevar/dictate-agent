@@ -1041,3 +1041,27 @@ async fn in_audio_less_mode_recording_fails_clearly_and_uploads_still_work() {
     assert!(!audio.input_open);
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_socket_enforces_upload_max_bytes_on_decoded_audio() {
+    let clip = wav(16_000, 1, 1.0);
+    let max = clip.len() as u64;
+    let mut caps = Capabilities::local_trusted();
+    caps.limits = dictate_core::config::UploadConfig {
+        max_bytes: max,
+        ..Default::default()
+    }
+    .limits();
+    let h = Harness::with(Setup::default().with_capabilities(caps)).await;
+    let mut client = h.client().await;
+
+    // Exactly at the limit is accepted.
+    expect_transcript(client.request(transcribe(clip.clone())).await.unwrap());
+
+    let mut over = clip;
+    over.push(0);
+    let err = client.request(transcribe(over)).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::PayloadTooLarge);
+    assert_eq!(err.detail().unwrap()["limit_bytes"], max);
+    h.stop().await;
+}
