@@ -9,6 +9,7 @@
 //!   that is being withheld and `(silence)` for a session where nothing was
 //!   said, because those are different facts.
 
+use crate::safe::{block, inline};
 use dictate_proto::{
     CommandResult, Event, HistoryAnalytics, HistoryPage, InjectionOutcome, StageTiming,
     StageTimings, Status, Transcript,
@@ -44,20 +45,20 @@ pub fn result(result: &CommandResult, json: bool) {
         CommandResult::HistoryAnalytics(analytics) => print_history_analytics(analytics),
         CommandResult::Transcript(t) => print_transcript(t),
         CommandResult::Handshake(h) => {
-            println!("{} {}", h.server.name, h.server.version);
+            println!("{} {}", inline(&h.server.name), inline(&h.server.version));
         }
         CommandResult::Dictionary { entries } => {
             for e in entries {
                 println!(
                     "{:<5} {:<24} {:<8} {}{}",
                     e.id.map(|id| id.to_string()).unwrap_or_default(),
-                    e.phrase,
+                    inline(&e.phrase),
                     if e.enabled { "enabled" } else { "disabled" },
-                    e.sounds_like.join(", "),
+                    inline(&e.sounds_like.join(", ")),
                     if e.apps.is_empty() {
                         String::new()
                     } else {
-                        format!(" [apps: {}]", e.apps.join(", "))
+                        format!(" [apps: {}]", inline(&e.apps.join(", ")))
                     }
                 );
             }
@@ -65,18 +66,18 @@ pub fn result(result: &CommandResult, json: bool) {
         CommandResult::DictionaryEntry { entry } => println!(
             "{} {}",
             entry.id.map(|id| id.to_string()).unwrap_or_default(),
-            entry.phrase
+            inline(&entry.phrase)
         ),
         CommandResult::DictionarySuggestions { suggestions } => {
             for s in suggestions {
                 println!(
                     "{:<24} {} occurrences / {} days ({}) {} → {}",
-                    s.entry.phrase,
+                    inline(&s.entry.phrase),
                     s.count,
                     s.days,
-                    s.reason,
-                    s.entry.sounds_like.join(", "),
-                    s.entry.phrase
+                    inline(&s.reason),
+                    inline(&s.entry.sounds_like.join(", ")),
+                    inline(&s.entry.phrase)
                 );
             }
         }
@@ -110,7 +111,7 @@ fn print_history_analytics(analytics: &HistoryAnalytics) {
 /// `dictate doctor`.
 fn formatter_line(f: &dictate_proto::FormatterStatus) -> String {
     use dictate_proto::FormatterHealth as H;
-    let model = f.model.as_deref().unwrap_or("?");
+    let model = inline(f.model.as_deref().unwrap_or("?"));
     match &f.health {
         H::Disabled => "format   disabled".to_string(),
         H::Ok => format!("format   {model} (ok)"),
@@ -120,7 +121,7 @@ fn formatter_line(f: &dictate_proto::FormatterStatus) -> String {
             other.as_str().replace('_', " ").to_uppercase(),
             f.detail
                 .as_deref()
-                .map(|d| format!(" [{d}]"))
+                .map(|d| format!(" [{}]", inline(d)))
                 .unwrap_or_default()
         ),
     }
@@ -153,7 +154,9 @@ fn print_status(status: &Status) {
     }
     println!(
         "daemon   {} {} (protocol v{})",
-        status.daemon.name, status.daemon.version, status.daemon.protocol_version
+        inline(&status.daemon.name),
+        inline(&status.daemon.version),
+        status.daemon.protocol_version
     );
     if let Some(pid) = status.daemon.pid {
         print!("pid      {pid}");
@@ -165,12 +168,12 @@ fn print_status(status: &Status) {
     if let Some(model) = &status.model {
         println!(
             "model    {} ({}{})",
-            model.name,
+            inline(&model.name),
             if model.loaded { "loaded" } else { "not loaded" },
             model
                 .backend
                 .as_ref()
-                .map(|b| format!(", {b}"))
+                .map(|b| format!(", {}", inline(b)))
                 .unwrap_or_default()
         );
     }
@@ -220,7 +223,7 @@ pub fn transcript_summary(t: &Transcript) -> String {
 }
 
 fn print_transcript(t: &Transcript) {
-    println!("{}", t.text.as_str());
+    println!("{}", block(t.text.as_str()));
     println!(
         "  route {}  {}  {}",
         t.route.as_str(),
@@ -243,7 +246,7 @@ fn print_history(page: &HistoryPage) {
         };
         println!("{:>6}  {:<8} {}", item.id, item.route.as_str(), text);
         if let Some(err) = &item.error {
-            println!("        ! {}", err.message);
+            println!("        ! {}", inline(&err.message));
         }
     }
     if let Some(total) = page.total {
@@ -261,49 +264,52 @@ pub fn event(event: &Event, json: bool) {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
         return;
     }
+    print!("{}", event_text(event));
+}
+
+/// The human-readable form of an event: every line newline-terminated, every
+/// daemon-supplied string escaped so the terminal cannot be steered by it.
+pub fn event_text(event: &Event) -> String {
     match event {
         Event::StateChanged { from, to, .. } => {
-            println!("{:<12} {} -> {}", "state", from.as_str(), to.as_str());
+            format!("{:<12} {} -> {}\n", "state", from.as_str(), to.as_str())
         }
-        Event::Final { transcript, .. } => {
-            println!("{:<12} {}", "final", transcript.text.as_str());
-            println!(
-                "             {}  {}",
-                injection(&transcript.injection),
-                timings(&transcript.timings)
-            );
-        }
+        Event::Final { transcript, .. } => format!(
+            "{:<12} {}\n             {}  {}\n",
+            "final",
+            block(transcript.text.as_str()),
+            injection(&transcript.injection),
+            timings(&transcript.timings)
+        ),
         Event::Partial {
             hypothesis, seq, ..
         } => {
             // Never injectable, and labelled so nobody is tempted.
-            println!("{:<12} [{seq}] {}", "partial?", hypothesis.display_text());
+            format!(
+                "{:<12} [{seq}] {}\n",
+                "partial?",
+                inline(&hypothesis.display_text())
+            )
         }
         Event::InjectionResolved { outcome, .. } => {
-            println!("{:<12} {}", "injection", injection(outcome));
+            format!("{:<12} {}\n", "injection", injection(outcome))
         }
-        Event::Error { error, .. } => {
-            println!(
-                "{:<12} {} ({})",
-                "error",
-                error.message,
-                error.code.as_str()
-            );
-        }
-        Event::AudioLevel { rms, .. } => {
-            println!("{:<12} {rms:.2}", "level");
-        }
-        Event::AudioActivity { activity, .. } => {
-            println!("{:<12} {activity:?}", "audio");
-        }
-        Event::Unknown => println!("{:<12} (from a newer daemon)", "unknown"),
-        Event::ContextResolved { context, .. } => {
-            println!(
-                "{:<12} {}",
-                "context",
-                context.as_ref().map_or("none", |c| c.app.as_str())
-            );
-        }
+        Event::Error { error, .. } => format!(
+            "{:<12} {} ({})\n",
+            "error",
+            inline(&error.message),
+            error.code.as_str()
+        ),
+        Event::AudioLevel { rms, .. } => format!("{:<12} {rms:.2}\n", "level"),
+        Event::AudioActivity { activity, .. } => format!("{:<12} {activity:?}\n", "audio"),
+        Event::Unknown => format!("{:<12} (from a newer daemon)\n", "unknown"),
+        Event::ContextResolved { context, .. } => format!(
+            "{:<12} {}\n",
+            "context",
+            // The app id is derived from a window's WM_CLASS, which any
+            // client can fill with terminal escape sequences.
+            inline(context.as_ref().map_or("none", |c| c.app.as_str()))
+        ),
     }
 }
 
@@ -315,13 +321,17 @@ fn injection(outcome: &InjectionOutcome) -> String {
         // Explicitly *not* reported as success or failure: the portal prompt
         // is still open and `injection_resolved` will settle it.
         InjectionOutcome::AwaitingConsent { backend, .. } => {
-            format!("awaiting consent from {backend}")
+            format!("awaiting consent from {}", inline(backend))
         }
-        InjectionOutcome::ConsentDenied { backend, .. } => format!("consent denied by {backend}"),
-        InjectionOutcome::Unavailable { reason, .. } => format!("unavailable: {reason}"),
+        InjectionOutcome::ConsentDenied { backend, .. } => {
+            format!("consent denied by {}", inline(backend))
+        }
+        InjectionOutcome::Unavailable { reason, .. } => format!("unavailable: {}", inline(reason)),
         InjectionOutcome::Delivered => "delivered to caller".into(),
         InjectionOutcome::Skipped { reason } => format!("not injected ({})", reason.as_str()),
-        InjectionOutcome::Failed { error } => format!("injection failed: {}", error.message),
+        InjectionOutcome::Failed { error } => {
+            format!("injection failed: {}", inline(&error.message))
+        }
         InjectionOutcome::Unknown => "unknown outcome".into(),
     }
 }
@@ -344,7 +354,9 @@ fn timings(t: &StageTimings) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    let s = s.replace('\n', " ");
+    // Flatten layout first (one row per dictation), then defuse what is left.
+    let s = s.replace(['\n', '\r', '\t'], " ");
+    let s = inline(&s).into_owned();
     if s.chars().count() <= max {
         return s;
     }
@@ -508,5 +520,61 @@ mod tests {
         assert!(line(true, true, 300).contains("OPEN while idle"));
         assert!(line(true, false, 0).contains("closed while idle"));
         assert!(line(false, false, 0).contains("audio-less"));
+    }
+
+    // ---- `tail-control-chars`: daemon-supplied text cannot steer a terminal ----
+
+    const HOSTILE: &str = "app\x1b]0;owned\x07\x1b[2J\u{9b}31m";
+
+    fn assert_defused(text: &str) {
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the terminal: {text:?}"
+        );
+        assert!(
+            text.contains("\\x1b"),
+            "the escape should stay visible: {text:?}"
+        );
+    }
+
+    #[test]
+    fn tail_does_not_print_control_characters_from_the_focused_window() {
+        let mut context = dictate_proto::AppContext::new(HOSTILE);
+        context.title = Some(HOSTILE.into());
+        let line = event_text(&Event::ContextResolved {
+            session_id: dictate_proto::SessionId::from("s1".to_string()),
+            context: Some(context),
+        });
+        assert_defused(&line);
+        assert!(line.starts_with("context"), "{line:?}");
+        assert_eq!(
+            line.matches('\n').count(),
+            1,
+            "one event, one line: {line:?}"
+        );
+    }
+
+    #[test]
+    fn tail_defuses_errors_and_partials_and_keeps_a_final_transcripts_layout() {
+        let error = event_text(&Event::Error {
+            session_id: None,
+            error: dictate_proto::ProtoError::new(dictate_proto::ErrorCode::Internal, HOSTILE),
+        });
+        assert_defused(&error);
+        let partial = event_text(&Event::Partial {
+            session_id: dictate_proto::SessionId::from("s1".to_string()),
+            seq: 1,
+            at_ms: None,
+            hypothesis: format!("{HOSTILE}\nsecond line").into(),
+        });
+        assert_defused(&partial);
+        assert_eq!(partial.matches('\n').count(), 1, "{partial:?}");
+    }
+
+    #[test]
+    fn history_rows_are_defused_and_stay_one_row() {
+        let row = truncate("hello\x1b[31m\nworld\r\x07", 68);
+        assert!(!row.chars().any(char::is_control), "{row:?}");
+        assert!(row.contains("\\x1b"));
     }
 }

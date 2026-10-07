@@ -111,9 +111,13 @@ pub async fn run(client: &mut Client, args: &TranscribeArgs) -> Result<i32> {
             other.name()
         ),
         Err(e) => {
-            eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+            eprintln!(
+                "dictate: {} ({})",
+                crate::safe::inline(&e.message),
+                e.code.as_str()
+            );
             if let Some(detail) = e.detail() {
-                eprintln!("dictate: {detail}");
+                eprintln!("dictate: {}", crate::safe::inline(&detail.to_string()));
             }
             if e.code == ErrorCode::Busy {
                 eprintln!("dictate: another session is running; retry in a moment");
@@ -133,7 +137,12 @@ fn print_transcript(t: &Transcript, json: bool) {
         render::result(&CommandResult::Transcript(Box::new(t.clone())), true);
         return;
     }
-    println!("{}", t.text.as_str());
+    // stdout is the data channel: raw when piped, defused on a terminal.
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        println!("{}", crate::safe::block(t.text.as_str()));
+    } else {
+        println!("{}", t.text.as_str());
+    }
     eprintln!("{}", render::transcript_summary(t));
 }
 

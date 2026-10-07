@@ -13,6 +13,7 @@ mod client;
 mod dict;
 mod doctor;
 mod render;
+mod safe;
 mod upload;
 
 use anyhow::{bail, Result};
@@ -185,7 +186,7 @@ async fn doctor(args: &Args) -> Result<i32> {
                     // pretending the machine is healthy.
                     bail!(
                         "the daemon cannot run diagnostics: {} ({}) — is it an older build?",
-                        e.message,
+                        safe::inline(&e.message),
                         e.code.as_str()
                     )
                 }
@@ -210,7 +211,11 @@ async fn toggle(client: &mut Client, args: &Args) -> Result<i32> {
         // Do not retry: a busy result describes the state observed atomically
         // by the engine, and a retry could become a different user action.
         Err(e) => {
-            eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+            eprintln!(
+                "dictate: {} ({})",
+                safe::inline(&e.message),
+                e.code.as_str()
+            );
             Ok(1)
         }
     }
@@ -249,7 +254,11 @@ async fn history(client: &mut Client, args: &Args) -> Result<i32> {
                 Ok(0)
             }
             Err(e) => {
-                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                eprintln!(
+                    "dictate: {} ({})",
+                    safe::inline(&e.message),
+                    e.code.as_str()
+                );
                 Ok(1)
             }
         };
@@ -261,7 +270,11 @@ async fn history(client: &mut Client, args: &Args) -> Result<i32> {
                 Ok(0)
             }
             Err(e) => {
-                eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+                eprintln!(
+                    "dictate: {} ({})",
+                    safe::inline(&e.message),
+                    e.code.as_str()
+                );
                 Ok(1)
             }
         };
@@ -278,7 +291,11 @@ async fn history(client: &mut Client, args: &Args) -> Result<i32> {
             Ok(0)
         }
         Err(e) => {
-            eprintln!("dictate: {} ({})", e.message, e.code.as_str());
+            eprintln!(
+                "dictate: {} ({})",
+                safe::inline(&e.message),
+                e.code.as_str()
+            );
             Ok(1)
         }
     }

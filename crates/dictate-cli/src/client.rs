@@ -127,7 +127,7 @@ impl Client {
     pub async fn request(&mut self, command: Command) -> Result<CommandResult> {
         match self.try_request(command).await? {
             Ok(result) => Ok(result),
-            Err(e) => bail!("{} ({})", e.message, e.code.as_str()),
+            Err(e) => bail!("{} ({})", crate::safe::inline(&e.message), e.code.as_str()),
         }
     }
 
