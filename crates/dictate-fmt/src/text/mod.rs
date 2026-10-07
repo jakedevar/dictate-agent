@@ -2,8 +2,8 @@
 //!
 //! ```text
 //! raw STT
-//!   → hallucination_scrub   trailing artifacts, whitespace
 //!   → protect               URLs, emails, paths, slash commands, code → placeholders
+//!   → hallucination_scrub   trailing artifacts, whitespace — unprotected text only
 //!   → builtin_corrections   the historical Whisper mis-hearings
 //!   → [dictionary]          S22 plugs in here (Slot::Dictionary)
 //!   → [snippets]            S24 plugs in here (Slot::Snippets)
@@ -12,11 +12,14 @@
 //!   = rules output          routed, then (Route::Type only) given to the LLM
 //! ```
 //!
-//! The scrub runs before `protect` rather than after it (contract §1 lists
-//! protect first): one of its artifacts, `/no_think`, is shaped exactly like a
-//! slash command and would otherwise be protected before it could be removed.
-//! It only deletes known trailing artifacts and normalizes whitespace, so it
-//! cannot corrupt anything a later stage protects.
+//! `protect` runs first (contract §1), on the raw transcript, so no stage —
+//! the scrub included — can change a protected byte
+//! (`SCRUB_CORRUPTS_PROTECTED_BYTES`: scrubbing first collapsed the spaces
+//! inside `` `a  b` `` and deleted a backticked `[BLANK_AUDIO]`). The scrub's
+//! artifacts get explicit exceptions: whisper.cpp's `[BLANK_AUDIO]` is never
+//! protected outside backticks, and a trailing `/no_think` is removed even
+//! though it is protected as a slash command. The scrub re-runs detection on
+//! what it changed, so a token it unglued from an artifact is protected too.
 //!
 //! Every stage is synchronous, pure, and linear in the input. The whole chain
 //! is one `fmt_rules` timing in the session's [`StageTimings`]; per-stage
@@ -222,13 +225,12 @@ impl TextChain {
     pub fn standard(config: &FormatConfig) -> Self {
         use rules::*;
         let r = &config.rules;
-        let mut leading: Vec<Box<dyn TextStage>> = Vec::new();
+        let mut leading: Vec<Box<dyn TextStage>> = vec![Box::new(Protect)];
         if r.hallucination_scrub {
             leading.push(Box::new(HallucinationScrub));
         }
-        leading.push(Box::new(Protect));
         if r.builtin_corrections {
-            leading.push(Box::new(BuiltinCorrections));
+            leading.push(Box::new(BuiltinCorrections::new(r.claude_corrections)));
         }
         let mut rules: Vec<Box<dyn TextStage>> = vec![
             Box::new(ProfileToggled {
@@ -339,8 +341,8 @@ mod tests {
         assert_eq!(
             TextChain::default().stage_names(),
             vec![
-                "hallucination_scrub",
                 "protect",
+                "hallucination_scrub",
                 "builtin_corrections",
                 // Always present, inert unless config or an app profile
                 // enables them for the session.
@@ -362,6 +364,7 @@ mod tests {
             enabled: true,
             rules: RulesConfig {
                 builtin_corrections: false,
+                claude_corrections: false,
                 hallucination_scrub: false,
                 fillers: false,
                 stutters: false,
@@ -477,5 +480,55 @@ mod tests {
         ]);
         assert_eq!(times.to_string(), "a=1.2µs b=10.0µs");
         assert!((times.total_ms() - 0.01125).abs() < 1e-9);
+    }
+
+    /// `SCRUB_CORRUPTS_PROTECTED_BYTES`: the bytes `protect` finds in the
+    /// *original* input are intact after every stage, not just at the end —
+    /// the oracle is detection on the raw input, not on scrubbed text.
+    #[test]
+    fn protected_bytes_survive_every_stage() {
+        let chain = TextChain::standard(&FormatConfig {
+            enabled: true,
+            rules: RulesConfig {
+                spoken_punctuation: true,
+                spoken_line_breaks: true,
+                ..RulesConfig::default()
+            },
+            ..FormatConfig::default()
+        });
+        let ctx = FormatContext::default();
+        for input in [
+            "keep `a  b` exactly, um, period",
+            "keep `[BLANK_AUDIO]` and `x\ty` exactly",
+            "um see https://example.com/a\u{200B}b and ~/x/\u{FEFF}y.rs new line then user_id",
+            "the the  create plan  for `  spaced  ` code. thank you.",
+            "open ~/.cloud/x and five pm and twenty five thousand",
+        ] {
+            let originals: Vec<String> = TextDoc::protected(input)
+                .spans_in_text_order()
+                .map(|s| s.text.clone())
+                .collect();
+            assert!(!originals.is_empty(), "{input:?}");
+            let mut doc = TextDoc::new(input);
+            for stage in chain.stages() {
+                stage.apply(&mut doc, &ctx);
+                let out = doc.restore();
+                let mut pos = 0;
+                for span in &originals {
+                    let at = out[pos..].find(span.as_str()).unwrap_or_else(|| {
+                        panic!(
+                            "after `{}`, {span:?} from {input:?} is gone: {out:?}",
+                            stage.name()
+                        )
+                    });
+                    pos += at + span.len();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn protect_runs_first() {
+        assert_eq!(TextChain::default().stage_names()[0], "protect");
     }
 }

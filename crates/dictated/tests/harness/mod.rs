@@ -348,6 +348,45 @@ impl Client {
         Some(serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad frame {line:?}: {e}")))
     }
 
+    /// Write raw bytes to the socket — pipelined frames, or partial ones.
+    /// Bounded: a daemon that stops reading fails the test instead of
+    /// hanging it.
+    #[allow(dead_code)]
+    pub async fn write_raw(&mut self, bytes: &[u8]) {
+        within("the daemon to take what we wrote", async {
+            self.writer.write_all(bytes).await.expect("write");
+            self.writer.flush().await.expect("flush");
+        })
+        .await;
+    }
+
+    /// Read the next `n` responses and return their ids, buffering events.
+    #[allow(dead_code)]
+    pub async fn read_response_ids(&mut self, n: usize) -> Vec<RequestId> {
+        within("responses", async {
+            let mut ids = Vec::new();
+            while ids.len() < n {
+                match self.read_message().await.expect("connection closed") {
+                    Message::Response(r) => ids.push(r.id),
+                    Message::Event(e) => self.pending_events.push_back(e.event),
+                    Message::Request(_) => panic!("the daemon sent us a request"),
+                }
+            }
+            ids
+        })
+        .await
+    }
+
+    /// Assert the daemon closes this connection without sending anything more.
+    #[allow(dead_code)]
+    pub async fn expect_closed(&mut self) {
+        let next = within("the daemon to close the connection", self.read_message()).await;
+        assert!(
+            next.is_none(),
+            "expected the connection to close, got {next:?}"
+        );
+    }
+
     /// Send a command without waiting for its response — for tests that hang up
     /// (or read raw frames) instead of waiting.
     pub async fn fire(&mut self, command: Command) {

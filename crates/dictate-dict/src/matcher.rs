@@ -193,10 +193,35 @@ impl Matcher {
             replacements,
         }
     }
+    /// Whether `text[start..end]` is a whole word (or phrase) of its own.
+    ///
+    /// An apostrophe or hyphen *between word characters* is part of the word
+    /// (`matcher-contraction-inside-word`): "don't", "can't", "won't" and
+    /// "e-mail" are single words, so an entry `Don`, `Can` or `Mail` must not
+    /// match inside them. The one exception is a possessive: a match may end
+    /// before `'s` / `’s` that is itself followed by a non-word character,
+    /// so "Tauri's" still recases.
     fn boundary(&self, text: &str, start: usize, end: usize) -> bool {
         let word = |c: char| self.word.is_match(c.encode_utf8(&mut [0; 4]));
-        !text[..start].chars().next_back().is_some_and(word)
-            && !text[end..].chars().next().is_some_and(word)
+        let joiner = |c: char| matches!(c, '\'' | '\u{2019}' | '-');
+        let mut before = text[..start].chars().rev();
+        match before.next() {
+            Some(c) if word(c) => return false,
+            Some(c) if joiner(c) && before.next().is_some_and(word) => return false,
+            _ => {}
+        }
+        let mut after = text[end..].chars();
+        match after.next() {
+            Some(c) if word(c) => false,
+            Some('\'' | '\u{2019}') => match after.next() {
+                // A possessive `'s` ends the word; any other letter continues it.
+                Some('s' | 'S') => !after.next().is_some_and(word),
+                Some(c) => !word(c),
+                None => true,
+            },
+            Some('-') => !after.next().is_some_and(word),
+            _ => true,
+        }
     }
 }
 fn scoped(e: &StoredEntry, app: Option<&AppContext>) -> bool {

@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use dictate_audio::AudioConfig;
 pub use dictate_context::ContextConfig;
@@ -499,16 +500,28 @@ fn finalize(mut config: Config) -> Config {
 fn validate(config: &Config) -> Vec<String> {
     let mut errors = Vec::new();
     let positive = |name: &str, v: f64, errors: &mut Vec<String>| {
-        // `Duration::from_secs_f64` panics on negative or non-finite input, so
-        // this would otherwise surface as a crash on the first dictation.
-        if !v.is_finite() || v <= 0.0 {
+        // `Duration::from_secs_f64` panics on negative, non-finite *and*
+        // overflowing input (`1e100`), so this would otherwise surface as a
+        // crash when the formatter is built. Checking with the fallible
+        // conversion itself means every value accepted here converts.
+        if !(v > 0.0 && Duration::try_from_secs_f64(v).is_ok()) {
             errors.push(format!(
-                "{name} must be a positive number of seconds, got {v}"
+                "{name} must be a positive number of seconds that fits a duration, got {v}"
             ));
         }
     };
     positive("grammar.timeout_s", config.grammar.timeout_s, &mut errors);
     positive("local.timeout_s", config.local.timeout_s, &mut errors);
+    // `ollama-rs` panics on a host it cannot parse; refuse one at load.
+    for (name, host) in [
+        ("format.llm.host", &config.format.llm.host),
+        ("grammar.host", &config.grammar.host),
+        ("local.host", &config.local.host),
+    ] {
+        if let Err(why) = crate::ollama::client(host) {
+            errors.push(format!("{name} {why}"));
+        }
+    }
     if config.upload.max_audio_seconds == 0 || config.upload.max_bytes == 0 {
         errors.push("upload.max_audio_seconds and upload.max_bytes must be non-zero".into());
     }
@@ -899,6 +912,54 @@ spoken_line_breaks = true
             "{:?}",
             report.errors
         );
+    }
+
+    /// `timeout_validation_overflow`: finite and positive, yet too large for
+    /// a `Duration` — this used to pass validation and then panic when the
+    /// formatter was built.
+    #[test]
+    fn a_timeout_too_large_for_a_duration_is_a_load_error_naming_the_key() {
+        for (section, key) in [
+            ("grammar", "grammar.timeout_s"),
+            ("local", "local.timeout_s"),
+        ] {
+            for value in ["1e100", "1e20", "inf", "nan"] {
+                let (_, report) =
+                    parse_config(&format!("[{section}]\ntimeout_s = {value}\n")).unwrap();
+                assert!(
+                    report.errors.iter().any(|e| e.contains(key)),
+                    "{section}.timeout_s = {value}: {:?}",
+                    report.errors
+                );
+            }
+        }
+        // Must-not-change: a long but representable timeout is fine.
+        let (_, report) = parse_config("[local]\ntimeout_s = 86400.0\n").unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    /// `ollama_probe_panics`: a host `ollama-rs` cannot parse is refused at
+    /// load, with its key path, instead of panicking in a builder later.
+    #[test]
+    fn a_malformed_ollama_host_is_a_load_error_naming_the_key() {
+        for (toml, key) in [
+            ("[local]\nhost = \"localhost:11434\"\n", "local.host"),
+            ("[local]\nhost = \"ftp://example.com\"\n", "local.host"),
+            ("[format.llm]\nhost = \"not a url\"\n", "format.llm.host"),
+            ("[grammar]\nhost = \"http://\"\n", "grammar.host"),
+        ] {
+            let (_, report) = parse_config(toml).unwrap();
+            assert!(
+                report.errors.iter().any(|e| e.contains(key)),
+                "{toml:?}: {:?}",
+                report.errors
+            );
+        }
+        let (_, report) = parse_config(
+            "[local]\nhost = \"http://127.0.0.1:8080\"\n[format.llm]\nhost = \"https://ollama.example.com\"\n",
+        )
+        .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]

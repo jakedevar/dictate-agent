@@ -149,17 +149,92 @@ fn check_duration(frames: u64, rate_hz: u32, max_ms: Option<u64>) -> Result<(), 
     }
 }
 
+/// The `fmt ` and `data` chunk bodies of a RIFF/WAVE file.
+struct WavChunks<'a> {
+    fmt: &'a [u8],
+    data: &'a [u8],
+}
+
+/// Walk a RIFF/WAVE file's chunks, checking every declared size against the
+/// bytes actually present.
+///
+/// This is what makes the decoder's allocation honest: hound sizes its sample
+/// buffer from the `data` chunk's *declared* length, so a 44-byte header that
+/// claims four gigabytes of samples must be refused here, before hound sees it.
+/// It is also where RIFF's word alignment is honoured — a chunk with an odd
+/// length is followed by one pad byte that is not counted in its size — which
+/// hound does not do, so a valid file with an odd-length `LIST` chunk before
+/// its data would otherwise be misread.
+fn wav_chunks(bytes: &[u8]) -> Result<WavChunks<'_>, DecodeError> {
+    let malformed = |m: String| DecodeError::Malformed(format!("not a readable WAV file: {m}"));
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(malformed("no RIFF/WAVE header".into()));
+    }
+    let mut fmt = None;
+    let mut at = 12;
+    loop {
+        let Some(header) = bytes.get(at..at + 8) else {
+            return Err(malformed("no data chunk".into()));
+        };
+        let id = &header[0..4];
+        let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+        let body_start = at + 8;
+        let remaining = bytes.len() - body_start;
+        if len > remaining {
+            return Err(malformed(format!(
+                "chunk '{}' declares {len} bytes but only {remaining} remain",
+                String::from_utf8_lossy(id).escape_default()
+            )));
+        }
+        let body = &bytes[body_start..body_start + len];
+        match id {
+            b"fmt " if fmt.is_none() => fmt = Some(body),
+            b"data" => {
+                let Some(fmt) = fmt else {
+                    return Err(malformed("the data chunk precedes the fmt chunk".into()));
+                };
+                // Chunks after the data are ignored, as hound would.
+                return Ok(WavChunks { fmt, data: body });
+            }
+            _ => {}
+        }
+        // Word alignment: an odd-length chunk is followed by a pad byte. A
+        // writer that omitted it on the final chunk is tolerated.
+        at = (body_start + len + (len & 1)).min(bytes.len());
+    }
+}
+
 /// Decode a complete RIFF/WAVE file: PCM 8/16/24/32-bit or 32-bit float, any
 /// sample rate in range, any channel count in range.
 ///
-/// The duration limit is enforced from the header **before** any sample is
-/// decoded or allocated, so an oversized upload costs almost nothing.
+/// Chunk sizes are checked against the bytes present, and the duration limit
+/// is enforced from the header, **before** any sample is decoded or buffer
+/// allocated — so an oversized or lying upload costs almost nothing.
 ///
 /// # Errors
 ///
 /// See [`DecodeError`].
 pub fn decode_wav(bytes: &[u8], max_ms: Option<u64>) -> Result<Decoded, DecodeError> {
-    let mut reader = WavReader::new(Cursor::new(bytes))
+    let chunks = wav_chunks(bytes)?;
+    // Hand hound a canonical stream — header, fmt, data — built from the
+    // validated slices, so it never sees an ancillary chunk or a size that
+    // was not checked against the bytes present.
+    // Both lengths were read from u32 size fields, so they fit.
+    let len32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let riff_len = len32(4 + 8 + chunks.fmt.len() + 8 + chunks.data.len());
+    let (fmt_len, data_len) = (len32(chunks.fmt.len()), len32(chunks.data.len()));
+    let mut header = Vec::with_capacity(28 + chunks.fmt.len());
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&riff_len.to_le_bytes());
+    header.extend_from_slice(b"WAVE");
+    header.extend_from_slice(b"fmt ");
+    header.extend_from_slice(&fmt_len.to_le_bytes());
+    header.extend_from_slice(chunks.fmt);
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&data_len.to_le_bytes());
+    let stream = std::io::Read::chain(Cursor::new(header), chunks.data);
+
+    let mut reader = WavReader::new(stream)
         .map_err(|e| DecodeError::Malformed(format!("not a readable WAV file: {e}")))?;
     let spec = reader.spec();
     check_layout(spec.sample_rate, spec.channels)?;

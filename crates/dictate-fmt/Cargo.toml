@@ -13,6 +13,7 @@ eval-live = []
 eval-history = ["eval-live", "dep:rusqlite"]
 
 [dependencies]
+aho-corasick = "1"
 # FormatContext carries the protocol's AppContext/Tone/Route (contract §2).
 # dictate-proto depends on nothing in the workspace, so this adds no cycle.
 dictate-proto = { workspace = true }

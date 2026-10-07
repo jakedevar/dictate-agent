@@ -14,9 +14,21 @@
 //! [`TextDoc::restore`] swaps every placeholder back for its original bytes.
 //! [`TextDoc::verify_output`] is the check an LLM pass must pass: every
 //! protected span present, byte-identical, not duplicated, in order.
+//!
+//! # When protection does not fit
+//!
+//! The placeholder range holds [`MAX_PROTECTED_SPANS`] spans. A document that
+//! needs more — a hostile or absurd input, never a dictation — is **raw**
+//! ([`TextDoc::is_raw`]): it is left exactly as it was when protection
+//! failed, every later edit is refused, and only byte-identical formatter
+//! output verifies. Half-protecting it instead would let a later stage edit
+//! text that should have been protected, or alias a placeholder.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
+
+use aho_corasick::{AhoCorasick, Input, MatchKind};
 
 use super::lex::Editor;
 
@@ -35,7 +47,7 @@ pub fn is_placeholder(c: char) -> bool {
 }
 
 #[inline]
-fn placeholder_for(index: usize) -> char {
+pub(crate) fn placeholder_for(index: usize) -> char {
     debug_assert!(index < MAX_PROTECTED_SPANS);
     char::from_u32(SENTINEL_BASE + index as u32).expect("placeholder index in range")
 }
@@ -223,6 +235,8 @@ pub struct TextDoc {
     /// Reused output buffer, so a stage's rewrite does not allocate once the
     /// document has warmed up.
     scratch: String,
+    /// Protection did not fit; see the module docs.
+    raw: bool,
 }
 
 impl TextDoc {
@@ -234,22 +248,29 @@ impl TextDoc {
             text: String::with_capacity(input.len() + 8),
             spans: Vec::new(),
             scratch: String::new(),
+            raw: false,
         };
-        if input.chars().any(is_placeholder) {
+        let literals = input.chars().filter(|c| is_placeholder(*c)).count();
+        if literals == 0 {
+            doc.text.push_str(input);
+        } else if literals > MAX_PROTECTED_SPANS {
+            // Escaping them all would need more placeholders than exist, and
+            // leaving one unescaped would alias a placeholder. Keep the input
+            // byte-for-byte instead.
+            doc.text.push_str(input);
+            doc.raw = true;
+        } else {
             for c in input.chars() {
-                if is_placeholder(c) && doc.spans.len() < MAX_PROTECTED_SPANS {
-                    let p = placeholder_for(doc.spans.len());
+                if is_placeholder(c) {
+                    doc.text.push(placeholder_for(doc.spans.len()));
                     doc.spans.push(ProtectedSpan {
                         kind: SpanKind::Literal,
                         text: c.to_string(),
                     });
-                    doc.text.push(p);
                 } else {
                     doc.text.push(c);
                 }
             }
-        } else {
-            doc.text.push_str(input);
         }
         doc
     }
@@ -259,9 +280,24 @@ impl TextDoc {
     #[must_use]
     pub fn protected(input: &str) -> Self {
         let mut doc = Self::new(input);
-        let found = super::protect::detect_spans(doc.working_text());
+        let found = super::protect::detect_spans_in(&doc);
         doc.protect_ranges(&found);
         doc
+    }
+
+    /// Whether protection did not fit and the document is frozen as it was
+    /// (see the module docs). Every stage leaves a raw document unchanged.
+    #[must_use]
+    pub fn is_raw(&self) -> bool {
+        self.raw
+    }
+
+    /// Whether `c` is the placeholder of an escaped private-use character.
+    /// Detection reads through these: a literal inside a URL is part of the
+    /// URL, not a hole in its protection.
+    pub(crate) fn is_literal_placeholder(&self, c: char) -> bool {
+        self.span_for(c)
+            .is_some_and(|s| s.kind == SpanKind::Literal)
     }
 
     /// The text stages edit, with each protected span as one placeholder.
@@ -335,40 +371,61 @@ impl TextDoc {
 
     /// Protect byte ranges of the working text in place.
     ///
-    /// Ranges must be sorted, non-overlapping, on char boundaries, and free of
-    /// placeholders; any that are not are skipped (returned count excludes
-    /// them). Detectors produce ranges that satisfy all four.
+    /// Ranges must be sorted, non-overlapping, non-empty and on char
+    /// boundaries, and may contain no placeholder except escaped literals
+    /// (which become part of the new span); any that are not are skipped
+    /// (returned count excludes them). Detectors produce ranges that satisfy
+    /// all of this.
+    ///
+    /// If the valid ranges do not all fit in the placeholder range, nothing
+    /// is protected and the document becomes raw ([`is_raw`](Self::is_raw)).
     pub fn protect_ranges(&mut self, ranges: &[(Range<usize>, SpanKind)]) -> usize {
-        if ranges.is_empty() {
+        if ranges.is_empty() || self.raw {
+            return 0;
+        }
+        let mut valid = Vec::with_capacity(ranges.len());
+        let mut last = 0;
+        for (range, kind) in ranges {
+            let ok = range.start >= last
+                && range.start < range.end
+                && range.end <= self.text.len()
+                && self.text.is_char_boundary(range.start)
+                && self.text.is_char_boundary(range.end)
+                && self.text[range.clone()]
+                    .chars()
+                    .all(|c| !is_placeholder(c) || self.is_literal_placeholder(c));
+            if ok {
+                valid.push((range.clone(), *kind));
+                last = range.end;
+            }
+        }
+        if valid.is_empty() {
+            return 0;
+        }
+        if self.spans.len() + valid.len() > MAX_PROTECTED_SPANS {
+            self.raw = true;
             return 0;
         }
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
         let mut last = 0;
-        let mut protected = 0;
-        for (range, kind) in ranges {
-            let valid = range.start >= last
-                && range.start < range.end
-                && range.end <= self.text.len()
-                && self.text.is_char_boundary(range.start)
-                && self.text.is_char_boundary(range.end)
-                && !self.text[range.clone()].chars().any(is_placeholder)
-                && self.spans.len() < MAX_PROTECTED_SPANS;
-            if !valid {
-                continue;
-            }
+        for (range, kind) in &valid {
             out.push_str(&self.text[last..range.start]);
+            let mut text = String::with_capacity(range.len());
+            for c in self.text[range.clone()].chars() {
+                match self.span_for(c) {
+                    // An escaped literal: its original character joins the span.
+                    Some(literal) => text.push_str(&literal.text),
+                    None => text.push(c),
+                }
+            }
             out.push(placeholder_for(self.spans.len()));
-            self.spans.push(ProtectedSpan {
-                kind: *kind,
-                text: self.text[range.clone()].to_string(),
-            });
+            self.spans.push(ProtectedSpan { kind: *kind, text });
             last = range.end;
-            protected += 1;
         }
         out.push_str(&self.text[last..]);
         self.scratch = std::mem::replace(&mut self.text, out);
-        protected
+        valid.len()
     }
 
     /// Apply a batch of range edits to the working text, all or nothing.
@@ -383,6 +440,9 @@ impl TextDoc {
     ///
     /// Any invalid edit rejects the whole batch; the document is unchanged.
     pub fn apply_edits(&mut self, mut edits: Vec<Edit>) -> Result<usize, EditError> {
+        if self.raw {
+            return Err(EditError::TooManySpans);
+        }
         edits.sort_by_key(|e| e.range.start);
         let mut last = 0;
         let mut new_spans = 0;
@@ -441,73 +501,117 @@ impl TextDoc {
     /// Check formatter (LLM) output against this document's protected spans.
     ///
     /// `output` is plain text, the way the LLM returns it — the LLM is given
-    /// [`restore`](Self::restore)d text, never placeholders. The output passes
-    /// only if every protected span appears in it byte-for-byte, as a whole
-    /// token (so `/research_codebase` → `research_codebase` or
-    /// `/research_codebases` both fail), exactly as many times as the input
-    /// carried it, and in the same relative order.
+    /// [`restore`](Self::restore)d text, never placeholders. Both texts are
+    /// read as a stream of protected tokens: each occurrence of a protected
+    /// span's exact bytes that stands as a whole token, as detection defines
+    /// one (only opening brackets or quotes before it, only closing
+    /// punctuation or a possessive `'s` after it, up to whitespace), matched
+    /// leftmost-longest without overlap — so a path inside a protected code
+    /// span is part of that span, not a second copy. The output passes only
+    /// if its stream is exactly the input's: nothing dropped or altered
+    /// (`/research_codebase` → `research_codebase` or `/research_codebases`),
+    /// nothing extended into a different token (`…/a` → `…/a?q=x`), nothing
+    /// added, nothing reordered.
+    ///
+    /// Linear in the two texts: one automaton over the distinct spans, one
+    /// pass over each text.
     ///
     /// # Errors
     ///
     /// The first span that is missing/altered, duplicated, or reordered.
     pub fn verify_output(&self, output: &str) -> Result<(), SpanViolation> {
-        let ordered: Vec<&ProtectedSpan> = self.spans_in_text_order().collect();
-        if ordered.is_empty() {
+        let restored = self.restore();
+        if self.raw {
+            return identical(&restored, output, SpanKind::Literal, "the document");
+        }
+        let occurrences = self.protected_occurrences();
+        let Some(index) = SpanIndex::new(&occurrences) else {
+            return Ok(());
+        };
+        let expected = index.scan(&restored);
+        // Every protected occurrence must itself read as a whole token, or
+        // the stream could not hold it. A span a stage glued to its
+        // neighbours can only be checked by demanding identical output.
+        let mut cursor = 0;
+        for (range, span) in &occurrences {
+            while expected
+                .get(cursor)
+                .is_some_and(|(_, r)| r.start < range.start)
+            {
+                cursor += 1;
+            }
+            if expected.get(cursor).map(|(_, r)| r) != Some(range) {
+                return identical(&restored, output, span.kind, &span.text);
+            }
+        }
+        let actual = index.scan(output);
+        if expected
+            .iter()
+            .map(|(id, _)| id)
+            .eq(actual.iter().map(|(id, _)| id))
+        {
             return Ok(());
         }
-        // Counts: expected copies = protected occurrences + any plain-text
-        // occurrences outside the placeholders (normally zero).
-        let mut seen: Vec<&str> = Vec::new();
-        for span in &ordered {
-            if seen.contains(&span.text.as_str()) {
-                continue;
-            }
-            seen.push(&span.text);
-            let protected = ordered.iter().filter(|s| s.text == span.text).count();
-            let plain = count_whole(&self.text, &span.text, span.kind, true);
-            let expected = protected + plain;
-            let actual = count_whole(output, &span.text, span.kind, false);
-            let problem = match actual.cmp(&expected) {
-                std::cmp::Ordering::Less => Some(ViolationKind::Missing),
-                std::cmp::Ordering::Greater => Some(ViolationKind::Duplicated),
-                std::cmp::Ordering::Equal => None,
-            };
-            if let Some(problem) = problem {
-                return Err(SpanViolation {
-                    problem,
-                    kind: span.kind,
-                    span: span.text.clone(),
-                });
-            }
+        let mut balance = vec![0isize; index.texts.len()];
+        for (id, _) in &expected {
+            balance[*id] += 1;
         }
-        // Order: each span must be found after the previous one.
-        let mut pos = 0;
-        for span in &ordered {
-            match find_whole(output, &span.text, span.kind, pos, false) {
-                Some(end) => pos = end,
-                None => {
-                    return Err(SpanViolation {
-                        problem: ViolationKind::Reordered,
-                        kind: span.kind,
-                        span: span.text.clone(),
-                    })
-                }
-            }
+        for (id, _) in &actual {
+            balance[*id] -= 1;
         }
-        Ok(())
+        let violation = |problem, id: usize| SpanViolation {
+            problem,
+            kind: index.kinds[id],
+            span: index.texts[id].to_string(),
+        };
+        // A lost span is the more useful report: an unwrapped code span reads
+        // as one copy missing, not as its contents duplicated.
+        if let Some((id, _)) = expected.iter().find(|(id, _)| balance[*id] > 0) {
+            return Err(violation(ViolationKind::Missing, *id));
+        }
+        if let Some((id, _)) = expected.iter().find(|(id, _)| balance[*id] < 0) {
+            return Err(violation(ViolationKind::Duplicated, *id));
+        }
+        let first_difference = expected
+            .iter()
+            .zip(&actual)
+            .find(|((a, _), (b, _))| a != b)
+            .map_or(expected[0].0, |((a, _), _)| *a);
+        Err(violation(ViolationKind::Reordered, first_difference))
     }
 
-    /// Replace the whole working text. Only for stages that run before
-    /// anything is protected (the hallucination scrub); the new text must keep
-    /// every existing placeholder exactly once.
+    /// Each protected span with its byte range in [`restore`](Self::restore)'s
+    /// output, in text order.
+    fn protected_occurrences(&self) -> Vec<(Range<usize>, &ProtectedSpan)> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        for c in self.text.chars() {
+            match self.span_for(c) {
+                Some(span) => {
+                    out.push((at..at + span.text.len(), span));
+                    at += span.text.len();
+                }
+                None => at += c.len_utf8(),
+            }
+        }
+        out
+    }
+
+    /// Replace the whole working text, placeholders and all. Only for the
+    /// hallucination scrub, which edits whitespace and known artifacts around
+    /// the placeholders and drops only the placeholder of a protected
+    /// artifact (a trailing `/no_think`); it never adds or reorders one.
     pub(crate) fn rewrite_unprotected(&mut self, f: impl FnOnce(&str, &mut String)) {
+        if self.raw {
+            return;
+        }
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
         f(&self.text, &mut out);
-        debug_assert_eq!(
-            out.chars().filter(|c| is_placeholder(*c)).count(),
-            self.text.chars().filter(|c| is_placeholder(*c)).count(),
-            "a plain rewrite must keep every placeholder"
+        debug_assert!(
+            out.chars().filter(|c| is_placeholder(*c)).count()
+                <= self.text.chars().filter(|c| is_placeholder(*c)).count(),
+            "a plain rewrite must never forge a placeholder"
         );
         if out != self.text {
             self.scratch = std::mem::replace(&mut self.text, out);
@@ -518,6 +622,9 @@ impl TextDoc {
 
     /// Run a token-level edit (the built-in rules' editing surface).
     pub(crate) fn edit(&mut self, f: impl FnOnce(&mut Editor<'_>)) {
+        if self.raw {
+            return;
+        }
         let text = std::mem::take(&mut self.text);
         let mut out = std::mem::take(&mut self.scratch);
         let changed = {
@@ -540,72 +647,126 @@ impl TextDoc {
     /// this, to fix Whisper's `.cloud/` → `.claude/` inside a detected path.
     /// No external stage can amend a span another stage protected.
     pub(crate) fn amend_span(&mut self, index: usize, text: String) {
+        if self.raw {
+            return;
+        }
         if let Some(span) = self.spans.get_mut(index) {
             span.text = text;
         }
     }
 }
 
-/// Characters that, directly before a span, would make it part of a longer
-/// token (`x/research_codebase`, `~/usr/bin`).
-fn glues_before(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '/' | '\\' | '.' | '~' | '-' | '@' | '#' | '$')
+/// Output that must equal the restored text exactly, because the document
+/// cannot be verified span by span.
+fn identical(
+    restored: &str,
+    output: &str,
+    kind: SpanKind,
+    span: &str,
+) -> Result<(), SpanViolation> {
+    if output == restored {
+        Ok(())
+    } else {
+        Err(SpanViolation {
+            problem: ViolationKind::Missing,
+            kind,
+            span: span.to_string(),
+        })
+    }
 }
 
-/// Characters that, directly after a span, would extend it
-/// (`/research_codebases`, `~/.claude/x`). A `.` counts only when another
-/// token character follows it — a sentence period after a span is fine.
-fn glues_after(c: char, next: Option<char>) -> bool {
-    c.is_alphanumeric()
-        || matches!(c, '_' | '/' | '\\' | '-' | '@')
-        || (matches!(c, '.' | ':') && next.is_some_and(|n| n.is_alphanumeric() || n == '_'))
+/// The distinct protected texts of a document, searchable in one pass.
+struct SpanIndex<'a> {
+    texts: Vec<&'a str>,
+    kinds: Vec<SpanKind>,
+    automaton: AhoCorasick,
 }
 
-fn whole_at(hay: &str, start: usize, end: usize, kind: SpanKind) -> bool {
-    if kind == SpanKind::Literal {
+impl<'a> SpanIndex<'a> {
+    fn new(occurrences: &[(Range<usize>, &'a ProtectedSpan)]) -> Option<Self> {
+        let mut ids: HashMap<&str, usize> = HashMap::new();
+        let mut texts = Vec::new();
+        let mut kinds = Vec::new();
+        for (_, span) in occurrences {
+            if span.text.is_empty() {
+                continue;
+            }
+            ids.entry(span.text.as_str()).or_insert_with(|| {
+                texts.push(span.text.as_str());
+                kinds.push(span.kind);
+                texts.len() - 1
+            });
+        }
+        if texts.is_empty() {
+            return None;
+        }
+        let automaton = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&texts)
+            .expect("an automaton over a document's spans fits its default limits");
+        Some(Self {
+            texts,
+            kinds,
+            automaton,
+        })
+    }
+
+    /// The protected tokens of `hay`, leftmost-longest, non-overlapping.
+    fn scan(&self, hay: &str) -> Vec<(usize, Range<usize>)> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < hay.len() {
+            let Some(m) = self.automaton.find(Input::new(hay).span(at..hay.len())) else {
+                break;
+            };
+            let id = m.pattern().as_usize();
+            if whole_token(hay, m.start(), m.end(), self.kinds[id]) {
+                out.push((id, m.range()));
+                at = m.end();
+            } else {
+                at = m.start() + hay[m.start()..].chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        out
+    }
+}
+
+/// Whether `hay[start..end]` is a token of its own, by the rule detection
+/// uses to cut one out of a whitespace-separated chunk: only openers between
+/// it and the whitespace before, only closing punctuation (after an optional
+/// possessive `'s`) between it and the whitespace after. A backticked code
+/// span delimits itself; a literal is a single character.
+fn whole_token(hay: &str, start: usize, end: usize, kind: SpanKind) -> bool {
+    use super::protect::{is_closer, OPENERS};
+    let span = &hay[start..end];
+    if kind == SpanKind::Literal
+        || (span.len() >= 2 && span.starts_with('`') && span.ends_with('`'))
+    {
         return true;
     }
-    let before = hay[..start].chars().next_back();
-    let mut after = hay[end..].chars();
-    let a1 = after.next();
-    let a2 = after.next();
-    !before.is_some_and(glues_before) && !a1.is_some_and(|c| glues_after(c, a2))
-}
-
-/// End of the first whole-token occurrence of `needle` at or after `from`.
-/// With `plain_only`, an occurrence that includes a placeholder is not one
-/// (it is the protected copy itself, already counted).
-fn find_whole(
-    hay: &str,
-    needle: &str,
-    kind: SpanKind,
-    from: usize,
-    plain_only: bool,
-) -> Option<usize> {
-    let mut at = from;
-    while let Some(off) = hay.get(at..).and_then(|h| h.find(needle)) {
-        let start = at + off;
-        let end = start + needle.len();
-        let plain = !plain_only || !hay[start..end].chars().any(is_placeholder);
-        if plain && whole_at(hay, start, end, kind) {
-            return Some(end);
+    let before_ok = hay[..start]
+        .chars()
+        .rev()
+        .take_while(|c| !c.is_whitespace())
+        .all(|c| OPENERS.contains(&c));
+    if !before_ok {
+        return false;
+    }
+    let mut rest = &hay[end..];
+    for possessive in ["'s", "\u{2019}s"] {
+        if let Some(r) = rest.strip_prefix(possessive) {
+            if r.chars()
+                .next()
+                .is_none_or(|c| c.is_whitespace() || is_closer(c))
+            {
+                rest = r;
+                break;
+            }
         }
-        at = start + needle.chars().next().map_or(1, char::len_utf8);
     }
-    None
-}
-
-fn count_whole(hay: &str, needle: &str, kind: SpanKind, plain_only: bool) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut n = 0;
-    let mut at = 0;
-    while let Some(end) = find_whole(hay, needle, kind, at, plain_only) {
-        n += 1;
-        at = end;
-    }
-    n
+    rest.chars()
+        .take_while(|c| !c.is_whitespace())
+        .all(is_closer)
 }
 
 #[cfg(test)]
@@ -787,5 +948,137 @@ mod tests {
             doc.verify_output("x_y and").unwrap_err().problem,
             ViolationKind::Missing
         );
+    }
+
+    /// `VERIFIER_REJECTS_IDENTITY_OUTPUT`: occurrences inside another
+    /// protected span are not separate copies; a byte-identical answer always
+    /// verifies.
+    #[test]
+    fn identity_output_always_verifies() {
+        for input in [
+            "open /tmp/x then `/tmp/x`",
+            "see `user_id` and user_id and `user_id`",
+            "run /a_b then ``/a_b `x` /a_b`` and /a_b",
+            "open ~/.claude/x and `cat ~/.claude/x` twice: ~/.claude/x",
+        ] {
+            let doc = TextDoc::protected(input);
+            assert!(!doc.spans().is_empty(), "{input:?}");
+            assert_eq!(doc.verify_output(&doc.restore()), Ok(()), "{input:?}");
+        }
+        // Repeated dictionary terms, protected and plain, nested in code.
+        let mut doc = TextDoc::protected("ask cloud and cloud about `Claude` and Claude");
+        let text = doc.working_text().to_string();
+        let edits = text
+            .match_indices("cloud")
+            .map(|(i, m)| Edit::protected(i..i + m.len(), "Claude", SpanKind::Term))
+            .collect();
+        doc.apply_edits(edits).unwrap();
+        let out = doc.restore();
+        assert_eq!(out, "ask Claude and Claude about `Claude` and Claude");
+        assert_eq!(doc.verify_output(&out), Ok(()));
+        assert_eq!(
+            doc.verify_output("ask Claude and Claude about Claude and Claude")
+                .unwrap_err()
+                .kind,
+            SpanKind::Code,
+            "unwrapping the code span is caught"
+        );
+        assert!(doc
+            .verify_output("ask Claude about `Claude` and Claude")
+            .is_err());
+    }
+
+    /// `VERIFIER_ACCEPTS_CHANGED_URL`: a span followed by more token
+    /// characters is a different token; only openers before and sentence
+    /// punctuation after are allowed, as in detection.
+    #[test]
+    fn a_span_continued_into_a_different_token_is_rejected() {
+        let doc = TextDoc::protected("see https://example.com/a and user_id now");
+        for bad in [
+            "See https://example.com/a?q=changed and user_id now.",
+            "See https://example.com/a#changed and user_id now.",
+            "See https://example.com/a&x=1 and user_id now.",
+            "See https://example.com/a%20 and user_id now.",
+            "See https://example.com/a+b and user_id now.",
+            "See https://example.com/a and user_id#changed now.",
+            "See https://example.com/a and user_id=1 now.",
+            "See https://example.com/a and user_id* now.",
+            "See *https://example.com/a and user_id now.",
+        ] {
+            assert!(doc.verify_output(bad).is_err(), "{bad}");
+        }
+        for good in [
+            "See https://example.com/a and user_id now.",
+            "See (https://example.com/a), and \"user_id\".",
+            "See https://example.com/a. And user_id's value now!",
+            "See https://example.com/a; user_id: now?",
+        ] {
+            assert_eq!(doc.verify_output(good), Ok(()), "{good}");
+        }
+    }
+
+    /// `LITERAL_PUA_BYPASSES_PROTECTION`: a private-use character inside a
+    /// URL, path or code span is part of that span, not a hole in it.
+    #[test]
+    fn a_literal_private_use_character_does_not_unprotect_its_token() {
+        for (input, span) in [
+            (
+                "https://example.com/\u{F0000}",
+                "https://example.com/\u{F0000}",
+            ),
+            ("open ~/x/\u{F0001}/y.rs now", "~/x/\u{F0001}/y.rs"),
+            ("run `a \u{F0002} b` now", "`a \u{F0002} b`"),
+            (
+                "see \u{F0003}https://example.com/x now",
+                "\u{F0003}https://example.com/x",
+            ),
+        ] {
+            let doc = TextDoc::protected(input);
+            assert_eq!(doc.restore(), input);
+            assert!(
+                doc.spans_in_text_order().any(|s| s.text == span),
+                "{input:?}: {:?}",
+                doc.spans()
+            );
+            assert_eq!(doc.verify_output(input), Ok(()), "{input:?}");
+        }
+        let doc = TextDoc::protected("https://example.com/\u{F0000}");
+        assert!(doc.verify_output("https://evil.example/\u{F0000}").is_err());
+        let doc = TextDoc::protected("open ~/x/\u{F0001}/y.rs now");
+        assert!(doc.verify_output("open ~/z/\u{F0001}/y.rs now").is_err());
+    }
+
+    /// `SPAN_CAPACITY_CORRUPTS_TEXT`: one literal more than the placeholder
+    /// range holds must still round-trip, and must not alias a placeholder.
+    #[test]
+    fn literals_past_the_span_limit_round_trip() {
+        let mut input = "\u{F0000}".repeat(MAX_PROTECTED_SPANS);
+        input.push('\u{F0001}');
+        let doc = TextDoc::new(&input);
+        assert_eq!(doc.restore(), input);
+        assert_eq!(doc.verify_output(&input), Ok(()));
+        assert!(doc.verify_output("changed").is_err());
+        // At exactly the limit everything is still a literal span.
+        let at_cap = "\u{F0001}".repeat(MAX_PROTECTED_SPANS);
+        assert_eq!(TextDoc::new(&at_cap).restore(), at_cap);
+    }
+
+    /// `SPAN_CAPACITY_CORRUPTS_TEXT`: protection that does not fit leaves the
+    /// document unchanged by every later edit instead of half-protected.
+    #[test]
+    fn protection_past_the_limit_freezes_the_document() {
+        let mut input = "`x` ".repeat(MAX_PROTECTED_SPANS);
+        input.push_str("`um` and uh");
+        let doc = TextDoc::protected(&input);
+        assert_eq!(doc.restore(), input);
+        assert!(doc.is_raw());
+        assert_eq!(doc.verify_output(&input), Ok(()));
+        assert!(doc.verify_output(&input.replace("`um`", "``")).is_err());
+        let mut doc = doc;
+        assert_eq!(
+            doc.apply_edits(vec![Edit::text(0..0, "x")]),
+            Err(EditError::TooManySpans)
+        );
+        assert_eq!(doc.restore(), input);
     }
 }

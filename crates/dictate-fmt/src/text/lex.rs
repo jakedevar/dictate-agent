@@ -234,16 +234,26 @@ impl<'a> Editor<'a> {
         }
     }
 
-    /// Replace token `i` with text no later stage may alter.
-    pub(crate) fn replace_protected(&mut self, i: usize, text: String, kind: SpanKind) {
-        if self.toks[i].kind == Kind::Protected || self.spans.len() >= MAX_PROTECTED_SPANS {
+    /// Whether one more span fits. A rule that deletes tokens to make room
+    /// for a protected replacement checks this *first*, so a full document
+    /// never loses the words and then refuses the replacement.
+    pub(crate) fn can_protect(&self) -> bool {
+        self.spans.len() < MAX_PROTECTED_SPANS
+    }
+
+    /// Replace token `i` with text no later stage may alter. Returns whether
+    /// it did; check [`can_protect`](Self::can_protect) before any related
+    /// deletion.
+    pub(crate) fn replace_protected(&mut self, i: usize, text: String, kind: SpanKind) -> bool {
+        if self.toks[i].kind == Kind::Protected || !self.can_protect() {
             debug_assert!(self.toks[i].kind != Kind::Protected);
-            return;
+            return false;
         }
-        let p = char::from_u32(0xF_0000 + self.spans.len() as u32).expect("in range");
+        let p = super::doc::placeholder_for(self.spans.len());
         self.spans.push(ProtectedSpan { kind, text });
         self.repl[i] = Some(p.to_string());
         self.changed = true;
+        true
     }
 
     pub(crate) fn next_alive(&self, i: usize) -> Option<usize> {
