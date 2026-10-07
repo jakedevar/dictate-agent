@@ -361,12 +361,12 @@ fn variables_are_resolved_only_when_the_template_uses_them() {
         }
     }
     let c = Counting(AtomicUsize::new(0));
-    expand_snippet("plain text", &c);
+    let _ = expand_snippet("plain text", &c);
     assert_eq!(
         c.0.load(Ordering::SeqCst),
         0,
         "clipboard must not be read needlessly"
     );
-    expand_snippet("{clipboard}", &c);
+    let _ = expand_snippet("{clipboard}", &c);
     assert_eq!(c.0.load(Ordering::SeqCst), 1);
 }

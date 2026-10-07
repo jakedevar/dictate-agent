@@ -13,6 +13,7 @@ mod client;
 mod dict;
 mod doctor;
 mod render;
+mod snippet;
 mod upload;
 
 use anyhow::{bail, Result};
@@ -36,6 +37,7 @@ COMMANDS:
     tail                Stream events until interrupted
     history             List past dictations, or purge with --purge
     dict <ACTION>       list|add|rm|enable|disable|suggest|accept|import|export
+    snippet <ACTION>    list|add|rm|enable|disable  (spoken trigger → stored text)
                         add PHRASE --sounds-like ALIASES --app APP
                         import/export [FILE|-] (JSON lines; default stdin/stdout)
     transcribe <FILE>   Transcribe a WAV file through the daemon and print the text
@@ -138,6 +140,7 @@ async fn run() -> Result<i32> {
         "tail" => tail(&mut client, &args).await,
         "history" => history(&mut client, &args).await,
         "dict" => dict::run(&mut client, &args.dict_args, args.json).await,
+        "snippet" => snippet::run(&mut client, &args.dict_args, args.json).await,
         "transcribe" => {
             let Some(file) = args.file.clone() else {
                 eprintln!("dictate: transcribe needs a WAV file\n");
@@ -407,7 +410,7 @@ impl Args {
                             .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
                     )
                 }
-                other if out.command.as_deref() == Some("dict") => {
+                other if matches!(out.command.as_deref(), Some("dict" | "snippet")) => {
                     out.dict_args.push(other.to_string())
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),

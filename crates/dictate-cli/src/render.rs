@@ -82,8 +82,32 @@ pub fn result(result: &CommandResult, json: bool) {
         }
         CommandResult::Deleted { id } => println!("deleted {id}"),
         CommandResult::Snippets { snippets } => {
-            println!("{} snippets", snippets.len());
+            for s in snippets {
+                // One line each: a multi-line expansion shows its first line.
+                let first = s.expansion.lines().next().unwrap_or("");
+                let more = if s.expansion.lines().nth(1).is_some() {
+                    " …"
+                } else {
+                    ""
+                };
+                println!(
+                    "{:<5} {:<24} {:<8} {first}{more}{}",
+                    s.id.map(|id| id.to_string()).unwrap_or_default(),
+                    s.trigger,
+                    if s.enabled { "enabled" } else { "disabled" },
+                    if s.apps.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [apps: {}]", s.apps.join(", "))
+                    }
+                );
+            }
         }
+        CommandResult::Snippet { snippet } => println!(
+            "{} {}",
+            snippet.id.map(|id| id.to_string()).unwrap_or_default(),
+            snippet.trigger
+        ),
         // A result this build does not model. Degrade rather than fail — the
         // daemon may simply be newer than the CLI.
         other => println!("{}", other.name()),

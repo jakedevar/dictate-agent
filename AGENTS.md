@@ -65,7 +65,7 @@ Runs local Whisper inference using GGUF model configurations.
 Pure-Rust rules between STT and the router, timed as `fmt_rules` and configured under `[format]` / `[format.rules]`.
 * **Protected spans**: URLs, emails, paths, slash commands, and code identifiers become opaque placeholders no later stage can alter; LLM output that drops or edits one is rejected.
 * **Rules**: hallucination scrub, the historical acoustic corrections ("cloud" → "Claude", "create plan" → `/create_plan`), fillers, stutters, numbers, spacing, casing, terminal punctuation; spoken punctuation and line breaks are opt-in.
-* **Plug-in slots**: the dictionary (S22) and snippets (S24) run inside the chain as `TextStage`s.
+* **Plug-in slots**: the dictionary (S22) and snippets (S24) run inside the chain as `TextStage`s (`dictionary_stage.rs`, `snippet_stage.rs` in `dictate-core`). A snippet expansion is a protected `SpanKind::Snippet`; an expansion that opens the utterance is never routed.
 
 ### 4. LLM Formatting Pass: [LlmFormatter](file:///home/jakedevar/dictate_agent/crates/dictate-fmt/src/llm/mod.rs)
 An optional pass (S21) that runs after routing, for `type` utterances only, on the text chain's output. Configured under `[format.llm]`; the deprecated `[grammar]` keys are read as an alias. The daemon wraps it as `LlmFormatterPort` (`crates/dictate-core/src/llm_formatter.rs`).
