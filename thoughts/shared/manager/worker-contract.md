@@ -37,11 +37,14 @@ slice section of
   a log under `/tmp`. **Never end your turn to wait for a build, test run or
   notification** — your session ends with your turn and background jobs die.
   If a command times out, rerun it; cargo resumes.
-- **Project rule, which overrides the generic RSI catalog advice to use
-  `AgentSubmitJob` for long gates:** `AgentSubmitJob` cannot run this repo's
-  gates. Its typed cargo params have no clippy, `just` recipe or feature lines.
-  Run `just check-cpu` in your own turn as described above. This gap is already
-  tracked in RSI as harness Issue #1538 (was #1466 here), so do not file it again.
+- **Gates run as durable RSI jobs (RSI #1477).** `.rsi/jobs.toml` declares the
+  recipes `check-cpu`, `check-cuda`, `e2e` and `cutover-test`. Submit with
+  `AgentSubmitJob {"kind":"test","name":"...","params":{"recipe":"check-cpu","timeout_minutes":60}}`
+  and end your turn. One resume wake carries the exit code, and the log path is
+  in `AgentGetJob`. The job survives your turn ending and a daemon restart.
+  For quick touched-crate runs while iterating, foreground
+  `cargo test -p <crate>` is still fine. Add a new recipe to `.rsi/jobs.toml`
+  instead of running a long gate in-turn.
 - **Shared host, so cap load and clean up.** Never start more than 8 synthetic
   load processes (busy loops, `cargo build -j 8`), and only when `uptime`'s
   1-minute load is under 40. Before you end your turn, stop every background
