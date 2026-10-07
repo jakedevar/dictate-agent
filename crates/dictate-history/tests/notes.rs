@@ -1,7 +1,7 @@
 //! S35 scratchpad store: round trip, search, privacy, retention, migration.
 
 use dictate_history::{HistoryConfig, HistoryStore, Interaction, NoteError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn temp_db(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -18,7 +18,7 @@ fn uuid_like() -> u128 {
         .as_nanos()
 }
 
-fn config(path: &PathBuf) -> HistoryConfig {
+fn config(path: &Path) -> HistoryConfig {
     HistoryConfig {
         db_path: path.to_string_lossy().into_owned(),
         ..HistoryConfig::default()
