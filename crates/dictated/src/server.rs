@@ -834,6 +834,42 @@ async fn dispatch(
             Ok(CommandResult::History(page))
         }
 
+        // S35: notes live in the history database and obey its privacy and
+        // retention rules; the generic gate above applies `history_read` /
+        // `history_write` before any store access.
+        Command::ListNotes { query, limit, id } => {
+            let history = deps.history.clone();
+            let notes = tokio::task::spawn_blocking(move || {
+                let store = history.lock().map_err(|_| "history store is poisoned")?;
+                store
+                    .list_notes(query.as_deref(), limit, id)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ProtoError::new(ErrorCode::HistoryError, e))?;
+            Ok(CommandResult::Notes { notes })
+        }
+
+        Command::DeleteNote { id } => {
+            let history = deps.history.clone();
+            let removed = tokio::task::spawn_blocking(move || {
+                let store = history.lock().map_err(|_| "history store is poisoned")?;
+                store.delete_note(id).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| ProtoError::new(ErrorCode::HistoryError, e))?;
+            if removed {
+                Ok(CommandResult::Deleted { id })
+            } else {
+                Err(ProtoError::new(
+                    ErrorCode::NotFound,
+                    format!("no note with id {id}"),
+                ))
+            }
+        }
+
         Command::GetHistoryAnalytics => {
             let history = deps.history.clone();
             let analytics = tokio::task::spawn_blocking(move || {

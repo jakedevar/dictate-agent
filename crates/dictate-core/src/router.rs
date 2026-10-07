@@ -6,6 +6,8 @@ pub enum RouteType {
     Edit,
     #[allow(dead_code)]
     Command,
+    /// Append to the scratchpad instead of typing (S35).
+    Note,
 }
 
 #[derive(Debug, Clone)]
@@ -19,15 +21,73 @@ pub struct RouteResult {
 const EDIT_TRIGGERS: &[&str] = &["edit:", "fix:", "change:", "rewrite:", "transform:"];
 const LOCAL_TRIGGERS: &[&str] = &["simple", "easy", "medium", "hard"];
 
+/// Spoken openers for the scratchpad, as whole words.
+///
+/// A bare "note" is deliberately **not** one: "note that the deadline moved"
+/// is ordinary prose, and routing it would take the sentence away from the
+/// window the user was typing into. "note:" and "note," (what Whisper writes
+/// for a deliberate "note, …") are, as are the unambiguous phrases below.
+const NOTE_PHRASES: &[&[&str]] = &[
+    &["note", "to", "self"],
+    &["quick", "note"],
+    &["new", "note"],
+    &["take", "a", "note"],
+    &["make", "a", "note"],
+    &["add", "a", "note"],
+];
+
+/// If `text` opens with a scratchpad trigger, the note body that follows it.
+fn note_body(text: &str) -> Option<&str> {
+    let is_sep =
+        |c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '.' | '-' | '–' | '—');
+    // "note:" / "note," (also unspaced, "note:buy milk").
+    for opener in ["note:", "note,"] {
+        if text
+            .get(..opener.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(opener))
+        {
+            return Some(text[opener.len()..].trim_start_matches(is_sep).trim_end());
+        }
+    }
+    // Multi-word phrases, matched as whole words and allowing punctuation
+    // after the last one ("Note to self: …", "Quick note, …").
+    'phrase: for phrase in NOTE_PHRASES {
+        let mut rest = text;
+        for (i, want) in phrase.iter().enumerate() {
+            rest = rest.trim_start();
+            let end = rest
+                .find(|c: char| !c.is_alphabetic())
+                .unwrap_or(rest.len());
+            if !rest[..end].eq_ignore_ascii_case(want) {
+                continue 'phrase;
+            }
+            rest = &rest[end..];
+            // Words inside the phrase are separated by spaces; the last one
+            // must end at a boundary ("quick notebook" is not a trigger).
+            let boundary = if i + 1 < phrase.len() {
+                rest.starts_with(char::is_whitespace)
+            } else {
+                rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+            };
+            if !boundary {
+                continue 'phrase;
+            }
+        }
+        return Some(rest.trim_start_matches(is_sep).trim_end());
+    }
+    None
+}
+
 /// Route transcribed text by keyword prefix.
 /// Direct port of dictate/router.py:43-79.
 ///
 /// Priority:
 /// 1. Empty text → Type
 /// 2. Edit triggers (colon-suffixed, or spoken "edit") → Edit
-/// 3. "timer" prefix → Timer
-/// 4. LOCAL_TRIGGERS prefix → Local
-/// 5. Default → Type (with original text preserved)
+/// 3. Scratchpad triggers ("note:", "note to self", "quick note", …) → Note
+/// 4. "timer" prefix → Timer
+/// 5. LOCAL_TRIGGERS prefix → Local
+/// 6. Default → Type (with original text preserved)
 pub fn route(text: &str) -> RouteResult {
     let text = text.trim();
     if text.is_empty() {
@@ -50,6 +110,15 @@ pub fn route(text: &str) -> RouteResult {
                 confidence: 1.0,
             };
         }
+    }
+
+    if let Some(body) = note_body(text) {
+        return RouteResult {
+            route: RouteType::Note,
+            model: String::new(),
+            text: body.into(),
+            confidence: 1.0,
+        };
     }
 
     // Split on first whitespace — matches Python's split(maxsplit=1)
@@ -153,6 +222,61 @@ mod tests {
         ] {
             assert_eq!(route(text).route, RouteType::Type);
         }
+    }
+
+    #[test]
+    fn scratchpad_triggers_route_to_note_with_the_body_alone() {
+        for (said, body) in [
+            ("Note: buy milk.", "buy milk."),
+            ("note, buy milk", "buy milk"),
+            ("NOTE:buy milk", "buy milk"),
+            ("Note to self: call the dentist.", "call the dentist."),
+            ("note to self call the dentist", "call the dentist"),
+            ("Quick note, the meeting moved", "the meeting moved"),
+            ("quick note the meeting moved", "the meeting moved"),
+            ("Take a note: ship it", "ship it"),
+            ("make a note ship it", "ship it"),
+            ("New note - ship it", "ship it"),
+            ("add a note. ship it", "ship it"),
+        ] {
+            let r = route(said);
+            assert_eq!(r.route, RouteType::Note, "{said}");
+            assert_eq!(r.text, body, "{said}");
+        }
+    }
+
+    #[test]
+    fn a_bare_note_word_and_lookalikes_stay_typed() {
+        // The false positive that matters: prose must still reach the window.
+        for text in [
+            "note that the deadline moved",
+            "Note the following changes",
+            "notes to self are useful",
+            "quick notebook",
+            "notebook paper",
+            "new notes arrived",
+            "take a notebook",
+            "I made a note of it",
+            "keynote: opening",
+            "make a note",
+        ] {
+            let expected = if text == "make a note" {
+                // The phrase alone is still a trigger; it just has no body.
+                RouteType::Note
+            } else {
+                RouteType::Type
+            };
+            assert_eq!(route(text).route, expected, "{text}");
+        }
+        assert_eq!(route("make a note").text, "");
+        assert_eq!(route("note:").text, "");
+    }
+
+    #[test]
+    fn other_triggers_keep_priority_over_the_scratchpad() {
+        assert_eq!(route("edit: note: x").route, RouteType::Edit);
+        assert_eq!(route("timer note: x").route, RouteType::Timer);
+        assert_eq!(route("easy note: x").route, RouteType::Local);
     }
 
     #[test]

@@ -162,6 +162,25 @@ pub enum Command {
         id: i64,
     },
 
+    /// List scratchpad notes, newest first (S35).
+    ListNotes {
+        /// Case-insensitive substring filter over the note text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Maximum notes to return (server bounded).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        /// Return only the note with this identifier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<i64>,
+    },
+
+    /// Delete one scratchpad note (S35).
+    DeleteNote {
+        /// Identifier of the note to remove.
+        id: i64,
+    },
+
     /// Search recorded dictations.
     QueryHistory {
         /// Filters.
@@ -248,6 +267,8 @@ impl Command {
             Self::ListSnippets { .. } => "list_snippets",
             Self::UpsertSnippet { .. } => "upsert_snippet",
             Self::DeleteSnippet { .. } => "delete_snippet",
+            Self::ListNotes { .. } => "list_notes",
+            Self::DeleteNote { .. } => "delete_note",
             Self::QueryHistory { .. } => "query_history",
             Self::GetHistoryAnalytics => "get_history_analytics",
             Self::PurgeHistory => "purge_history",
@@ -271,6 +292,7 @@ impl Command {
                 | Self::DeleteDictionaryEntry { .. }
                 | Self::UpsertSnippet { .. }
                 | Self::DeleteSnippet { .. }
+                | Self::DeleteNote { .. }
                 | Self::PurgeHistory
         )
     }
@@ -324,6 +346,11 @@ impl Command {
 
             Self::ListSnippets { .. } => features.snippets_read,
             Self::UpsertSnippet { .. } | Self::DeleteSnippet { .. } => features.snippets_write,
+
+            // Notes are history-class data: stored in the history database and
+            // governed by its privacy and retention settings.
+            Self::ListNotes { .. } => features.history_read,
+            Self::DeleteNote { .. } => features.history_write,
 
             Self::QueryHistory { .. } => features.history_read,
             Self::GetHistoryAnalytics => features.history_read,
@@ -560,6 +587,13 @@ mod tests {
         }
         .mutates());
         assert!(Command::DeleteSnippet { id: 3 }.mutates());
+        assert!(Command::DeleteNote { id: 3 }.mutates());
+        assert!(!Command::ListNotes {
+            query: None,
+            limit: None,
+            id: None
+        }
+        .mutates());
         assert!(!Command::GetStatus.mutates());
         assert!(!Command::QueryHistory {
             query: HistoryQuery::default()
@@ -585,6 +619,12 @@ mod tests {
                 base_revision: None,
             },
             Command::DeleteSnippet { id: 1 },
+            Command::ListNotes {
+                query: None,
+                limit: None,
+                id: None,
+            },
+            Command::DeleteNote { id: 1 },
             Command::EndAudioStream { stream_id: 1 },
         ];
         for c in samples {

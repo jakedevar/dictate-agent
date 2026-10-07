@@ -6,7 +6,8 @@ use crate::capability::{Capabilities, ServerHello};
 use crate::diagnostics::{AudioStatus, DiagnosticsReport, FormatterStatus};
 use crate::event::FinalText;
 use crate::records::{
-    ConfigSnapshot, DictionaryEntry, DictionarySuggestion, HistoryAnalytics, HistoryPage, Snippet,
+    ConfigSnapshot, DictionaryEntry, DictionarySuggestion, HistoryAnalytics, HistoryPage, Note,
+    Snippet,
 };
 use crate::state::{DictationMode, InjectionOutcome, Route, SessionId, State};
 use crate::timings::StageTimings;
@@ -165,6 +166,12 @@ pub enum CommandResult {
         snippet: Snippet,
     },
 
+    /// A list of scratchpad notes, newest first.
+    Notes {
+        /// The notes.
+        notes: Vec<Note>,
+    },
+
     /// A record was removed.
     Deleted {
         /// Identifier of the removed record.
@@ -219,6 +226,7 @@ impl CommandResult {
             Self::DictionaryEntry { .. } => "dictionary_entry",
             Self::Snippets { .. } => "snippets",
             Self::Snippet { .. } => "snippet",
+            Self::Notes { .. } => "notes",
             Self::Deleted { .. } => "deleted",
             Self::History(_) => "history",
             Self::HistoryAnalytics(_) => "history_analytics",
@@ -378,6 +386,14 @@ mod tests {
             },
             CommandResult::Snippet {
                 snippet: Snippet::new("sig", "— Jake"),
+            },
+            CommandResult::Notes {
+                notes: vec![Note {
+                    id: 4,
+                    ts_ms: 1_760_000_000_000,
+                    text: "buy milk".into(),
+                    word_count: 2,
+                }],
             },
             CommandResult::Deleted { id: 9 },
             CommandResult::History(HistoryPage::default()),

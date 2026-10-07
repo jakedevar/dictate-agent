@@ -65,6 +65,7 @@ pub fn route_to_proto(route: RouteType) -> Route {
         RouteType::Timer => Route::Timer,
         RouteType::Edit => Route::Edit,
         RouteType::Command => Route::Command,
+        RouteType::Note => Route::Note,
     }
 }
 
@@ -1031,6 +1032,16 @@ impl Pipeline {
                 )
                 .await
             }
+            Route::Note => {
+                // As with edit: the router already stripped the trigger, but a
+                // caller-forced route sees the whole utterance.
+                let body = if router::route(full_text).route == RouteType::Note {
+                    route_text
+                } else {
+                    full_text
+                };
+                self.note(token, stages, interaction, opts, body)
+            }
             Route::Local => {
                 self.notifier
                     .notify(Notice::Processing(self.local_model.clone()));
@@ -1135,6 +1146,86 @@ impl Pipeline {
                         reason: SkipReason::NotSupported,
                     },
                 ))
+            }
+        }
+    }
+
+    /// Append the utterance to the scratchpad (S35). Nothing is typed.
+    ///
+    /// The write is irreversible, so it takes the commit point first: a
+    /// cancelled session provably stores nothing, and a `cancel` that arrives
+    /// once the note is being written is answered `TooLate`.
+    fn note(
+        &self,
+        token: &CancelToken,
+        stages: &mut Stages,
+        interaction: &mut Interaction,
+        opts: &ResolvedOptions,
+        body: &str,
+    ) -> Step<(String, InjectionOutcome)> {
+        stages.timings.inject = StageTiming::skipped(SkipReason::RouteNotEligible);
+        let refuse =
+            |this: &Self, interaction: &mut Interaction, reason: SkipReason, message: &str| {
+                interaction.execution_success = Some(false);
+                interaction.error_summary = Some(message.to_string());
+                this.notifier.notify(Notice::Error(message.to_string()));
+                Step::Continue((String::new(), InjectionOutcome::Skipped { reason }))
+            };
+        if body.trim_matches(|c: char| !c.is_alphanumeric()).is_empty() {
+            return refuse(
+                self,
+                interaction,
+                SkipReason::NoSpeechDetected,
+                "there was nothing to note",
+            );
+        }
+        // The session's own privacy request, on top of the store's global one.
+        if opts.privacy {
+            return refuse(
+                self,
+                interaction,
+                SkipReason::NotPermitted,
+                "privacy mode is on, so the note was not saved",
+            );
+        }
+        let Some(guard) = token.enter_commit() else {
+            return Step::Cancelled;
+        };
+        let saved = match self.history.lock() {
+            Ok(store) => store.add_note(body),
+            Err(_) => {
+                drop(guard);
+                return refuse(
+                    self,
+                    interaction,
+                    SkipReason::DependencyUnavailable,
+                    "the note store is unavailable",
+                );
+            }
+        };
+        drop(guard);
+        match saved {
+            Ok(note) => {
+                interaction.execution_success = Some(true);
+                interaction.output_char_count = Some(note.text.chars().count());
+                self.notifier.notify(Notice::NoteSaved(note.text.clone()));
+                Step::Continue((
+                    note.text,
+                    InjectionOutcome::Skipped {
+                        reason: SkipReason::RouteNotEligible,
+                    },
+                ))
+            }
+            Err(error) => {
+                let reason = match error {
+                    dictate_history::NoteError::Private | dictate_history::NoteError::Disabled => {
+                        SkipReason::NotPermitted
+                    }
+                    dictate_history::NoteError::Empty => SkipReason::NoSpeechDetected,
+                    dictate_history::NoteError::Storage(_) => SkipReason::DependencyUnavailable,
+                };
+                interaction.execution_error = Some(error.to_string());
+                refuse(self, interaction, reason, &error.to_string())
             }
         }
     }

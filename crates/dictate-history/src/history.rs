@@ -7,17 +7,17 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{error, info};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 // S02 deliberately gives the Rust daemon a distinct database from the live
 // Python daemon. S30 can optionally import the latter read-only.
 const DEFAULT_DB_DIR: &str = "dictated";
 
 pub struct HistoryStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
     session_id: String,
-    enabled: bool,
+    pub(crate) enabled: bool,
     privacy_mode: bool,
-    retention_days: Option<u32>,
+    pub(crate) retention_days: Option<u32>,
     db_path: Option<PathBuf>,
 }
 
@@ -202,10 +202,17 @@ impl HistoryStore {
         let Some(days) = self.retention_days else {
             return Ok(0);
         };
-        let cutoff = (Utc::now() - Duration::days(i64::from(days))).to_rfc3339();
-        Ok(self
-            .conn
-            .execute("DELETE FROM interactions WHERE timestamp < ?1", [cutoff])? as u64)
+        let cutoff_time = Utc::now() - Duration::days(i64::from(days));
+        let removed = self.conn.execute(
+            "DELETE FROM interactions WHERE timestamp < ?1",
+            [cutoff_time.to_rfc3339()],
+        )? as u64;
+        // Notes share the history window (S35).
+        let notes = self.conn.execute(
+            "DELETE FROM notes WHERE created_at_ms < ?1",
+            [cutoff_time.timestamp_millis()],
+        )? as u64;
+        Ok(removed + notes)
     }
 
     /// Return WPM, daily word totals, and active-day streaks.

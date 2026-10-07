@@ -158,6 +158,8 @@ open_str_enum! {
         Edit => "edit",
         /// Interpret the utterance as a command rather than as prose.
         Command => "command",
+        /// Append the utterance to the local scratchpad (S35) instead of typing it.
+        Note => "note",
     }
     default = Type;
 }
@@ -426,6 +428,6 @@ mod tests {
     #[test]
     fn known_routes_cover_the_preserved_set() {
         let names: Vec<&str> = Route::known().iter().map(Route::as_str).collect();
-        assert_eq!(names, ["type", "timer", "local", "edit", "command"]);
+        assert_eq!(names, ["type", "timer", "local", "edit", "command", "note"]);
     }
 }

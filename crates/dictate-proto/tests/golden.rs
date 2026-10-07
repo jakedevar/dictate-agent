@@ -419,6 +419,29 @@ fn golden_command_crud() {
         json!({"type": "delete_snippet", "id": 9}),
     );
     pin(
+        "list_notes",
+        Command::ListNotes {
+            query: Some("milk".into()),
+            limit: Some(20),
+            id: None,
+        },
+        json!({"type": "list_notes", "query": "milk", "limit": 20}),
+    );
+    pin(
+        "list_notes_bare",
+        Command::ListNotes {
+            query: None,
+            limit: None,
+            id: None,
+        },
+        json!({"type": "list_notes"}),
+    );
+    pin(
+        "delete_note",
+        Command::DeleteNote { id: 4 },
+        json!({"type": "delete_note", "id": 4}),
+    );
+    pin(
         "query_history",
         Command::QueryHistory {
             query: HistoryQuery {
@@ -692,6 +715,21 @@ fn golden_result_simple_variants() {
         json!({"type": "session_started", "session_id": "s1"}),
     );
     pin(
+        "result/notes",
+        CommandResult::Notes {
+            notes: vec![Note {
+                id: 4,
+                ts_ms: 1_760_000_000_000,
+                text: "buy milk".into(),
+                word_count: 2,
+            }],
+        },
+        json!({
+            "type": "notes",
+            "notes": [{"id": 4, "ts_ms": 1_760_000_000_000_i64, "text": "buy milk", "word_count": 2}]
+        }),
+    );
+    pin(
         "result/deleted",
         CommandResult::Deleted { id: 9 },
         json!({"type": "deleted", "id": 9}),
@@ -732,7 +770,7 @@ fn golden_enum_vocabularies() {
         (
             "Route",
             Route::known().iter().map(Route::to_string).collect(),
-            &["type", "timer", "local", "edit", "command"],
+            &["type", "timer", "local", "edit", "command", "note"],
         ),
         (
             "DictationMode",
