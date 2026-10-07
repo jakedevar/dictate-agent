@@ -52,13 +52,26 @@ pub fn socket_path() -> PathBuf {
     if let Some(explicit) = std::env::var_os(SOCKET_ENV) {
         return PathBuf::from(explicit);
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let uid = std::env::var("UID").unwrap_or_else(|_| "user".into());
-            PathBuf::from(format!("/tmp/dictate-agent-{uid}"))
-        });
-    runtime.join("dictate-agent").join("dictated.sock")
+    socket_path_for(std::env::var_os("XDG_RUNTIME_DIR"), effective_uid())
+}
+
+/// Mirrors `dictated::paths::runtime_dir`: with no `$XDG_RUNTIME_DIR` the
+/// daemon uses `/tmp/dictate-agent-<euid>` (private, 0700) and the socket sits
+/// directly in it.
+fn socket_path_for(xdg: Option<std::ffi::OsString>, euid: u32) -> PathBuf {
+    match xdg.filter(|v| !v.is_empty()) {
+        Some(base) => PathBuf::from(base)
+            .join("dictate-agent")
+            .join("dictated.sock"),
+        None => PathBuf::from(format!("/tmp/dictate-agent-{euid}")).join("dictated.sock"),
+    }
+}
+
+/// This process's effective uid. `/proc/self` is owned by it, which avoids a
+/// `libc` dependency for one call (`$UID` is a shell variable, not exported).
+fn effective_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").map_or(u32::MAX, |m| m.uid())
 }
 
 /// Tunables. The defaults are what the app uses; tests shorten them.
@@ -467,6 +480,24 @@ async fn send(write: &mut Writer, id: u64, command: Command) -> Result<(), Strin
         .map_err(|e| format!("write failed: {e}"))
 }
 
+enum SendError {
+    TimedOut,
+    Failed(String),
+}
+
+/// [`send`], abandoned after `timeout`.
+async fn send_within(
+    write: &mut Writer,
+    id: u64,
+    command: Command,
+    timeout: Duration,
+) -> Result<(), SendError> {
+    match tokio::time::timeout(timeout, send(write, id, command)).await {
+        Ok(result) => result.map_err(SendError::Failed),
+        Err(_) => Err(SendError::TimedOut),
+    }
+}
+
 /// Read until the response to `id` arrives. Only used during the handshake,
 /// before the subscription exists, so nothing else can arrive meanwhile.
 async fn await_response(
@@ -518,9 +549,25 @@ async fn serve(
                 let Some(p) = pending else { break Ended::Shutdown };
                 let id = next_id;
                 next_id += 1;
-                if let Err(e) = send(&mut write, id, p.command).await {
-                    let _ = p.reply.send(Err(BridgeError::new("connection_lost", e.clone())));
-                    break Ended::Lost(e);
+                // The request's own deadline covers the write too: a daemon that
+                // stops reading fills the socket buffer and `write_all` would
+                // otherwise block this task (and every other request, the
+                // level flush and the deadlines) forever.
+                match send_within(&mut write, id, p.command, p.timeout).await {
+                    Ok(()) => {}
+                    Err(SendError::TimedOut) => {
+                        let _ = p.reply.send(Err(BridgeError::new(
+                            "timeout",
+                            "the daemon did not accept the request in time",
+                        )));
+                        // A half-written line leaves the stream unframed;
+                        // only a fresh connection is safe.
+                        break Ended::Lost("write timed out".into());
+                    }
+                    Err(SendError::Failed(e)) => {
+                        let _ = p.reply.send(Err(BridgeError::new("connection_lost", e.clone())));
+                        break Ended::Lost(e);
+                    }
                 }
                 in_flight.insert(id, InFlight { reply: p.reply, deadline: Instant::now() + p.timeout });
             }
@@ -690,5 +737,37 @@ mod tests {
             socket_path(),
             PathBuf::from("/run/user/4242/dictate-agent/dictated.sock")
         );
+    }
+
+    #[test]
+    fn the_tmp_fallback_matches_the_daemons_private_directory() {
+        // Same layout as `dictated::paths::runtime_dir`: keyed by the
+        // effective uid, socket directly inside.
+        assert_eq!(
+            socket_path_for(None, 1234),
+            PathBuf::from("/tmp/dictate-agent-1234/dictated.sock")
+        );
+        assert_eq!(
+            socket_path_for(Some("".into()), 1234),
+            PathBuf::from("/tmp/dictate-agent-1234/dictated.sock")
+        );
+        assert_ne!(effective_uid(), u32::MAX, "/proc/self must be readable");
+    }
+
+    #[tokio::test]
+    async fn a_write_to_a_daemon_that_stopped_reading_hits_the_deadline() {
+        let (client, _daemon_never_reads) = tokio::net::UnixStream::pair().unwrap();
+        let (_read, mut write) = client.into_split();
+        // Far larger than any socket buffer, so `write_all` must block.
+        let big = Command::SetConfig {
+            entries: Vec::new(),
+            document: Some("x".repeat(16 * 1024 * 1024)),
+            dry_run: false,
+            base_revision: None,
+        };
+        let started = Instant::now();
+        let result = send_within(&mut write, 7, big, Duration::from_millis(200)).await;
+        assert!(matches!(result, Err(SendError::TimedOut)));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
