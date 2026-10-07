@@ -42,6 +42,12 @@ slice section of
   gates. Its typed cargo params have no clippy, `just` recipe or feature lines.
   Run `just check-cpu` in your own turn as described above. This gap is already
   tracked as #1466 and reported to RSI, so do not file it again.
+- **Shared host, so cap load and clean up.** Never start more than 8 synthetic
+  load processes (busy loops, `cargo build -j 8`), and only when `uptime`'s
+  1-minute load is under 40. Before you end your turn, stop every background
+  process you started: kill its process group by the PID you recorded, never
+  with `pkill` or `killall`. A 64-loop generator once pushed host load to 60,
+  and another was left running after its session ended (#1524).
 - Real-hardware checks (CUDA whisper, Ollama, X11) are allowed on this machine
   but must be isolated: a private Xvfb display for anything that types or
   reads windows (never `DISPLAY=:0` for injection), a temp
