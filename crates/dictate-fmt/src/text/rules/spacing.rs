@@ -70,7 +70,7 @@ fn space(ed: &mut Editor<'_>) {
                 let before_punct = next.is_some_and(|x| {
                     ed.kind(x) == Kind::Punct
                         && match ed.text(x) {
-                            "!" => !ed.touching_next(x).is_some_and(|m| ed.text(m) == "="),
+                            "!" => ed.touching_next(x).is_none_or(|m| ed.text(m) != "="),
                             "," | ";" | "?" => true,
                             "." | ":" | "..." | "\u{2026}" => ends_word(ed, x),
                             _ => false,

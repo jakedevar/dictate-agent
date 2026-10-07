@@ -288,7 +288,7 @@ pub fn event_text(event: &Event) -> String {
             format!(
                 "{:<12} [{seq}] {}\n",
                 "partial?",
-                inline(&hypothesis.display_text())
+                inline(hypothesis.display_text())
             )
         }
         Event::InjectionResolved { outcome, .. } => {
