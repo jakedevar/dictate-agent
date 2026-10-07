@@ -1,0 +1,465 @@
+diff --git a/crates/dictate-audio/src/decode.rs b/crates/dictate-audio/src/decode.rs
+index dc43095..9925856 100644
+--- a/crates/dictate-audio/src/decode.rs
++++ b/crates/dictate-audio/src/decode.rs
+@@ -149,17 +149,92 @@ fn check_duration(frames: u64, rate_hz: u32, max_ms: Option<u64>) -> Result<(),
+     }
+ }
+ 
++/// The `fmt ` and `data` chunk bodies of a RIFF/WAVE file.
++struct WavChunks<'a> {
++    fmt: &'a [u8],
++    data: &'a [u8],
++}
++
++/// Walk a RIFF/WAVE file's chunks, checking every declared size against the
++/// bytes actually present.
++///
++/// This is what makes the decoder's allocation honest: hound sizes its sample
++/// buffer from the `data` chunk's *declared* length, so a 44-byte header that
++/// claims four gigabytes of samples must be refused here, before hound sees it.
++/// It is also where RIFF's word alignment is honoured — a chunk with an odd
++/// length is followed by one pad byte that is not counted in its size — which
++/// hound does not do, so a valid file with an odd-length `LIST` chunk before
++/// its data would otherwise be misread.
++fn wav_chunks(bytes: &[u8]) -> Result<WavChunks<'_>, DecodeError> {
++    let malformed = |m: String| DecodeError::Malformed(format!("not a readable WAV file: {m}"));
++    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
++        return Err(malformed("no RIFF/WAVE header".into()));
++    }
++    let mut fmt = None;
++    let mut at = 12;
++    loop {
++        let Some(header) = bytes.get(at..at + 8) else {
++            return Err(malformed("no data chunk".into()));
++        };
++        let id = &header[0..4];
++        let len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
++        let body_start = at + 8;
++        let remaining = bytes.len() - body_start;
++        if len > remaining {
++            return Err(malformed(format!(
++                "chunk '{}' declares {len} bytes but only {remaining} remain",
++                String::from_utf8_lossy(id).escape_default()
++            )));
++        }
++        let body = &bytes[body_start..body_start + len];
++        match id {
++            b"fmt " if fmt.is_none() => fmt = Some(body),
++            b"data" => {
++                let Some(fmt) = fmt else {
++                    return Err(malformed("the data chunk precedes the fmt chunk".into()));
++                };
++                // Chunks after the data are ignored, as hound would.
++                return Ok(WavChunks { fmt, data: body });
++            }
++            _ => {}
++        }
++        // Word alignment: an odd-length chunk is followed by a pad byte. A
++        // writer that omitted it on the final chunk is tolerated.
++        at = (body_start + len + (len & 1)).min(bytes.len());
++    }
++}
++
+ /// Decode a complete RIFF/WAVE file: PCM 8/16/24/32-bit or 32-bit float, any
+ /// sample rate in range, any channel count in range.
+ ///
+-/// The duration limit is enforced from the header **before** any sample is
+-/// decoded or allocated, so an oversized upload costs almost nothing.
++/// Chunk sizes are checked against the bytes present, and the duration limit
++/// is enforced from the header, **before** any sample is decoded or buffer
++/// allocated — so an oversized or lying upload costs almost nothing.
+ ///
+ /// # Errors
+ ///
+ /// See [`DecodeError`].
+ pub fn decode_wav(bytes: &[u8], max_ms: Option<u64>) -> Result<Decoded, DecodeError> {
+-    let mut reader = WavReader::new(Cursor::new(bytes))
++    let chunks = wav_chunks(bytes)?;
++    // Hand hound a canonical stream — header, fmt, data — built from the
++    // validated slices, so it never sees an ancillary chunk or a size that
++    // was not checked against the bytes present.
++    // Both lengths were read from u32 size fields, so they fit.
++    let len32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
++    let riff_len = len32(4 + 8 + chunks.fmt.len() + 8 + chunks.data.len());
++    let (fmt_len, data_len) = (len32(chunks.fmt.len()), len32(chunks.data.len()));
++    let mut header = Vec::with_capacity(28 + chunks.fmt.len());
++    header.extend_from_slice(b"RIFF");
++    header.extend_from_slice(&riff_len.to_le_bytes());
++    header.extend_from_slice(b"WAVE");
++    header.extend_from_slice(b"fmt ");
++    header.extend_from_slice(&fmt_len.to_le_bytes());
++    header.extend_from_slice(chunks.fmt);
++    header.extend_from_slice(b"data");
++    header.extend_from_slice(&data_len.to_le_bytes());
++    let stream = std::io::Read::chain(Cursor::new(header), chunks.data);
++
++    let mut reader = WavReader::new(stream)
+         .map_err(|e| DecodeError::Malformed(format!("not a readable WAV file: {e}")))?;
+     let spec = reader.spec();
+     check_layout(spec.sample_rate, spec.channels)?;
+diff --git a/crates/dictated/tests/harness/mod.rs b/crates/dictated/tests/harness/mod.rs
+index 53532b1..5d6a7ab 100644
+--- a/crates/dictated/tests/harness/mod.rs
++++ b/crates/dictated/tests/harness/mod.rs
+@@ -341,6 +341,37 @@ impl Client {
+         Some(serde_json::from_str(&line).unwrap_or_else(|e| panic!("bad frame {line:?}: {e}")))
+     }
+ 
++    /// Write raw bytes to the socket — pipelined frames, or partial ones.
++    #[allow(dead_code)]
++    pub async fn write_raw(&mut self, bytes: &[u8]) {
++        self.writer.write_all(bytes).await.expect("write");
++        self.writer.flush().await.expect("flush");
++    }
++
++    /// Read the next `n` responses and return their ids, buffering events.
++    #[allow(dead_code)]
++    pub async fn read_response_ids(&mut self, n: usize) -> Vec<RequestId> {
++        within("responses", async {
++            let mut ids = Vec::new();
++            while ids.len() < n {
++                match self.read_message().await.expect("connection closed") {
++                    Message::Response(r) => ids.push(r.id),
++                    Message::Event(e) => self.pending_events.push_back(e.event),
++                    Message::Request(_) => panic!("the daemon sent us a request"),
++                }
++            }
++            ids
++        })
++        .await
++    }
++
++    /// Assert the daemon closes this connection without sending anything more.
++    #[allow(dead_code)]
++    pub async fn expect_closed(&mut self) {
++        let next = within("the daemon to close the connection", self.read_message()).await;
++        assert!(next.is_none(), "expected the connection to close, got {next:?}");
++    }
++
+     /// Send a command without waiting for its response — for tests that hang up
+     /// (or read raw frames) instead of waiting.
+     pub async fn fire(&mut self, command: Command) {
+diff --git a/crates/dictated/tests/upload.rs b/crates/dictated/tests/upload.rs
+index 3e4e209..150da1d 100644
+--- a/crates/dictated/tests/upload.rs
++++ b/crates/dictated/tests/upload.rs
+@@ -24,7 +24,8 @@ use dictate_core::ports::mock::{
+ use dictate_core::ports::{AudioSource, DisabledAudioSource};
+ use dictate_proto::{
+     AudioEncoding, AudioFormat, AudioSource as Upload, Capabilities, Command, CommandResult,
+-    ErrorCode, Event, InjectionOutcome, SessionOptions, StageTiming, State, Transcript,
++    ErrorCode, Event, InjectionOutcome, RequestId, SessionOptions, StageTiming, State,
++    Transcript,
+ };
+ use harness::{Client, Harness, Setup};
+ 
+@@ -430,20 +431,26 @@ async fn an_over_long_clip_is_payload_too_large_and_leaves_the_slot_free() {
+ 
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ async fn a_request_larger_than_the_message_limit_is_answered_then_the_connection_closes() {
++    let limit: usize = 64 * 1024;
+     let mut caps = Capabilities::local_trusted();
+-    caps.limits.max_message_bytes = 64 * 1024;
++    caps.limits.max_message_bytes = limit as u32;
+     let h = Harness::with(Setup::default().with_capabilities(caps)).await;
+     let mut client = h.client().await;
+ 
+-    // ~80 KB of WAV becomes ~107 KB of base64 on one line: past the 64 KB limit
+-    // before it is ever parsed, so the framing layer answers, not the decoder.
+-    // (Small enough to be written in one go: a peer that keeps writing into a
+-    // closing socket would see a broken pipe, which is the client's problem.)
+-    client.fire(transcribe(wav(16_000, 1, 2.5))).await;
++    // The start of a real upload request, padded to exactly one byte past the
++    // limit with no newline: the framing layer must answer before anything is
++    // parsed. Sending *only* enough to cross the limit keeps this
++    // deterministic — every byte written is one the daemon reads before it
++    // decides, so the write can never race the close into a broken pipe.
++    let mut line = br#"{"id":7,"command":{"type":"transcribe_audio","audio":{"data":""#.to_vec();
++    line.resize(limit + 1, b'A');
++    client.write_raw(&line).await;
+     match client.next_event().await {
+         Event::Error { error, .. } => assert_eq!(error.code, ErrorCode::PayloadTooLarge),
+         other => panic!("expected a payload_too_large error event, got {other:?}"),
+     }
++    // The stream is out of sync after an oversized line, so it is closed.
++    client.expect_closed().await;
+ 
+     // A fresh connection is unaffected: the daemon did not fall over.
+     let mut fresh = h.client().await;
+@@ -753,6 +760,90 @@ async fn an_uploader_that_hangs_up_takes_its_session_with_it() {
+     h.stop().await;
+ }
+ 
++/// An uploader that pipelined more requests behind its upload, then hung up.
++async fn pipelined_hangup_injects_nothing(pipelined: Vec<u8>) {
++    let gate = Gate::closed();
++    let injector = Arc::new(MockInjector::new());
++    let mut caps = Capabilities::local_trusted();
++    caps.limits.max_message_bytes = 256 * 1024;
++    let h = Harness::with(
++        gated_setup(&gate)
++            .with_injector(injector.clone())
++            .with_capabilities(caps),
++    )
++    .await;
++
++    let mut uploader = h.client().await;
++    uploader
++        .fire(Command::TranscribeAudio {
++            audio: upload_wav(wav(16_000, 1, 1.0)),
++            options: Some(SessionOptions {
++                inject: Some(true),
++                ..Default::default()
++            }),
++        })
++        .await;
++    uploader.write_raw(&pipelined).await;
++    gate.wait_entered().await;
++    uploader.disconnect().await;
++
++    let mut probe = h.client().await;
++    harness::within("the daemon to return to idle", async {
++        loop {
++            if let CommandResult::Status(s) = probe.request(Command::GetStatus).await.unwrap() {
++                if s.state == State::Idle {
++                    return;
++                }
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++        }
++    })
++    .await;
++    gate.open();
++    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
++    assert!(
++        injector.injected().is_empty(),
++        "an upload whose connection is gone must never type, whatever was pipelined behind it"
++    );
++    h.stop().await;
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn an_uploader_that_pipelined_a_request_then_hung_up_injects_nothing() {
++    pipelined_hangup_injects_nothing(
++        b"{\"id\":99,\"command\":{\"type\":\"get_status\"}}\n".to_vec(),
++    )
++    .await;
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn an_uploader_that_pipelined_past_the_read_ahead_bound_then_hung_up_injects_nothing() {
++    // More than the connection's message limit, with no newline: the daemon
++    // stops reading at its bound and must still notice the close.
++    pipelined_hangup_injects_nothing(vec![b' '; 300 * 1024]).await;
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn requests_pipelined_behind_an_upload_are_answered_in_order() {
++    // Must-not-change: reading ahead to watch for a hang-up keeps what it read.
++    let gate = Gate::closed();
++    let h = Harness::with(gated_setup(&gate)).await;
++    let mut client = h.client().await;
++    client.fire(transcribe(wav(16_000, 1, 1.0))).await;
++    client
++        .write_raw(b"{\"id\":\"after\",\"command\":{\"type\":\"get_status\"}}\n")
++        .await;
++    gate.wait_entered().await;
++    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++    gate.open();
++    let ids = client.read_response_ids(2).await;
++    assert!(
++        matches!(ids[0], RequestId::Number(_)) && ids[1] == RequestId::Text("after".into()),
++        "pipelined requests are answered after the upload, in order: {ids:?}"
++    );
++    h.stop().await;
++}
++
+ // ---------------------------------------------------------------------------
+ // 5. Privacy
+ // ---------------------------------------------------------------------------
+diff --git a/crates/dictate-audio/tests/fixtures/odd_list_chunk_padded.wav b/crates/dictate-audio/tests/fixtures/odd_list_chunk_padded.wav
+new file mode 100644
+index 0000000000000000000000000000000000000000..0911b95186d0ad02a3e46d69eb983bf27ce1d799
+GIT binary patch
+literal 390
+zcmWIYbaSg?WMBw)40BD(Em06)U|?WmU}R{pV_;yYWnf@p5Mc1}3=R=wU|{g{bMyBM
+zb_-!;U|=Y&%qz)YNJ%V7bYNs)U|`tCr7ikh?wWd={%O;4s}$QhyWO^m)<?{a8H8vq
+zS6~!h!}E>N==+8@haPRZdF-O~X{TdMhbJBUf6(PfzzMc<7FRdi)q9@#QRL5UwtT^Q
+z={+isbT%4)v*@((v$L@Cu<5l>GB(utpgc#aR^TD4<nPiC9?$OIX}VHy_QCN#haVnX
+zaM1ejl4D0s7hbBmweazRx7t5GGA-hLC0?s2pp|53V_snWz_!B9*jC2M%k-h1u)2(#
+zoyajx*8g5#UcNMVka_*a`E4hSj^-a~IGBIP=;*eSH_m5XH+b;!rPmkM|HnA(L}cWI
+z)gS74naWrh+g8{;ur08*F;6lS(5h8@CBBIFBa`-z1#cHVuDVrt>B#9N$E*)8IQa13
+ypTiH17o2Una{rFUv(gWezaO&J3e1uEplqn4WZY}vVPj$EXV+=-&0?eRBOL&z<*3^L
+
+literal 0
+HcmV?d00001
+
+diff --git a/crates/dictate-audio/tests/fixtures/plain_pcm16.wav b/crates/dictate-audio/tests/fixtures/plain_pcm16.wav
+new file mode 100644
+index 0000000000000000000000000000000000000000..d65d38f6b925bc5a5404ac716167dcae4377dce6
+GIT binary patch
+literal 364
+zcmWIYbaP8#WMBw)40BD(Em06)U|?WmU}R{pV_;yYWnf@p5MW42EJ<`=WME)m*vF+U
+z`d#jtdYk@f({ig6+d8}5wu;tA%#Im^Xf9V^6ko&hjnU})hBt>EZMu2vqV;K~V@!u9
+z9sGaL<w(E@wsRI&H{8{Gp7~Ma&uzAR!FuUEDvxwF8h^9swDGgEu=B9#wNNrP)cK%1
+zN2*rfA*<x?(hnZb?%!#;QgHUc@jr(j9$awH`tXutM@|=Bs=BrC@q)M7KRz-o;(aAv
+zt0<tAWN2evVEw?h!p_)M#>&g|p`Nh1jGUdwF;3S1USD3mG<cAC{l@uiCykEgA8I(5
+zf5_<Qwv#u`XI?jW@babC7uNsBIPFAa<b>59>Uo*USQ*<^*gdc<u(mNzG8E9NReUAB
+zi1#Ct_KyW`7e21KRe0&h=_SXk4=*_Q@Zg`r4~`d{ZMt&*j>ogo50bwhvepXBk@}!)
+YsH0@uYvEyIVdrPpY4gouqwymh01=y_*8l(j
+
+literal 0
+HcmV?d00001
+
+diff --git a/crates/dictate-audio/tests/wav_allocation.rs b/crates/dictate-audio/tests/wav_allocation.rs
+new file mode 100644
+index 0000000..3c310bf
+--- /dev/null
++++ b/crates/dictate-audio/tests/wav_allocation.rs
+@@ -0,0 +1,58 @@
++//! A WAV header must not be able to make the decoder allocate what its bytes
++//! cannot back. This binary installs a counting allocator, so it holds only
++//! this one test.
++
++use std::alloc::{GlobalAlloc, Layout, System};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++struct Largest;
++
++static LARGEST: AtomicUsize = AtomicUsize::new(0);
++
++unsafe impl GlobalAlloc for Largest {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        LARGEST.fetch_max(layout.size(), Ordering::Relaxed);
++        // SAFETY: forwarded unchanged to the system allocator.
++        unsafe { System.alloc(layout) }
++    }
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        // SAFETY: forwarded unchanged to the system allocator.
++        unsafe { System.dealloc(ptr, layout) }
++    }
++}
++
++#[global_allocator]
++static ALLOCATOR: Largest = Largest;
++
++#[test]
++fn a_44_byte_header_claiming_gigabytes_allocates_almost_nothing() {
++    // 8-bit mono at 192 kHz: 0xFFFF_FFF0 declared bytes is ~6 hours, so only
++    // the absence of those bytes — not the duration limit — can refuse it.
++    let mut b = Vec::new();
++    b.extend_from_slice(b"RIFF");
++    b.extend_from_slice(&u32::MAX.to_le_bytes());
++    b.extend_from_slice(b"WAVE");
++    b.extend_from_slice(b"fmt ");
++    b.extend_from_slice(&16u32.to_le_bytes());
++    b.extend_from_slice(&1u16.to_le_bytes());
++    b.extend_from_slice(&1u16.to_le_bytes());
++    b.extend_from_slice(&192_000u32.to_le_bytes());
++    b.extend_from_slice(&192_000u32.to_le_bytes());
++    b.extend_from_slice(&1u16.to_le_bytes());
++    b.extend_from_slice(&8u16.to_le_bytes());
++    b.extend_from_slice(b"data");
++    b.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
++    assert_eq!(b.len(), 44);
++
++    LARGEST.store(0, Ordering::Relaxed);
++    let result = dictate_audio::decode::decode_wav(&b, None);
++    let largest = LARGEST.load(Ordering::Relaxed);
++    assert!(
++        matches!(result, Err(dictate_audio::decode::DecodeError::Malformed(_))),
++        "{result:?}"
++    );
++    assert!(
++        largest < 64 * 1024,
++        "decoding a 44-byte header allocated {largest} bytes at once"
++    );
++}
+diff --git a/crates/dictate-audio/tests/wav_container.rs b/crates/dictate-audio/tests/wav_container.rs
+new file mode 100644
+index 0000000..c3be99f
+--- /dev/null
++++ b/crates/dictate-audio/tests/wav_container.rs
+@@ -0,0 +1,81 @@
++//! RIFF container handling in `decode_wav`, against byte-exact fixtures that
++//! were written by hand rather than by the encoder under test.
++
++use dictate_audio::decode::{decode_wav, DecodeError};
++
++fn fixture(name: &str) -> Vec<u8> {
++    std::fs::read(format!(
++        "{}/tests/fixtures/{name}.wav",
++        env!("CARGO_MANIFEST_DIR")
++    ))
++    .unwrap()
++}
++
++/// A 44-byte canonical 16 kHz mono 16-bit header whose `data` chunk declares
++/// `declared` bytes, followed by `present` bytes of silence.
++fn lying_header(declared: u32, present: usize) -> Vec<u8> {
++    let mut b = Vec::new();
++    b.extend_from_slice(b"RIFF");
++    b.extend_from_slice(&36u32.wrapping_add(declared).to_le_bytes());
++    b.extend_from_slice(b"WAVE");
++    b.extend_from_slice(b"fmt ");
++    b.extend_from_slice(&16u32.to_le_bytes());
++    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
++    b.extend_from_slice(&1u16.to_le_bytes()); // mono
++    b.extend_from_slice(&16_000u32.to_le_bytes());
++    b.extend_from_slice(&32_000u32.to_le_bytes());
++    b.extend_from_slice(&2u16.to_le_bytes());
++    b.extend_from_slice(&16u16.to_le_bytes());
++    b.extend_from_slice(b"data");
++    b.extend_from_slice(&declared.to_le_bytes());
++    b.resize(44 + present, 0);
++    b
++}
++
++#[test]
++fn an_odd_length_chunk_with_its_pad_byte_is_skipped_correctly() {
++    // `LIST` has a 17-byte body and the RIFF-mandated pad byte after it.
++    let padded = decode_wav(&fixture("odd_list_chunk_padded"), None)
++        .expect("a valid WAV with a padded odd-length chunk must decode");
++    let plain = decode_wav(&fixture("plain_pcm16"), None).unwrap();
++    assert_eq!(padded.samples.len(), 160);
++    assert_eq!(padded, plain, "the ancillary chunk must not change the audio");
++}
++
++#[test]
++fn a_data_chunk_larger_than_the_file_is_malformed() {
++    let err = decode_wav(&lying_header(0xFFFF_FFF0, 64), None).unwrap_err();
++    match err {
++        DecodeError::Malformed(m) => assert!(m.contains("declares"), "{m}"),
++        other => panic!("expected malformed, got {other:?}"),
++    }
++}
++
++#[test]
++fn an_ancillary_chunk_larger_than_the_file_is_malformed() {
++    let mut bytes = fixture("plain_pcm16");
++    // Replace the data chunk id so the walker reads it as unknown, then make
++    // it claim more than is there.
++    let at = bytes.windows(4).position(|w| w == b"data").unwrap();
++    bytes[at..at + 4].copy_from_slice(b"junk");
++    bytes[at + 4..at + 8].copy_from_slice(&1_000_000u32.to_le_bytes());
++    assert!(matches!(
++        decode_wav(&bytes, None),
++        Err(DecodeError::Malformed(_))
++    ));
++}
++
++#[test]
++fn data_before_fmt_is_malformed() {
++    let mut b = Vec::new();
++    b.extend_from_slice(b"RIFF\x24\x00\x00\x00WAVE");
++    b.extend_from_slice(b"data\x02\x00\x00\x00\x00\x00");
++    assert!(matches!(decode_wav(&b, None), Err(DecodeError::Malformed(_))));
++}
++
++#[test]
++fn an_honest_header_still_decodes() {
++    // Must-not-change: exactly the bytes the header declares.
++    let decoded = decode_wav(&lying_header(3_200, 3_200), None).unwrap();
++    assert_eq!(decoded.samples.len(), 1_600);
++}

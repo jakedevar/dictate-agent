@@ -1,0 +1,1334 @@
+diff --git a/ui/bun.lock b/ui/bun.lock
+new file mode 100644
+index 0000000..335965c
+--- /dev/null
++++ b/ui/bun.lock
+@@ -0,0 +1,153 @@
++{
++  "lockfileVersion": 2,
++  "configVersion": 1,
++  "workspaces": {
++    "": {
++      "name": "dictate-ui",
++      "dependencies": {
++        "@tauri-apps/api": "^2.12.0",
++        "preact": "^11.0.0",
++      },
++      "devDependencies": {
++        "@types/bun": "^1.4.2",
++        "typescript": "^7.0.2",
++        "vite": "^8.3.1",
++      },
++    },
++  },
++  "packages": {
++    "@oxc-project/types": ["@oxc-project/types@0.151.0", "", {}, "sha512-J1yXrIlNDZVzE3ada310xeAw7nH8yCAyLPuUIsjKatFPmfn5bS1oW+cM+QsGOtVWd5nhSpbwZWx/rue+r5Z+PA=="],
++
++    "@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.11", "", { "os": "android", "cpu": "arm" }, "sha512-A5kXfGKvKWWZE0TtPrfsvT+q4Y5d1QG8gGUzpYjGydM+fARM9MuX90PrXYXe0XbsDVgyxxNzHo6giCj90bsFNw=="],
++
++    "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.2.11", "", { "os": "android", "cpu": "arm64" }, "sha512-z6cTycz+iJ4PVkuL4HHW4DfTfoeU/2nqYYuSOrTmH7yHK5Y0LCOnA03V4ZNxavyVaU1oOqUgIg2klN/s+USGOA=="],
++
++    "@rolldown/binding-darwin-arm64": ["@rolldown/binding-darwin-arm64@1.2.11", "", { "os": "darwin", "cpu": "arm64" }, "sha512-jShvqNtP6vDC6/A5JOAzbVV+DkgHqhl/ScVCJEbt+TUY6QYz7YnXcrg3sLtFBniro0f/Ld50ZwCWA6f7KYD1nQ=="],
++
++    "@rolldown/binding-darwin-x64": ["@rolldown/binding-darwin-x64@1.2.11", "", { "os": "darwin", "cpu": "x64" }, "sha512-f2i2xiNWq1Z1l2++q2fuhZRdLAT3aqxD6vRNm1RAxpUoBcdqNB3C0s1Bt+K+PbEx2F5F4gQp6hqKkphCY/xF9w=="],
++
++    "@rolldown/binding-freebsd-x64": ["@rolldown/binding-freebsd-x64@1.2.11", "", { "os": "freebsd", "cpu": "x64" }, "sha512-4Ir5FSOKIAMr4r0kExpt1s3bMgzJU3rA45AYOHtQpls0oNeqcYBKrWMlckrYH4KCfGLfkfn1tN1dmZPMVsdXow=="],
++
++    "@rolldown/binding-linux-arm-gnueabihf": ["@rolldown/binding-linux-arm-gnueabihf@1.2.11", "", { "os": "linux", "cpu": "arm" }, "sha512-/gnRDM+39BROzAN/k1OZjDPnDMcZxB/0EUxKjONO5yVkNEvlsoMDrxGNKgZi/ttFriS2gwlDNzB65pvNbFOXIQ=="],
++
++    "@rolldown/binding-linux-arm64-gnu": ["@rolldown/binding-linux-arm64-gnu@1.2.11", "", { "os": "linux", "cpu": "arm64" }, "sha512-PFaK8HwvAHbaKbBcDNQihjMKYvFnA5hiENx/l5tphTDz1E0WFp32l0A7aq7lyUwGsRw/xSrNIy/gIK4thrSCrw=="],
++
++    "@rolldown/binding-linux-arm64-musl": ["@rolldown/binding-linux-arm64-musl@1.2.11", "", { "os": "linux", "cpu": "arm64" }, "sha512-AskzJUIKRLPxkruR1wLKewGbOw+EYfU/9lOrBFj4AFrEA8hPpKFnODWNu2WLaNs0QNkEb9QIJufmVZZIL/bJlg=="],
++
++    "@rolldown/binding-linux-ppc64-gnu": ["@rolldown/binding-linux-ppc64-gnu@1.2.11", "", { "os": "linux", "cpu": "ppc64" }, "sha512-qlUGAheh2yh8afH7QBgx0PrRHN85hKnNd78x8MeMhXivuevgd8vgf6/CstOzmNKY/lLTHvNTrPy98cLnAugzJw=="],
++
++    "@rolldown/binding-linux-s390x-gnu": ["@rolldown/binding-linux-s390x-gnu@1.2.11", "", { "os": "linux", "cpu": "s390x" }, "sha512-secpEad+0vCbSfn8upFySkDskv+bGPk3THSDS9Y89yc4rb4kzqHp8Dmyd9BkQW4SnhNXBZCl/6CrO//hZahNJQ=="],
++
++    "@rolldown/binding-linux-x64-gnu": ["@rolldown/binding-linux-x64-gnu@1.2.11", "", { "os": "linux", "cpu": "x64" }, "sha512-mOVBT3dPpkWm8XBWPmU4bf+U6dYDLeMo/9ojUmis4N0L5uu10qra5vOyngZ7/PSdoE4G9KvRt4bloRxNjLas7A=="],
++
++    "@rolldown/binding-linux-x64-musl": ["@rolldown/binding-linux-x64-musl@1.2.11", "", { "os": "linux", "cpu": "x64" }, "sha512-Is78i9A8Ui4SqcxUwFJ9uMmjDn58IbVTjFWYdQestFEgeuEmHMLGNriXnVJKkwG2YiZjw8cP0zCTyDMdDGtOOg=="],
++
++    "@rolldown/binding-openharmony-arm64": ["@rolldown/binding-openharmony-arm64@1.2.11", "", { "os": "none", "cpu": "arm64" }, "sha512-dUCXneZ87INUMyQ0D+C0HrEBNUPNXHaPmU5GTjyKTJEiussw9Kaj5Ln8UztPe4epV/ffvgNBEadksdYhmW6xJA=="],
++
++    "@rolldown/binding-win32-arm64-msvc": ["@rolldown/binding-win32-arm64-msvc@1.2.11", "", { "os": "win32", "cpu": "arm64" }, "sha512-jByxb6qfd+bH1xUd0qnfFnb17i9sWBPY2tOavJ0l3tdr3OTu+Kvtm8cd/JV5nFt657b1VqGltxg9olOEfofXWw=="],
++
++    "@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.11", "", { "os": "win32", "cpu": "x64" }, "sha512-/PzKqzAJ03i19oy2ItPvyvaVjOjBCNnfaJs8yvUdGBKmiESgnrJSQ2awd81QzFbbnAmu7YO9ZnJrDCb9VSJPRA=="],
++
++    "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
++
++    "@tauri-apps/api": ["@tauri-apps/api@2.12.0", "", {}, "sha512-fUSxFX8VABYe9W9K5ROdEaKVkNUFRcMSRofjruvaxztXA+I0XnQHcYHF8m/a6iExRUxsUf0HsFWhPBuH9IgzJw=="],
++
++    "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
++
++    "@types/node": ["@types/node@26.6.3", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-dsqMQQoeTLqu9wynDD00q573mNzso3IdQOAfHRJqLCcmCFPoGo9A1bDpUcv/9tnKpErQWv9uKeGfl37EIS02Yg=="],
++
++    "@typescript/typescript-aix-ppc64": ["@typescript/typescript-aix-ppc64@7.0.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ=="],
++
++    "@typescript/typescript-darwin-arm64": ["@typescript/typescript-darwin-arm64@7.0.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-gowzar9MwS/aRWp6f3a4KUqzRjAZjOsmGNCM6LcTgXum+dBfgsBVMN+AgvOCCbguXyick6LJhpBszxMebJ8syA=="],
++
++    "@typescript/typescript-darwin-x64": ["@typescript/typescript-darwin-x64@7.0.2", "", { "os": "darwin", "cpu": "x64" }, "sha512-SZ9xZInqApNlNGc9s0W1VSsktYSOe9cFqNOIqmN1Gs8SmkjKZYFt017G4VwPxASInODuAdbTW7sXiFUf893RgA=="],
++
++    "@typescript/typescript-freebsd-arm64": ["@typescript/typescript-freebsd-arm64@7.0.2", "", { "os": "freebsd", "cpu": "arm64" }, "sha512-W5NH4y/J0plIIS5b2xvTEkU7JFxyqdMAOgf+Ilhl0vHQXKO5dZoxd+C/jEtq56c4F3wk71RB4BMRQ2XdI+bwYQ=="],
++
++    "@typescript/typescript-freebsd-x64": ["@typescript/typescript-freebsd-x64@7.0.2", "", { "os": "freebsd", "cpu": "x64" }, "sha512-UMGDx5sTpzNw3WiPebH7l90IWfJggEd+egHt/q6p7/Cm3zqoV7VxkGXt+3DxPIw8CcmvAB0j3sVVfbhX+M4Tpw=="],
++
++    "@typescript/typescript-linux-arm": ["@typescript/typescript-linux-arm@7.0.2", "", { "os": "linux", "cpu": "arm" }, "sha512-gffT3xPz9sR7j/YJExkyPntrI0P2EP9XbOyWzth2/Gs0RstK+90RBcO0ncXoXy/beYll1SXw846Nf2zdnEz0QQ=="],
++
++    "@typescript/typescript-linux-arm64": ["@typescript/typescript-linux-arm64@7.0.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-Qh4eU4/y3yDjnfjjyPYihMj5/ODIlmt+Bzu17OI+fiSRDW57QmU5SiN63exPRNJPKUzcc1INa1NXdrJ+MqHjUQ=="],
++
++    "@typescript/typescript-linux-loong64": ["@typescript/typescript-linux-loong64@7.0.2", "", { "os": "linux", "cpu": "none" }, "sha512-uEHck9i8hoAzXPiYRib1O7miOnz23SxIeVl6F4LXox+qov1K35jHcEW6VHKvZI+pyvl7fZEP4MCU5LYvIq1GuQ=="],
++
++    "@typescript/typescript-linux-mips64el": ["@typescript/typescript-linux-mips64el@7.0.2", "", { "os": "linux", "cpu": "none" }, "sha512-R4KvAMnE43W5Qeqb0Ly56O3mWMWIAgsMyz36DCaycd5nbg/9kzm0liw3JocfRqyJY0KPmzFjbswozXyW0DnIYA=="],
++
++    "@typescript/typescript-linux-ppc64": ["@typescript/typescript-linux-ppc64@7.0.2", "", { "os": "linux", "cpu": "ppc64" }, "sha512-DORx5b3sd/4S7eayxm4FQv+A7CrkUIGRaHiwI8oiHTAI1fAPWhF4J0vAlkC8biAlHSVVwxMQ3tjZ2/DVbnQiiA=="],
++
++    "@typescript/typescript-linux-riscv64": ["@typescript/typescript-linux-riscv64@7.0.2", "", { "os": "linux", "cpu": "none" }, "sha512-wf0jqEDOjrPRnKwYRyyJDRo11KMbvMFrU+q4zqKyChODBzvlkbhNQfKvLxQCcwTpdDaXSHZTVuh0JoCrKCUMHQ=="],
++
++    "@typescript/typescript-linux-s390x": ["@typescript/typescript-linux-s390x@7.0.2", "", { "os": "linux", "cpu": "s390x" }, "sha512-IkwJc3L7yhytWd/ewjyxNDfOmswCm9GWMJT/ue/dU4aZNbwZeYAetq42VyLmsmSjvoX7z74X6ZaYCtzAr0EuGw=="],
++
++    "@typescript/typescript-linux-x64": ["@typescript/typescript-linux-x64@7.0.2", "", { "os": "linux", "cpu": "x64" }, "sha512-EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A=="],
++
++    "@typescript/typescript-netbsd-arm64": ["@typescript/typescript-netbsd-arm64@7.0.2", "", { "os": "none", "cpu": "arm64" }, "sha512-+polYF4MF04aPpO5FTkHran9yUQDSXqy5GiSDKpsll5jy3l3+g9QLhpf39T+ePtefhXLOGrLl0QIjkQP6VnelA=="],
++
++    "@typescript/typescript-netbsd-x64": ["@typescript/typescript-netbsd-x64@7.0.2", "", { "os": "none", "cpu": "x64" }, "sha512-8YIT0EHM/3dq10ZOVF/A7pc/YSMtbcecct4rWtexrnSCHOPcpC2KTLXfTCR6vDpnSiY12heNb1GiN/wu+T/FyA=="],
++
++    "@typescript/typescript-openbsd-arm64": ["@typescript/typescript-openbsd-arm64@7.0.2", "", { "os": "openbsd", "cpu": "arm64" }, "sha512-APT8+ClYnuYm1u9+kgGXoMj2VzWzcymwh2gNSQVySHfkRDGOTVkoWLjCmOQSaO+PoqQ57B0flRp9SA+7GnnkzQ=="],
++
++    "@typescript/typescript-openbsd-x64": ["@typescript/typescript-openbsd-x64@7.0.2", "", { "os": "openbsd", "cpu": "x64" }, "sha512-yX7s+Q0Dln0Dt9tEzZsAjXXR/+ytBM7AlglaqyeMPxQszJ1JhlJdZ6jLA+IzldHtflX81em7lDao1xXu+aRRkg=="],
++
++    "@typescript/typescript-sunos-x64": ["@typescript/typescript-sunos-x64@7.0.2", "", { "os": "sunos", "cpu": "x64" }, "sha512-dLJDGaLZ1D4HPQn62u1n8mBDkJREwMsAkCdkwd4Ieqw+x3TUyTsqY0YiBCtE6H6OzzgGk3iuZ3vFWRS+E8/d1g=="],
++
++    "@typescript/typescript-win32-arm64": ["@typescript/typescript-win32-arm64@7.0.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-Gyl1Vy6OsWesLzmq+EP0Fb7b4Nid5232AvcA2SFcdYreldpNtYFFofPjnt62y9hQy7VTaZp65ICJjuAQRaVcIQ=="],
++
++    "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
++
++    "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
++
++    "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
++
++    "fdir": ["fdir@6.5.0", "", { "peerDependencies": { "picomatch": "^3 || ^4" }, "optionalPeers": ["picomatch"] }, "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg=="],
++
++    "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
++
++    "lightningcss": ["lightningcss@1.33.0", "", { "dependencies": { "detect-libc": "^2.0.3" }, "optionalDependencies": { "lightningcss-android-arm64": "1.33.0", "lightningcss-darwin-arm64": "1.33.0", "lightningcss-darwin-x64": "1.33.0", "lightningcss-freebsd-x64": "1.33.0", "lightningcss-linux-arm-gnueabihf": "1.33.0", "lightningcss-linux-arm64-gnu": "1.33.0", "lightningcss-linux-arm64-musl": "1.33.0", "lightningcss-linux-x64-gnu": "1.33.0", "lightningcss-linux-x64-musl": "1.33.0", "lightningcss-win32-arm64-msvc": "1.33.0", "lightningcss-win32-x64-msvc": "1.33.0" } }, "sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA=="],
++
++    "lightningcss-android-arm64": ["lightningcss-android-arm64@1.33.0", "", { "os": "android", "cpu": "arm64" }, "sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg=="],
++
++    "lightningcss-darwin-arm64": ["lightningcss-darwin-arm64@1.33.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-Sciaz8eenNTKn9b3t7+xr0ipTp9YxKQY4npwQ3mrRuL0BAVHBLyZxofhaKBAVtzmtRZ/zTyo0/to4B1uWG/Djg=="],
++
++    "lightningcss-darwin-x64": ["lightningcss-darwin-x64@1.33.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-Z5UPAxzrjlWNNyGy6i65cJzzvgJ5D3T6wMvs+gWpY9d7qRhANrxqAp6LhxIgZhWEw18RfJTGcRxjuLIBr+m8XQ=="],
++
++    "lightningcss-freebsd-x64": ["lightningcss-freebsd-x64@1.33.0", "", { "os": "freebsd", "cpu": "x64" }, "sha512-QQM/Ti/hQajJwCY+RiWuCZ9sdtI/XQk7nDK5vC8kkdwixezOlDgvDx7+RT+QjK6FcFT4MpsuoBnHIo/O3StRRg=="],
++
++    "lightningcss-linux-arm-gnueabihf": ["lightningcss-linux-arm-gnueabihf@1.33.0", "", { "os": "linux", "cpu": "arm" }, "sha512-N7FVBe6iS24MlM6R/4RBTxGhQheZGs7tiQ9U32UtF75NzP5Q7xWPRqLBCKxlRQRk3rY1jCIPLzx7WzOhuUIRLQ=="],
++
++    "lightningcss-linux-arm64-gnu": ["lightningcss-linux-arm64-gnu@1.33.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-j2v/itmy4HlNxlc6voKXYgBqNi0Ng2LShg4z7GufpEgs05P+2suBVyi9I6YHq5uoVFx9ETin3eCEhLVyXGQnKg=="],
++
++    "lightningcss-linux-arm64-musl": ["lightningcss-linux-arm64-musl@1.33.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-yiO5ROMuYQgXbC60yjZU5CYSFZGKXL0HFATXt9mHJn1+zW55oCtMI9NfcVhYLMFDL7gV7oBPon/EmMMGg2OvtQ=="],
++
++    "lightningcss-linux-x64-gnu": ["lightningcss-linux-x64-gnu@1.33.0", "", { "os": "linux", "cpu": "x64" }, "sha512-ar+Ju7LmcN0Jo4FpL4hpFybwNG9/3A/Br5KW2n2jyODg3MEZXaDYADdemoNS+BDNfMgKvylJLj4S5tyRActuAg=="],
++
++    "lightningcss-linux-x64-musl": ["lightningcss-linux-x64-musl@1.33.0", "", { "os": "linux", "cpu": "x64" }, "sha512-RYiYbkokw0trfKqqzfF55lginwEPrD3OJDfTuJzFs1MK6iFnDenaz1fqLLtX4ITG3OktJQXOeTaw1awrBAlZPw=="],
++
++    "lightningcss-win32-arm64-msvc": ["lightningcss-win32-arm64-msvc@1.33.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA=="],
++
++    "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
++
++    "nanoid": ["nanoid@3.3.19", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-Y2tUNy4ouw6tq5oDSKeQYGOyhkUBhNOcGV/02KC+6kd9eDGqdZd++mjMiIDilrBYvjEnCYvVtsuHCuP+okSfug=="],
++
++    "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
++
++    "picomatch": ["picomatch@4.0.7", "", {}, "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA=="],
++
++    "postcss": ["postcss@8.5.28", "", { "dependencies": { "nanoid": "^3.3.18", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-RRuzqDtt5Y9h3quz5hWhK+TPnsmVs6WwSU6LkJMeY4HstUEDuYTG8UJSdawMRzmzAtV+KEoG8N3Qg2qLy5vM/A=="],
++
++    "preact": ["preact@11.0.0", "", { "peerDependencies": { "preact-render-to-string": ">=6.7.0" }, "optionalPeers": ["preact-render-to-string"] }, "sha512-LRTLKuSe6VYPhvBDjwFaX+nuZnpsw6IN2GSboisAvhGsncylBmrbDCERhgKDn6yP2mAwbGvsB5OVyTe33M8gBg=="],
++
++    "rolldown": ["rolldown@1.2.11", "", { "dependencies": { "@oxc-project/types": "=0.151.0", "@rolldown/pluginutils": "^1.0.0" }, "optionalDependencies": { "@rolldown/binding-android-arm-eabi": "1.2.11", "@rolldown/binding-android-arm64": "1.2.11", "@rolldown/binding-darwin-arm64": "1.2.11", "@rolldown/binding-darwin-x64": "1.2.11", "@rolldown/binding-freebsd-x64": "1.2.11", "@rolldown/binding-linux-arm-gnueabihf": "1.2.11", "@rolldown/binding-linux-arm64-gnu": "1.2.11", "@rolldown/binding-linux-arm64-musl": "1.2.11", "@rolldown/binding-linux-ppc64-gnu": "1.2.11", "@rolldown/binding-linux-s390x-gnu": "1.2.11", "@rolldown/binding-linux-x64-gnu": "1.2.11", "@rolldown/binding-linux-x64-musl": "1.2.11", "@rolldown/binding-openharmony-arm64": "1.2.11", "@rolldown/binding-win32-arm64-msvc": "1.2.11", "@rolldown/binding-win32-x64-msvc": "1.2.11" }, "bin": { "rolldown": "./bin/cli.mjs" } }, "sha512-qpSwIyz0jHQq5qXBTNxFmE6664rJ7O+4TvPFOiOaBSrz8IOHc1koKKSqTM2H6u1UG1+TveuC6vaDHKXFOvb1Kw=="],
++
++    "source-map-js": ["source-map-js@1.2.1", "", {}, "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA=="],
++
++    "tinyglobby": ["tinyglobby@0.2.17", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.4" } }, "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g=="],
++
++    "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
++
++    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
++
++    "vite": ["vite@8.3.1", "", { "dependencies": { "lightningcss": "^1.33.0", "picomatch": "^4.0.7", "postcss": "^8.5.28", "rolldown": "~1.2.9", "tinyglobby": "^0.2.17" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "@vitejs/devtools": "^0.7.1", "esbuild": "^0.27.0 || ^0.28.0", "jiti": ">=1.21.0", "less": "^4.0.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "@vitejs/devtools", "esbuild", "jiti", "less", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-/bvH9E9tmCXRGp2uXY3WbOldqpTwFkbha/8ANaEQ6VkxhH60KyqLwgZq6lG2y+4uT55x9+9eUHMpQ7uGnOCKjA=="],
++  }
++}
+diff --git a/ui/hud.html b/ui/hud.html
+new file mode 100644
+index 0000000..60a2f32
+--- /dev/null
++++ b/ui/hud.html
+@@ -0,0 +1,18 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>Flow bar</title>
++    <link rel="stylesheet" href="/src/hud/hud.css" />
++  </head>
++  <body>
++    <div id="pill" class="pill" data-phase="hidden" role="status" aria-live="polite">
++      <span class="indicator" aria-hidden="true"><span class="dot"></span><span class="spinner"><i></i><i></i><i></i></span><svg class="glyph ok" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" /></svg><svg class="glyph err" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg><span class="dash"></span></span>
++      <span class="meter" aria-hidden="true"></span>
++      <span class="label"></span>
++      <span class="timer" aria-hidden="true"></span>
++    </div>
++    <script type="module" src="/src/hud/main.ts"></script>
++  </body>
++</html>
+diff --git a/ui/index.html b/ui/index.html
+new file mode 100644
+index 0000000..a7029c4
+--- /dev/null
++++ b/ui/index.html
+@@ -0,0 +1,13 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>dictate</title>
++    <link rel="stylesheet" href="/src/hub/hub.css" />
++  </head>
++  <body>
++    <div id="app"></div>
++    <script type="module" src="/src/hub/main.tsx"></script>
++  </body>
++</html>
+diff --git a/ui/package.json b/ui/package.json
+new file mode 100644
+index 0000000..5a9cc55
+--- /dev/null
++++ b/ui/package.json
+@@ -0,0 +1,21 @@
++{
++  "name": "dictate-ui",
++  "private": true,
++  "version": "0.2.0",
++  "type": "module",
++  "scripts": {
++    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
++    "build": "tsc --noEmit && vite build",
++    "typecheck": "tsc --noEmit",
++    "test": "bun test"
++  },
++  "dependencies": {
++    "@tauri-apps/api": "^2.12.0",
++    "preact": "^11.0.0"
++  },
++  "devDependencies": {
++    "@types/bun": "^1.4.2",
++    "typescript": "^7.0.2",
++    "vite": "^8.3.1"
++  }
++}
+diff --git a/ui/src/hub/App.tsx b/ui/src/hub/App.tsx
+new file mode 100644
+index 0000000..483c5f4
+--- /dev/null
++++ b/ui/src/hub/App.tsx
+@@ -0,0 +1,99 @@
++import { useEffect, useState } from "preact/hooks";
++import { daemon, onNavigate } from "../lib/daemon";
++import { HubContext, useHub, useHubState } from "./useDaemon";
++import { Home } from "./pages/Home";
++import { History } from "./pages/History";
++import { Dictionary } from "./pages/Dictionary";
++import { Settings } from "./pages/Settings";
++import { Doctor } from "./pages/Doctor";
++
++const PAGES = [
++  { id: "home", title: "Home", render: () => <Home /> },
++  { id: "history", title: "History", render: () => <History /> },
++  { id: "dictionary", title: "Dictionary", render: () => <Dictionary /> },
++  { id: "settings", title: "Settings", render: () => <Settings /> },
++  { id: "doctor", title: "Doctor", render: () => <Doctor /> },
++] as const;
++type PageId = (typeof PAGES)[number]["id"];
++
++function pageFromHash(): PageId {
++  const id = window.location.hash.replace(/^#\/?/, "");
++  return (PAGES.find((p) => p.id === id)?.id ?? "home") as PageId;
++}
++
++export function App() {
++  const hub = useHubState();
++  const [page, setPage] = useState<PageId>(pageFromHash());
++
++  useEffect(() => {
++    const onHash = () => setPage(pageFromHash());
++    window.addEventListener("hashchange", onHash);
++    const off = onNavigate((p) => {
++      window.location.hash = `#/${p}`;
++    });
++    return () => {
++      window.removeEventListener("hashchange", onHash);
++      void off.then((f) => f());
++    };
++  }, []);
++
++  const current = PAGES.find((p) => p.id === page) ?? PAGES[0];
++  const connected = hub.connection.status === "connected";
++
++  return (
++    <HubContext.Provider value={hub}>
++      <div class="shell">
++        <nav class="sidebar" aria-label="Sections">
++          <div class="brand">
++            <span class={`status-dot ${connected ? "on" : "off"}`} aria-hidden="true" />
++            dictate
++          </div>
++          <ul>
++            {PAGES.map((p) => (
++              <li key={p.id}>
++                <a href={`#/${p.id}`} aria-current={p.id === page ? "page" : undefined}>
++                  {p.title}
++                </a>
++              </li>
++            ))}
++          </ul>
++          <ConnectionFooter />
++        </nav>
++        <main class="content" id="main" tabIndex={-1}>
++          {!connected && <DisconnectedBanner />}
++          {current.render()}
++        </main>
++      </div>
++    </HubContext.Provider>
++  );
++}
++
++function ConnectionFooter() {
++  const { connection } = useHub();
++  if (connection.status !== "connected") return <p class="footer muted">daemon offline</p>;
++  return (
++    <p class="footer muted">
++      {connection.server} {connection.version}
++    </p>
++  );
++}
++
++function DisconnectedBanner() {
++  const { connection } = useHub();
++  if (connection.status === "connected") return null;
++  return (
++    <section class="banner warn" role="alert">
++      <div>
++        <strong>dictated is not running.</strong>{" "}
++        {connection.status === "disconnected" ? connection.reason : "Connecting…"}
++        <div class="muted small">
++          Start it with <code>systemctl --user start dictated</code> (or run <code>dictated</code>). This window reconnects
++          on its own.
++        </div>
++      </div>
++      <button type="button" onClick={() => void daemon.reconnect()}>
++        Retry now
++      </button>
++    </section>
++  );
++}
+diff --git a/ui/src/hub/main.tsx b/ui/src/hub/main.tsx
+new file mode 100644
+index 0000000..0842e8d
+--- /dev/null
++++ b/ui/src/hub/main.tsx
+@@ -0,0 +1,4 @@
++import { render } from "preact";
++import { App } from "./App";
++
++render(<App />, document.getElementById("app") as HTMLElement);
+diff --git a/ui/src/hub/pages/History.tsx b/ui/src/hub/pages/History.tsx
+new file mode 100644
+index 0000000..ad8577f
+--- /dev/null
++++ b/ui/src/hub/pages/History.tsx
+@@ -0,0 +1,119 @@
++import { useEffect, useState } from "preact/hooks";
++import { asBridgeError, daemon } from "../../lib/daemon";
++import { formatWpm, relativeTime, storedState } from "../../lib/format";
++import type { HistoryEntry, Status } from "../../lib/protocol";
++import { useHub, useLoad } from "../useDaemon";
++
++const PAGE = 50;
++
++export function History() {
++  const { refresh, connection } = useHub();
++  const live = connection.status === "connected";
++  const [search, setSearch] = useState("");
++  const [query, setQuery] = useState("");
++  const [items, setItems] = useState<HistoryEntry[]>([]);
++  const [next, setNext] = useState<number | undefined>(undefined);
++  const [error, setError] = useState<string | null>(null);
++  const [copied, setCopied] = useState<number | null>(null);
++  const status = useLoad<Status | null>(() => (live ? daemon.getStatus() : Promise.resolve(null)), [refresh, live]);
++
++  // Debounce typing into a search.
++  useEffect(() => {
++    const t = window.setTimeout(() => setQuery(search.trim()), 250);
++    return () => window.clearTimeout(t);
++  }, [search]);
++
++  const load = async (offset: number) => {
++    try {
++      const page = await daemon.queryHistory({ ...(query ? { text: query } : {}), limit: PAGE, offset });
++      setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
++      setNext(page.next_offset);
++      setError(null);
++    } catch (e) {
++      setError(asBridgeError(e).message);
++    }
++  };
++
++  useEffect(() => {
++    if (live) void load(0);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [query, refresh, live]);
++
++  const privacy = status.data?.capabilities.features.privacy_mode === true;
++  const now = Date.now();
++
++  const copy = async (entry: HistoryEntry) => {
++    if (entry.text === undefined) return;
++    try {
++      await daemon.copyText(entry.text);
++      setCopied(entry.id);
++      window.setTimeout(() => setCopied((c) => (c === entry.id ? null : c)), 1500);
++    } catch (e) {
++      setError(asBridgeError(e).message);
++    }
++  };
++
++  return (
++    <div class="page">
++      <header class="page-head">
++        <h1>History</h1>
++        <span class={`badge ${privacy ? "badge-private" : ""}`} title="history.privacy_mode">
++          {privacy ? "Privacy mode on: new dictations are not stored" : "Recording history"}
++        </span>
++      </header>
++      <div class="toolbar">
++        <label class="search">
++          <span class="visually-hidden">Search dictations</span>
++          <input
++            type="search"
++            placeholder="Search dictations…"
++            value={search}
++            onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
++          />
++        </label>
++      </div>
++      {error && <p class="error">{error}</p>}
++      {items.length === 0 && !error ? (
++        <p class="muted">{query ? `Nothing matches “${query}”.` : "No dictations recorded yet."}</p>
++      ) : (
++        <ul class="history-list">
++          {items.map((e) => {
++            const stored = storedState(e);
++            return (
++              <li key={e.id} class={`history-item ${stored}`}>
++                <div class="meta">
++                  <time dateTime={new Date(e.ts_ms).toISOString()} title={new Date(e.ts_ms).toLocaleString()}>
++                    {relativeTime(e.ts_ms, now)}
++                  </time>
++                  {e.app && <span class="chip">{e.app}</span>}
++                  {e.route && e.route !== "type" && <span class="chip">{e.route}</span>}
++                  {e.word_count !== undefined && <span class="muted">{e.word_count} words</span>}
++                  {e.wpm !== undefined && <span class="muted">{formatWpm(e.wpm)} wpm</span>}
++                </div>
++                <div class="body">
++                  {stored === "stored" && <p class="text">{e.text}</p>}
++                  {stored === "private" && (
++                    <p class="text muted">
++                      <span aria-hidden="true">🔒 </span>Not stored: recorded in privacy mode.
++                    </p>
++                  )}
++                  {stored === "failed" && <p class="text error-text">Failed: {e.error?.message}</p>}
++                </div>
++                {stored === "stored" && (
++                  <button type="button" class="ghost" onClick={() => void copy(e)} aria-label="Copy this dictation">
++                    {copied === e.id ? "Copied" : "Copy"}
++                  </button>
++                )}
++              </li>
++            );
++          })}
++        </ul>
++      )}
++      {next !== undefined && (
++        <button type="button" onClick={() => void load(next)}>
++          Load more
++        </button>
++      )}
++    </div>
++  );
++}
+diff --git a/ui/src/hub/pages/Home.tsx b/ui/src/hub/pages/Home.tsx
+new file mode 100644
+index 0000000..b1451d4
+--- /dev/null
++++ b/ui/src/hub/pages/Home.tsx
+@@ -0,0 +1,189 @@
++import { useState } from "preact/hooks";
++import { daemon } from "../../lib/daemon";
++import { formatCount, formatWpm, recentDays, relativeTime, storedState, wordsThisWeek } from "../../lib/format";
++import type { HistoryAnalytics, HistoryEntry, Status } from "../../lib/protocol";
++import { useHub, useLoad } from "../useDaemon";
++
++export function Home() {
++  const { refresh, connection } = useHub();
++  const live = connection.status === "connected";
++  const analytics = useLoad(() => (live ? daemon.analytics() : Promise.resolve(null)), [refresh, live]);
++  const recent = useLoad(() => (live ? daemon.queryHistory({ limit: 5 }) : Promise.resolve(null)), [refresh, live]);
++  const status = useLoad(() => (live ? daemon.getStatus() : Promise.resolve(null)), [refresh, live]);
++  const now = new Date();
++
++  return (
++    <div class="page">
++      <header class="page-head">
++        <h1>Home</h1>
++      </header>
++      <FormatterWarning status={status.data} />
++      {analytics.error && <p class="error">Could not load analytics: {analytics.error}</p>}
++      <section class="tiles" aria-label="Dictation totals">
++        <Tile label="Words per minute" value={formatWpm(analytics.data?.overall_wpm)} />
++        <Tile label="Words today" value={analytics.data ? formatCount(analytics.data.words_today) : "—"} />
++        <Tile label="Words this week" value={analytics.data ? formatCount(wordsThisWeek(analytics.data, now)) : "—"} />
++        <Tile
++          label="Streak"
++          value={analytics.data ? `${analytics.data.current_streak_days} d` : "—"}
++          note={analytics.data ? `longest ${analytics.data.longest_streak_days} d` : undefined}
++        />
++      </section>
++      {analytics.data && <WordsChart analytics={analytics.data} now={now} />}
++      <section class="card">
++        <div class="card-head">
++          <h2>Recent dictations</h2>
++          <a href="#/history">All history</a>
++        </div>
++        <RecentList items={recent.data?.items ?? []} loading={recent.loading && live} />
++      </section>
++    </div>
++  );
++}
++
++function Tile(props: { label: string; value: string; note?: string | undefined }) {
++  return (
++    <div class="tile">
++      <div class="tile-label">{props.label}</div>
++      <div class="tile-value">{props.value}</div>
++      {props.note && <div class="tile-note muted">{props.note}</div>}
++    </div>
++  );
++}
++
++/** Silent degradation is a bug class here: say so when the formatter cannot run. */
++function FormatterWarning({ status }: { status: Status | null }) {
++  const f = status?.formatter;
++  if (!f || !f.enabled || f.health === "ok" || f.health === "unchecked" || f.health === "disabled") return null;
++  const what =
++    f.health === "model_missing"
++      ? `The formatter model${f.model ? ` “${f.model}”` : ""} is not installed, so the LLM polish step is being skipped.`
++      : f.health === "unreachable"
++        ? "The formatter (Ollama) is unreachable, so the LLM polish step is being skipped."
++        : "The formatter is failing, so dictations are delivered without the LLM polish step.";
++  return (
++    <section class="banner warn" role="status">
++      <div>
++        <strong>Formatting is degraded.</strong> {what}
++        {f.detail && <div class="muted small">{f.detail}</div>}
++      </div>
++      <a class="button" href="#/doctor">
++        Open Doctor
++      </a>
++    </section>
++  );
++}
++
++const CHART_DAYS = 14;
++
++function WordsChart({ analytics, now }: { analytics: HistoryAnalytics; now: Date }) {
++  const days = recentDays(analytics, now, CHART_DAYS);
++  const max = Math.max(1, ...days.map((d) => d.words));
++  const [active, setActive] = useState<number | null>(null);
++  const W = 560;
++  const H = 140;
++  const pad = { top: 18, bottom: 20 };
++  const plotH = H - pad.top - pad.bottom;
++  const slot = W / CHART_DAYS;
++  const barW = slot - 2; // 2px surface gap between bars
++  const peak = days.reduce((best, d, i) => (d.words > (days[best]?.words ?? 0) ? i : best), 0);
++  const shown = active ?? null;
++
++  return (
++    <section class="card chart-card">
++      <div class="card-head">
++        <h2>Words per day, last {CHART_DAYS} days</h2>
++      </div>
++      <div class="chart" onMouseLeave={() => setActive(null)}>
++        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Words per day for the last ${CHART_DAYS} days`}>
++          <line class="baseline" x1="0" x2={W} y1={H - pad.bottom} y2={H - pad.bottom} />
++          {days.map((d, i) => {
++            const h = d.words === 0 ? 0 : Math.max(2, (d.words / max) * plotH);
++            const x = i * slot + 1;
++            const y = H - pad.bottom - h;
++            const r = Math.min(4, h / 2, barW / 2);
++            return (
++              <g
++                key={d.day}
++                class={`bar-group${shown === i ? " active" : ""}`}
++                tabIndex={0}
++                aria-label={`${d.day}: ${formatCount(d.words)} words`}
++                onMouseEnter={() => setActive(i)}
++                onFocus={() => setActive(i)}
++                onBlur={() => setActive(null)}
++              >
++                {/* Hit target: the whole column, bigger than the mark. */}
++                <rect class="hit" x={i * slot} y={0} width={slot} height={H - pad.bottom} />
++                {h > 0 && <path class="bar" d={roundedTop(x, y, barW, h, r)} />}
++                {(i === peak && d.words > 0) || i === CHART_DAYS - 1 ? (
++                  <text class="axis-label" x={x + barW / 2} y={H - 6} text-anchor="middle">
++                    {i === CHART_DAYS - 1 ? "today" : d.day.slice(5)}
++                  </text>
++                ) : null}
++                {i === peak && d.words > 0 && (
++                  <text class="value-label" x={x + barW / 2} y={y - 5} text-anchor="middle">
++                    {formatCount(d.words)}
++                  </text>
++                )}
++              </g>
++            );
++          })}
++        </svg>
++        {shown !== null && days[shown] && (
++          <div class="tooltip" style={{ left: `${((shown + 0.5) / CHART_DAYS) * 100}%` }} role="status">
++            <strong>{formatCount(days[shown].words)}</strong> words
++            <div class="muted small">{days[shown].day}</div>
++          </div>
++        )}
++      </div>
++      <details class="table-view">
++        <summary>Show as table</summary>
++        <table>
++          <thead>
++            <tr>
++              <th scope="col">Day (UTC)</th>
++              <th scope="col">Words</th>
++            </tr>
++          </thead>
++          <tbody>
++            {days.map((d) => (
++              <tr key={d.day}>
++                <td>{d.day}</td>
++                <td class="num">{formatCount(d.words)}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </details>
++    </section>
++  );
++}
++
++/** A bar with rounded top corners and a square base on the baseline. */
++function roundedTop(x: number, y: number, w: number, h: number, r: number): string {
++  return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
++}
++
++function RecentList({ items, loading }: { items: HistoryEntry[]; loading: boolean }) {
++  if (loading && items.length === 0) return <p class="muted">Loading…</p>;
++  if (items.length === 0) return <p class="muted">No dictations yet. Press your dictation key and start talking.</p>;
++  const now = Date.now();
++  return (
++    <ul class="recent">
++      {items.map((e) => (
++        <li key={e.id}>
++          <span class="when muted">{relativeTime(e.ts_ms, now)}</span>
++          <span class="text">
++            {storedState(e) === "stored" ? (
++              e.text
++            ) : storedState(e) === "private" ? (
++              <em class="muted">Not stored (privacy mode)</em>
++            ) : (
++              <em class="error-text">{e.error?.message ?? "Failed"}</em>
++            )}
++          </span>
++        </li>
++      ))}
++    </ul>
++  );
++}
+diff --git a/ui/src/hub/useDaemon.ts b/ui/src/hub/useDaemon.ts
+new file mode 100644
+index 0000000..648f991
+--- /dev/null
++++ b/ui/src/hub/useDaemon.ts
+@@ -0,0 +1,77 @@
++// Shared hub state: the connection, and a tick that bumps whenever a session
++// finishes so pages showing history can refresh themselves.
++
++import { createContext } from "preact";
++import { useContext, useEffect, useState } from "preact/hooks";
++import { daemon, onConnection, onDaemonEvent } from "../lib/daemon";
++import type { Connection } from "../lib/protocol";
++
++export interface HubState {
++  connection: Connection;
++  /** Increments when a session ends or the connection is (re)established. */
++  refresh: number;
++}
++
++export const HubContext = createContext<HubState>({
++  connection: { status: "connecting", attempt: 1 },
++  refresh: 0,
++});
++
++export function useHub(): HubState {
++  return useContext(HubContext);
++}
++
++export function useHubState(): HubState {
++  const [connection, setConnection] = useState<Connection>({ status: "connecting", attempt: 1 });
++  const [refresh, setRefresh] = useState(0);
++  useEffect(() => {
++    void daemon.connectionState().then(setConnection).catch(() => {});
++    const offs = [
++      onConnection((c) => {
++        setConnection(c);
++        if (c.status === "connected") setRefresh((n) => n + 1);
++      }),
++      onDaemonEvent((e) => {
++        if (e.type === "state_changed" && ["done", "error", "cancelled"].includes(String(e["to"]))) {
++          setRefresh((n) => n + 1);
++        }
++      }),
++    ];
++    return () => offs.forEach((p) => void p.then((off) => off()));
++  }, []);
++  return { connection, refresh };
++}
++
++/** Load something from the daemon; reloads when `deps` change. */
++export function useLoad<T>(load: () => Promise<T>, deps: unknown[]): {
++  data: T | null;
++  error: string | null;
++  loading: boolean;
++  reload: () => void;
++} {
++  const [data, setData] = useState<T | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [nonce, setNonce] = useState(0);
++  useEffect(() => {
++    let live = true;
++    setLoading(true);
++    load()
++      .then((d) => {
++        if (!live) return;
++        setData(d);
++        setError(null);
++      })
++      .catch((e: unknown) => {
++        if (!live) return;
++        const m = e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e);
++        setError(m);
++      })
++      .finally(() => live && setLoading(false));
++    return () => {
++      live = false;
++    };
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [...deps, nonce]);
++  return { data, error, loading, reload: () => setNonce((n) => n + 1) };
++}
+diff --git a/ui/src/hud/hud.css b/ui/src/hud/hud.css
+new file mode 100644
+index 0000000..144dd7a
+--- /dev/null
++++ b/ui/src/hud/hud.css
+@@ -0,0 +1,165 @@
++/*
++ * The Flow bar. Geometry is shared with the Rust side:
++ *   window 232x56 (src-tauri/src/app.rs HUD_SIZE)
++ *   pill inset 8, radius 20 (src-tauri/src/x11.rs PILL_INSET / PILL_RADIUS)
++ * Without a compositor the window itself is cut to the pill, so anything drawn
++ * outside it (the shadow) simply does not appear.
++ */
++:root {
++  --pill-inset: 8px;
++  --pill-radius: 20px;
++  --bg: rgba(18, 18, 22, 0.94);
++  --edge: rgba(255, 255, 255, 0.1);
++  --fg: #f4f4f5;
++  --muted: rgba(244, 244, 245, 0.62);
++  --rec: #f43f5e;
++  --ok: #34d399;
++  --err: #fb7185;
++  color-scheme: dark;
++}
++
++html,
++body {
++  margin: 0;
++  width: 100%;
++  height: 100%;
++  background: transparent;
++  overflow: hidden;
++  user-select: none;
++  cursor: default;
++  font: 500 12.5px/1 system-ui, -apple-system, "Segoe UI", "Inter", "Noto Sans", sans-serif;
++  -webkit-font-smoothing: antialiased;
++}
++
++.pill {
++  position: absolute;
++  inset: var(--pill-inset);
++  box-sizing: border-box;
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 0 16px 0 14px;
++  border-radius: var(--pill-radius);
++  background: var(--bg);
++  box-shadow:
++    inset 0 0 0 1px var(--edge),
++    0 4px 12px rgba(0, 0, 0, 0.35);
++  color: var(--fg);
++  transition: opacity 120ms ease-out;
++}
++
++.pill[data-phase="hidden"] {
++  opacity: 0;
++}
++
++/* ---- indicator -------------------------------------------------------- */
++.indicator {
++  position: relative;
++  flex: none;
++  width: 14px;
++  height: 14px;
++  display: grid;
++  place-items: center;
++}
++.indicator > * {
++  display: none;
++}
++.dot {
++  width: 9px;
++  height: 9px;
++  border-radius: 50%;
++  background: var(--rec);
++  box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.55);
++  animation: pulse 1.6s ease-out infinite;
++}
++@keyframes pulse {
++  0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.55); }
++  70% { box-shadow: 0 0 0 7px rgba(244, 63, 94, 0); }
++  100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
++}
++.spinner {
++  gap: 2.5px;
++}
++.spinner i {
++  width: 3.5px;
++  height: 3.5px;
++  border-radius: 50%;
++  background: var(--fg);
++  animation: bob 900ms ease-in-out infinite;
++}
++.spinner i:nth-child(2) { animation-delay: 150ms; }
++.spinner i:nth-child(3) { animation-delay: 300ms; }
++@keyframes bob {
++  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
++  40% { opacity: 1; transform: translateY(-2px); }
++}
++.glyph {
++  width: 14px;
++  height: 14px;
++  fill: none;
++  stroke-width: 2;
++  stroke-linecap: round;
++  stroke-linejoin: round;
++}
++.glyph.ok { stroke: var(--ok); }
++.glyph.err { stroke: var(--err); }
++.dash {
++  width: 9px;
++  height: 2px;
++  border-radius: 1px;
++  background: var(--muted);
++}
++
++[data-phase="recording"] .dot { display: block; }
++[data-phase="transcribing"] .spinner,
++[data-phase="formatting"] .spinner,
++[data-phase="injecting"] .spinner { display: flex; }
++[data-phase="done"] .glyph.ok { display: block; }
++[data-phase="error"] .glyph.err { display: block; }
++[data-phase="cancelled"] .dash { display: block; }
++
++/* ---- meter ------------------------------------------------------------ */
++.meter {
++  display: none;
++  flex: 1;
++  height: 22px;
++  align-items: center;
++  justify-content: space-between;
++}
++.meter i {
++  display: block;
++  width: 2.5px;
++  height: 100%;
++  border-radius: 2px;
++  background: var(--fg);
++  transform-origin: center;
++  transform: scaleY(0.09);
++  transition: transform 70ms linear;
++}
++[data-phase="recording"] .meter { display: flex; }
++
++/* ---- text ------------------------------------------------------------- */
++.label {
++  flex: 1;
++  overflow: hidden;
++  white-space: nowrap;
++  text-overflow: ellipsis;
++  letter-spacing: 0.01em;
++}
++[data-phase="recording"] .label { display: none; }
++[data-phase="error"] .label { color: #fecdd3; }
++[data-phase="cancelled"] .label { color: var(--muted); }
++
++.timer {
++  flex: none;
++  color: var(--muted);
++  font-variant-numeric: tabular-nums;
++  font-size: 11.5px;
++  display: none;
++}
++[data-phase="recording"] .timer { display: block; }
++
++@media (prefers-reduced-motion: reduce) {
++  .dot, .spinner i { animation: none; }
++  .meter i { transition: none; }
++}
+diff --git a/ui/src/hud/main.ts b/ui/src/hud/main.ts
+new file mode 100644
+index 0000000..1d9e7a9
+--- /dev/null
++++ b/ui/src/hud/main.ts
+@@ -0,0 +1,62 @@
++// The Flow bar's view. No framework: it must paint within a frame of the
++// window being mapped, and it has four moving parts.
++
++import { daemon, onConnection, onDaemonEvent } from "../lib/daemon";
++import { METER_BARS, formatElapsed, initialView, label, onConnection as connectionChanged, reduce, type HudView } from "../lib/hudModel";
++
++const pill = document.getElementById("pill") as HTMLElement;
++const meter = pill.querySelector(".meter") as HTMLElement;
++const text = pill.querySelector(".label") as HTMLElement;
++const timer = pill.querySelector(".timer") as HTMLElement;
++
++const bars: HTMLElement[] = Array.from({ length: METER_BARS }, () => {
++  const bar = document.createElement("i");
++  meter.appendChild(bar);
++  return bar;
++});
++
++let view: HudView = initialView();
++let ticking: number | null = null;
++
++function render(): void {
++  pill.dataset["phase"] = view.phase;
++  text.textContent = label(view);
++  // A floor keeps silence visible as a row of dots rather than nothing.
++  view.levels.forEach((level, i) => {
++    const bar = bars[i];
++    if (bar) bar.style.transform = `scaleY(${Math.max(0.09, level).toFixed(3)})`;
++  });
++  renderTimer();
++  if (view.phase === "recording" && ticking === null) {
++    ticking = window.setInterval(renderTimer, 250);
++  } else if (view.phase !== "recording" && ticking !== null) {
++    window.clearInterval(ticking);
++    ticking = null;
++  }
++}
++
++function renderTimer(): void {
++  timer.textContent = view.startedAt === null ? "" : formatElapsed(performance.now() - view.startedAt);
++}
++
++void onDaemonEvent((event) => {
++  view = reduce(view, event, performance.now());
++  render();
++});
++void onConnection((connection) => {
++  view = connectionChanged(view, connection);
++  render();
++});
++
++// Catch up if this view loaded after a session began.
++void daemon
++  .lastSessionEvent()
++  .then((event) => {
++    if (event && view.phase === "hidden") {
++      view = reduce(view, event, performance.now());
++      render();
++    }
++  })
++  .catch(() => {});
++
++render();
+diff --git a/ui/tests/hudModel.test.ts b/ui/tests/hudModel.test.ts
+new file mode 100644
+index 0000000..d97b275
+--- /dev/null
++++ b/ui/tests/hudModel.test.ts
+@@ -0,0 +1,140 @@
++import { describe, expect, test } from "bun:test";
++import {
++  METER_BARS,
++  formatElapsed,
++  initialView,
++  label,
++  normalizeLevel,
++  onConnection,
++  reduce,
++  shorten,
++  type HudView,
++} from "../src/lib/hudModel";
++import type { DaemonEvent } from "../src/lib/protocol";
++
++const state = (to: string, session = "s1"): DaemonEvent => ({
++  type: "state_changed",
++  session_id: session,
++  from: "idle",
++  to,
++});
++const level = (rms: number): DaemonEvent => ({ type: "audio_level", session_id: "s1", rms });
++
++function run(events: DaemonEvent[], start: HudView = initialView()): HudView {
++  return events.reduce((v, e, i) => reduce(v, e, 1000 + i), start);
++}
++
++describe("the Flow bar model", () => {
++  test("recording starts a fresh session with an empty meter and a clock", () => {
++    const v = run([state("recording")]);
++    expect(v.phase).toBe("recording");
++    expect(v.startedAt).toBe(1000);
++    expect(v.levels).toHaveLength(METER_BARS);
++    expect(v.levels.every((l) => l === 0)).toBe(true);
++  });
++
++  test("levels scroll in from the right while recording", () => {
++    const v = run([state("recording"), level(0.25), level(0.0625)]);
++    expect(v.levels).toHaveLength(METER_BARS);
++    expect(v.levels.at(-1)).toBeCloseTo(0.5);
++    expect(v.levels.at(-2)).toBeCloseTo(1);
++  });
++
++  test("levels outside recording are ignored", () => {
++    const v = run([state("recording"), state("transcribing"), level(0.25)]);
++    expect(v.levels.every((l) => l === 0)).toBe(true);
++  });
++
++  test("the walk through processing to done carries the word count", () => {
++    const v = run([
++      state("recording"),
++      state("transcribing"),
++      state("formatting"),
++      { type: "final", session_id: "s1", text: "synthetic words here", word_count: 3 },
++      state("done"),
++    ]);
++    expect(v.phase).toBe("done");
++    expect(label(v)).toBe("3 words");
++  });
++
++  test("an error shows a short readable message", () => {
++    const v = run([
++      state("recording"),
++      state("transcribing"),
++      {
++        type: "error",
++        session_id: "s1",
++        error: { code: "stt_failed", message: "the speech model could not be loaded from the configured path" },
++      },
++      state("error"),
++    ]);
++    expect(v.phase).toBe("error");
++    expect(label(v).length).toBeLessThanOrEqual(38);
++    expect(label(v).endsWith("…")).toBe(true);
++  });
++
++  test("a terminal state with nothing on screen stays hidden", () => {
++    expect(run([state("done")]).phase).toBe("hidden");
++    expect(run([state("cancelled")]).phase).toBe("hidden");
++  });
++
++  test("idle after a result keeps the result showing for its linger", () => {
++    const v = run([state("recording"), state("cancelled"), state("idle")]);
++    expect(v.phase).toBe("cancelled");
++  });
++
++  test("an upload that starts at transcribing shows progress without a meter", () => {
++    const v = run([state("transcribing", "upload-1")]);
++    expect(v.phase).toBe("transcribing");
++    expect(v.startedAt).toBeNull();
++  });
++
++  test("a new session replaces a lingering result", () => {
++    const v = run([state("recording", "a"), state("done", "a"), state("recording", "b"), level(0.25)]);
++    expect(v.sessionId).toBe("b");
++    expect(v.phase).toBe("recording");
++    expect(v.words).toBeNull();
++  });
++
++  test("events of unknown types change nothing", () => {
++    const before = run([state("recording")]);
++    expect(reduce(before, { type: "wake_word_heard", keyword: "x" }, 5000)).toBe(before);
++  });
++
++  test("losing the daemon clears the bar", () => {
++    const v = run([state("recording")]);
++    expect(onConnection(v, { status: "disconnected", reason: "x", retry_in_ms: 250, attempt: 1 }).phase).toBe(
++      "hidden",
++    );
++  });
++});
++
++describe("helpers", () => {
++  test("level normalization is monotone, bounded and robust", () => {
++    expect(normalizeLevel(0)).toBe(0);
++    expect(normalizeLevel(-1)).toBe(0);
++    expect(normalizeLevel(Number.NaN)).toBe(0);
++    expect(normalizeLevel(0.25)).toBe(1);
++    expect(normalizeLevel(5)).toBe(1);
++    expect(normalizeLevel(0.02)).toBeGreaterThan(0.25); // quiet speech is visible
++    expect(normalizeLevel(0.05)).toBeGreaterThan(normalizeLevel(0.02));
++  });
++
++  test("elapsed time reads m:ss", () => {
++    expect(formatElapsed(0)).toBe("0:00");
++    expect(formatElapsed(7_900)).toBe("0:07");
++    expect(formatElapsed(65_000)).toBe("1:05");
++    expect(formatElapsed(-5)).toBe("0:00");
++  });
++
++  test("shorten collapses whitespace and ellipsizes", () => {
++    expect(shorten("  a \n b  ", 10)).toBe("a b");
++    expect(shorten("abcdefghij", 5)).toBe("abcd…");
++  });
++
++  test("labels", () => {
++    expect(label({ ...initialView(), phase: "formatting" })).toBe("Polishing");
++    expect(label({ ...initialView(), phase: "done", words: 1 })).toBe("1 word");
++    expect(label({ ...initialView(), phase: "done" })).toBe("Done");
++  });
++});
+diff --git a/ui/tests/lib.test.ts b/ui/tests/lib.test.ts
+new file mode 100644
+index 0000000..5591347
+--- /dev/null
++++ b/ui/tests/lib.test.ts
+@@ -0,0 +1,138 @@
++import { describe, expect, test } from "bun:test";
++import {
++  formatWpm,
++  recentDays,
++  relativeTime,
++  splitList,
++  storedState,
++  utcDay,
++  wordsThisWeek,
++} from "../src/lib/format";
++import type { HistoryAnalytics } from "../src/lib/protocol";
++import {
++  LIVE_KEYS,
++  SECTIONS,
++  changedEntries,
++  displayValue,
++  getPath,
++  parseInput,
++  visibleSections,
++  type FieldSpec,
++} from "../src/lib/settings";
++
++const analytics: HistoryAnalytics = {
++  type: "history_analytics",
++  overall_wpm: 142.4,
++  words_today: 120,
++  words_by_day: [
++    { day: "2026-09-20", words: 999 }, // outside the week
++    { day: "2026-09-24", words: 10 },
++    { day: "2026-09-29", words: 30 },
++    { day: "2026-09-30", words: 120 },
++  ],
++  current_streak_days: 2,
++  longest_streak_days: 9,
++};
++const NOW = new Date("2026-09-30T15:00:00Z");
++
++describe("analytics", () => {
++  test("words this week covers seven UTC days including today", () => {
++    expect(wordsThisWeek(analytics, NOW)).toBe(160);
++  });
++
++  test("recent days are zero-filled and ordered", () => {
++    const days = recentDays(analytics, NOW, 3);
++    expect(days).toEqual([
++      { day: "2026-09-28", words: 0 },
++      { day: "2026-09-29", words: 30 },
++      { day: "2026-09-30", words: 120 },
++    ]);
++  });
++
++  test("utc day ignores the local timezone", () => {
++    expect(utcDay(new Date("2026-09-30T23:59:59Z"))).toBe("2026-09-30");
++  });
++
++  test("wpm formatting", () => {
++    expect(formatWpm(142.4)).toBe("142");
++    expect(formatWpm(undefined)).toBe("—");
++  });
++
++  test("relative time", () => {
++    const now = Date.parse("2026-09-30T15:00:00Z");
++    expect(relativeTime(now - 10_000, now)).toBe("just now");
++    expect(relativeTime(now - 5 * 60_000, now)).toBe("5 min ago");
++    expect(relativeTime(now - 3 * 3_600_000, now)).toBe("3 h ago");
++    expect(relativeTime(now - 26 * 3_600_000, now)).toBe("yesterday");
++    expect(relativeTime(now - 30 * 86_400_000, now)).toBe("2026-08-31");
++  });
++});
++
++describe("history privacy", () => {
++  const base = { id: 1, session_id: "s", ts_ms: 0 };
++  test("absent text is private unless the session failed", () => {
++    expect(storedState({ ...base, text: "synthetic" })).toBe("stored");
++    expect(storedState({ ...base, text: "" })).toBe("stored");
++    expect(storedState(base)).toBe("private");
++    expect(storedState({ ...base, error: { code: "stt_failed", message: "x" } })).toBe("failed");
++  });
++});
++
++describe("list fields", () => {
++  test("split trims, drops empties and case-insensitive duplicates", () => {
++    expect(splitList(" kubernetties, cube ernetties,, Kubernetties ")).toEqual(["kubernetties", "cube ernetties"]);
++    expect(splitList("")).toEqual([]);
++  });
++});
++
++describe("settings model", () => {
++  const values = {
++    grammar: { enabled: false, model: "example:1b", min_words: 3, timeout_s: 10.0 },
++    history: { privacy_mode: false, retention_days: null },
++    whisper: { device: "cuda" },
++  };
++  const spec = (path: string): FieldSpec => {
++    const f = SECTIONS.flatMap((s) => s.fields).find((x) => x.path === path);
++    if (!f) throw new Error(path);
++    return f;
++  };
++
++  test("only keys the daemon reports are shown", () => {
++    const shown = visibleSections(values).flatMap((s) => s.fields.map((f) => f.path));
++    expect(shown).toContain("grammar.model");
++    expect(shown).toContain("history.retention_days"); // null is a real, unset value
++    expect(shown).not.toContain("audio.capture");
++  });
++
++  test("an untouched form sends nothing, and only real changes are sent", () => {
++    const edits = new Map<string, unknown>([
++      ["grammar.enabled", false],
++      ["grammar.model", "example:4b"],
++      ["history.retention_days", null],
++    ]);
++    expect(changedEntries(values, edits)).toEqual([{ path: "grammar.model", value: "example:4b" }]);
++    expect(changedEntries(values, new Map())).toEqual([]);
++  });
++
++  test("inputs parse to the JSON the daemon expects", () => {
++    expect(parseInput(spec("grammar.enabled"), true)).toEqual({ ok: true, value: true });
++    expect(parseInput(spec("grammar.min_words"), "5")).toEqual({ ok: true, value: 5 });
++    expect(parseInput(spec("grammar.min_words"), "2.5")).toEqual({ ok: false, error: "a whole number" });
++    expect(parseInput(spec("grammar.min_words"), "")).toEqual({ ok: false, error: "required" });
++    expect(parseInput(spec("grammar.timeout_s"), "2.5")).toEqual({ ok: true, value: 2.5 });
++    expect(parseInput(spec("grammar.timeout_s"), "0")).toEqual({ ok: false, error: "at least 0.1" });
++    expect(parseInput(spec("history.retention_days"), " ")).toEqual({ ok: true, value: null });
++    expect(parseInput(spec("whisper.device"), "tpu").ok).toBe(false);
++  });
++
++  test("display values", () => {
++    expect(displayValue(spec("history.retention_days"), null)).toBe("");
++    expect(displayValue(spec("grammar.enabled"), true)).toBe(true);
++    expect(getPath(values, "grammar.model")).toBe("example:1b");
++    expect(getPath(values, "grammar.nope")).toBeUndefined();
++  });
++
++  test("the live-key list matches the daemon's", () => {
++    expect([...LIVE_KEYS]).toEqual(["history.privacy_mode"]);
++  });
++});
+diff --git a/ui/tsconfig.json b/ui/tsconfig.json
+new file mode 100644
+index 0000000..22f7735
+--- /dev/null
++++ b/ui/tsconfig.json
+@@ -0,0 +1,24 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "module": "ESNext",
++    "moduleResolution": "bundler",
++    "lib": ["ES2022", "DOM", "DOM.Iterable"],
++    "jsx": "react-jsx",
++    "jsxImportSource": "preact",
++    "strict": true,
++    "noUncheckedIndexedAccess": true,
++    "exactOptionalPropertyTypes": true,
++    "noImplicitOverride": true,
++    "noImplicitReturns": true,
++    "noUnusedLocals": true,
++    "noUnusedParameters": true,
++    "noFallthroughCasesInSwitch": true,
++    "isolatedModules": true,
++    "verbatimModuleSyntax": true,
++    "skipLibCheck": true,
++    "noEmit": true,
++    "types": ["bun"]
++  },
++  "include": ["src", "tests", "vite.config.ts"]
++}
+diff --git a/ui/vite.config.ts b/ui/vite.config.ts
+new file mode 100644
+index 0000000..6c22ef5
+--- /dev/null
++++ b/ui/vite.config.ts
+@@ -0,0 +1,22 @@
++import { resolve } from "node:path";
++import { defineConfig } from "vite";
++
++// Two entry points: the hub (Preact) and the Flow bar (no framework at all —
++// it is on screen within a frame of `recording`, so it carries nothing it does
++// not need). No remote resources, no analytics, no service worker.
++export default defineConfig({
++  clearScreen: false,
++  server: { host: "127.0.0.1", port: 1420, strictPort: true },
++  build: {
++    target: "es2022",
++    outDir: "dist",
++    emptyOutDir: true,
++    sourcemap: false,
++    rollupOptions: {
++      input: {
++        index: resolve(import.meta.dirname, "index.html"),
++        hud: resolve(import.meta.dirname, "hud.html"),
++      },
++    },
++  },
++});
