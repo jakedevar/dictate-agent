@@ -963,10 +963,6 @@ const DELETABLE: &[&str] = &[
     "actually",
     "just",
     "really",
-    "you",
-    "know",
-    "i",
-    "mean",
     "okay",
     "ok",
     "oh",
@@ -980,7 +976,6 @@ const DELETABLE: &[&str] = &[
     "sorry",
     "scratch",
     "rather",
-    "no",
 ];
 /// Unit words a number's written form absorbs ("$25", "50%", "3.5").
 const UNIT_WORDS: &[&str] = &["dollars", "dollar", "cents", "percent", "point", "degrees"];
@@ -1116,16 +1111,31 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
             d += 1;
         }
         let restart = (d..(d + 6).min(input.len())).any(|j| kept[j] && input[j] == input[start]);
+        let modal_restart = input.get(start..start + 2) == Some(&["can", "you"])
+            && input.get(d..d + 2) == Some(&["could", "you"]);
+        let repeated = |k: usize| (k > 0 && input[k - 1] == input[k])
+            || input.get(k + 1) == Some(&input[k]);
+        let phrase_filler = |k: usize| {
+            [("you", "know"), ("i", "mean")].iter().any(|(a, b)| {
+                (k > 0 && input[k - 1] == *a && input[k] == *b && !kept[k - 1])
+                    || (input[k] == *a && input.get(k + 1) == Some(b) && kept.get(k + 1) == Some(&false))
+            })
+        };
+        // A cue must actually be inside the deleted retraction before a
+        // restart. Mere proximity to "actually" cannot license a lost not.
+        let retracted = |k: usize| restart && (k + 1..d).any(cue);
         for (k, &w) in input.iter().enumerate().take(d).skip(start) {
             let negation = NEGATIONS.contains(&w);
             let explained = if negation {
                 // Dropping a negation flips meaning unless it is itself the
                 // retracted part or the cue of a correction.
-                cue_near(k) || restart
+                (w == "no" && cue(k)) || (repeated(k) && in_output.contains(w)) || retracted(k)
+            } else if matches!(w, "i" | "you" | "he" | "she" | "it" | "we" | "they" | "me" | "us" | "them" | "my" | "your" | "our" | "their") {
+                phrase_filler(k) || (repeated(k) && in_output.contains(w)) || restart || modal_restart
             } else {
                 DELETABLE.contains(&w)
-                    || PROSE_INSERTABLE.contains(&w)
-                    || in_output.contains(w)
+                    || phrase_filler(k)
+                    || (repeated(k) && in_output.contains(w))
                     || joined(k)
                     || split_pairs.contains(w)
                     || unit_of_number(k)
@@ -1133,6 +1143,7 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
                     || vocab_replaced(k)
                     || cue_near(k)
                     || restart
+                    || modal_restart
             };
             if !explained {
                 unexplained.push(w.to_string());
@@ -1611,6 +1622,27 @@ mod tests {
             )),
             Validator::DroppedWords
         );
+    }
+
+    #[test]
+    fn deletion_exemptions_cannot_remove_pronouns_or_negations() {
+        for category in ["terminal", "chat"] {
+            for (input, output) in [
+                ("do not deploy", "Deploy."),
+                ("do not actually deploy", "Do actually deploy."),
+                ("please actually do not deploy", "Please actually deploy."),
+                ("you deploy it now", "Deploy it now."),
+                ("I send it to you", "Send it to you."),
+                ("no deployments today", "Deployments today."),
+                ("she said he deploys", "She said deploys."),
+                ("I know the answer", "I the answer."),
+                ("ship it if approved", "Ship it approved."),
+            ] {
+                assert!(run(input, output, category).is_err(), "{category}: {input} → {output}");
+            }
+        }
+        run("you know we should ship", "We should ship.", "terminal").unwrap();
+        run("do not ship scratch that do ship", "Do ship.", "terminal").unwrap();
     }
 
     #[test]
