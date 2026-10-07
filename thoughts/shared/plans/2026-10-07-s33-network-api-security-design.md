@@ -341,12 +341,17 @@ local dictations. For network connections:
 | Upload body read | 60 s total | handler timeout → 408 `timeout` |
 | Upload body size | `max_upload_bytes` = 32 MiB | streamed with a hard cap → 413 before buffering past the cap |
 | Decoded audio duration | `max_audio_seconds` = 300, and never more than `[upload]` allows the socket | `decode_upload` (`limits.max_audio_ms`) → 413 |
-| WS message size | the encoded form of `max_upload_bytes` (base64 + 4 KiB) | `WebSocketUpgrade::max_message_size` |
+| Audio bytes, WS | `max_upload_bytes`, on the *decoded* payload, never more than the socket accepts — the same cap as the HTTP body | `NetworkConnection` (`Conn::max_upload_bytes`) → `payload_too_large` (§15) |
+| WS message size | each message: 64 KiB before the handshake, the grant's `max_message_bytes` after, checked before parsing → `payload_too_large` + close 1009. Buffering: at most `Backend::max_message_bytes` = max(64 KiB, grant) | session loop; `WebSocketUpgrade::max_message_size` (§15) |
 | WS pipelined requests | 4 queued; more closes the connection (1008) | per-connection reader |
-| WS idle | 300 s without a client message → close | session loop |
-| Requests per peer IP | token bucket, 120/min, burst 20 (WS messages count) | pre-auth middleware → 429 `rate_limited`. On a WS an over-rate message is delayed (up to 5 s), never answered out of order |
-| Auth failures per peer IP | 5 per 60 s, then blocked 60 s | auth middleware → 429 |
-| Throttle table | 1024 IPs; idle entries pruned | bounded memory |
+| WS idle | 300 s without a client message → close 1000; a request must be answered within 300 s of arriving → close 1011 | session loop; every await raced against it (§15) |
+| WS writes | 30 s per reply or event to a peer that does not read; 2 s each for the close frame and the socket close | session loop (§15) |
+| WS token | re-checked before every command and event, and every 2 s; rotated, deleted or insecure → close 1008 | session loop (§15) |
+| Shutdown | WS sessions run in a tracked set: closing flag, ≈4.5 s grace, then abort | `ApiServer::shutdown` (§15) |
+| Requests per peer IP | token bucket, 120/min, burst 20 (WS messages count) | pre-auth middleware → 429 `rate_limited`. A WS request runs only on a token it acquired: a refill ≤ 5 s away is waited out and re-checked, anything longer (or a lockout) is answered `rate_limited` and not run (§15) |
+| Auth failures per peer IP | 5 per 60 s, then blocked 60 s (WS sessions of that IP included) | auth middleware → 429 |
+| Throttle table | hard cap 1024 IPs under one lock; idle, then least recently seen unlocked entries evicted; a live lockout never; a new peer on a table full of lockouts is refused (fail closed) | bounded memory and scan cost (§15) |
+| Refusal warnings | Host, Origin and auth refusals share a budget: 20 at once, 30/min, the rest at DEBUG with a suppressed count; every refusal closes its connection | `LogBudget` (§15) |
 | Engine | one session slot (existing) | a busy engine answers 409 `busy` |
 
 Brute force is not what the auth throttle defends against: 256 bits cannot be
@@ -361,13 +366,18 @@ brute-forced. It keeps a misconfigured client from turning into log spam.
 - Auth failures log at `warn` with the peer IP and a reason class. Bind
   decisions log at `info`, and a LAN bind logs at `warn` (it is a posture
   change).
-- The transcript text in logs is governed by the pipeline's existing rule:
-  nothing in privacy sessions or privacy mode. Network sessions follow it
-  unchanged. A client can always send `privacy: true`.
+- Transcript text (raw or formatted) is never logged at INFO or above, for
+  any session; INFO carries lengths and timings. The words go to DEBUG only,
+  and never for a privacy session or a network session — with no opt-in from
+  the client (manager ruling on review finding NETWORK_TRANSCRIPTS_LOGGED,
+  §15; this replaces the earlier "network sessions follow the pipeline's
+  rule unchanged").
 - Remote dictations are recorded in history like local uploads unless
   privacy is requested. They are Jake's dictations, from his phone.
-- An integration test captures every log line from a network session and
-  asserts that neither the token nor a privacy session's text appears.
+- An integration test captures every log line, down to DEBUG, from network
+  sessions on both transports (with and without `privacy`) and asserts that
+  neither a token nor any of their words appears, while a local session's
+  words appear at DEBUG only (`network_logs`, `privacy_logs`).
 
 ## 11. Deviations from the slice spec
 
@@ -460,3 +470,30 @@ brute-forced. It keeps a misconfigured client from turning into log spam.
   (against a fake backend, including TLS with an rcgen certificate).
   `crates/dictated` has 6 new unit tests, 11 `network_api` tests and the
   `network_logs` test. Every test binds `127.0.0.1:0`.
+
+## 15. Pre-merge security review 7a0c4c63 (Codex), and what changed
+
+The review requested changes. Every finding is fixed on this branch, after a
+merge of master 743400d (S24 snippets, S25 edit, S35 notes, #1479, #1478,
+#1508) that kept both sides. Each fix has a regression test that fails on the
+reviewed code.
+
+| Finding | Fix | Regression tests |
+|---|---|---|
+| NETWORK_TRANSCRIPTS_LOGGED (high) | `pipeline.rs` logs lengths/timings at INFO; words at DEBUG only when neither private nor `ResolvedOptions::remote` (set by the transport). The timer no longer logs its spoken label | `network_logs` (HTTP + WS, no privacy opt-in), `privacy_logs` (DEBUG-only words) |
+| WS_TOKEN_REVOCATION_BYPASS (high) | the gate hands the upgrade a `Credential` (token digest); the session re-checks it before each command and event and every 2 s; revoked → 1008 | `token::a_held_credential_is_revoked_…`, transport `rotating_the_token_closes_open_websocket_sessions`, `revoking_the_token_closes_an_idle_websocket_session`, network_api `rotating_the_token_ends_an_open_websocket_session` |
+| WS_THROTTLE_FAIL_OPEN | `ws::admit`: wait out a refill ≤ 5 s and re-check; otherwise answer `rate_limited` to the request id; never run without a token | `limit::a_refill_admits_exactly_one_caller`, transport `an_over_rate_websocket_request_is_refused_not_run`, `a_locked_out_peer_runs_nothing_on_its_open_websocket`, `a_websocket_request_waits_out_a_short_refill` |
+| THROTTLE_TABLE_UNBOUNDED | one capped `slot()` for admission and failure updates under the table lock; live lockouts never evicted; `Throttled::Saturated` when full of them | `limit::live_lockouts_never_push_the_table_past_its_cap`, `the_cap_holds_under_concurrent_admission_and_failures` |
+| WS_DECODED_UPLOAD_LIMIT_BYPASS | `Conn::max_upload_bytes` = min(`[api] max_upload_bytes`, socket limit), checked on decoded bytes before decoding | network_api `the_websocket_takes_no_more_audio_than_http`, `network::the_upload_cap_is_…` |
+| WS_NEGOTIATED_MESSAGE_LIMIT_BYPASS | `Session::max_message_bytes` checked per message before parsing (+ in `handle_line`); upgrade buffer = `Backend::max_message_bytes` | transport `a_websocket_message_over_the_negotiated_limit_is_refused_unread`, `before_the_handshake_…_64_kib`; network_api `a_websocket_message_is_held_to_the_negotiated_limit`, `before_its_handshake_…` |
+| WS_IDLE_SHUTDOWN_NOT_ENFORCED_IN_FLIGHT | `ws::bounded` races admission, execution and the reply against closing and the idle deadline; writes 30 s; close 2 s + 2 s; `WsTasks` lets shutdown wait then abort | transport `shutdown_interrupts_a_websocket_request_in_flight` |
+| PREAUTH_GUARD_REJECTIONS_BYPASS_THROTTLE (non-blocking) | `LogBudget` for Host/Origin/auth refusal warnings; `Connection: close` on every refusal. Host/Origin refusals are deliberately *not* charged to the per-IP request bucket: on loopback a hostile page and the legitimate client share 127.0.0.1, and charging would let the page throttle the client | `refusal_logs` (own binary: a global subscriber) |
+
+Notes for the next reviewer:
+
+- The idle deadline now also bounds a request's execution (300 s from
+  arrival). A legitimate 300 s clip transcribes in seconds on the GPU; on a
+  CPU-only build a very long clip could hit it and be cancelled (close 1011).
+- The local socket's `[upload] max_bytes` is documented as decoded bytes but
+  `decode_upload` compares it in its encoded form (about 4/3 larger). The
+  network cap above does not depend on that; follow-up #1522.

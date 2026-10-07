@@ -75,3 +75,47 @@ RSI catalog disagree on how to run long builds).
 See design §13: bind plan and startup wiring; token store; middleware order;
 `NetworkConnection` (grant, owner, event scoping, redaction, scrub, drop leading
 to cancel); the ceiling and the subset test; resource bounds; TLS; logging.
+
+## Review 7a0c4c63 fix round (worker a05de99b, 2026-10-07)
+
+The one pre-merge security review (Codex gpt-6.1-sol xhigh, receipt
+7a0c4c63-0c56-42da-914a-17cd010603c5) requested changes. This round, on branch
+`rsi/a05de99b-…`, continues from 1097c06:
+
+1. `fbc81f5` merges master 743400d (S24 snippets, S25 edit, S35 notes, #1479,
+   #1478, #1508). Text conflicts were in `config/config.example.toml` (`[edit]`
+   and `[api]` both kept) and `docs/protocol.md` (the `raw_text` row kept; "all
+   six" routes). server.rs, lib.rs and config.rs auto-merged.
+   - #1508's cancel-safe `read_line_bounded`/`ConnReader` is untouched. The
+     network path never reads a byte stream: a WS message arrives whole, and
+     the reader task is its own (cancel-safe `StreamExt::next`).
+   - Semantic fallout: snippets are now implemented, so over the network they
+     are `forbidden` (not `unsupported_command`). The network tests pin
+     snippets, notes and the `edit`/`note` routes as forbidden.
+2. `1497d53` fix(core): NETWORK_TRANSCRIPTS_LOGGED, per the manager ruling.
+3. `80e7e9f` fix(server): the other seven findings. Design §15 has the
+   finding → fix → test table.
+
+Decisions the integrator should know:
+- Host/Origin refusals are **not** charged to the per-IP request bucket.
+  They get a warning budget plus `Connection: close`. On loopback a hostile
+  page and the real client share 127.0.0.1, so charging would let the page
+  throttle the client.
+- A WS request is bounded by the idle deadline (300 s from arrival, close
+  1011). A WS write is bounded at 30 s; the close frame and socket close at
+  2 s each. Shutdown waits about 4.5 s for sessions, then aborts the rest.
+- `Throttled` gained a `Saturated` variant (table full of live lockouts:
+  fail closed). `Backend` and `Session` each gained `max_message_bytes()`.
+  `NetworkConnection::open` takes a raw upload cap. `ResolvedOptions` gained
+  `remote`.
+- The refusal-log test runs in its own binary (`dictate-server/tests/refusal_logs.rs`).
+  A thread-scoped subscriber in the shared transport binary lost events to
+  tracing's per-callsite interest cache, which other test threads populate.
+
+Gate: `just check-cpu` (`-j 8`) passed 1145, failed 0, ignored 0. All three
+clippy lines, fmt, the dictate-cli tree check and `scripts/cutover-test.sh` are
+clean. No CUDA, no `just e2e`. The STT path is untouched; the pipeline change
+is only to log statements.
+
+Follow-up filed: #1522 (the local socket checks `[upload] max_bytes` against
+the encoded size).

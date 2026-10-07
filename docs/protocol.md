@@ -651,6 +651,8 @@ Every request, loopback included:
   otherwise (DNS rebinding).
 - per-IP rate limit and authentication-failure lockout → `429` + `Retry-After`.
 
+Every refusal above also closes the connection (`Connection: close`).
+
 ```
 POST /v1/transcribe[?encoding=&sample_rate_hz=&channels=&language=&app=&format_llm=&use_dictionary=&privacy=&route=&inject=]
   body = the audio: Content-Type audio/wav, or raw PCM with
@@ -680,6 +682,20 @@ only by operator opt-in), never `config_*`, `history_*`, `dictionary_*`,
 client calls itself. Its subscription receives events **only for sessions it
 started** — never a dictation made at the host — and `stop`/`cancel` reach only
 its own session. Dropping the connection cancels an upload it still owns.
+
+A WebSocket is admitted once at the upgrade and **every request again**:
+
+| Check, per message | Refusal |
+|---|---|
+| size: 64 KiB before the handshake, then the grant's `limits.max_message_bytes` | `error` event `payload_too_large`, then close `1009` |
+| the peer's rate (a refill under 5 s away is waited out) | `rate_limited` response to the request id (`detail.retry_after_s`); the command does not run |
+| the token the session opened with is still the current one (also checked before each event and every 2 s) | close `1008` — reconnect with the new token |
+
+Inline audio over the WebSocket is held to `[api] max_upload_bytes` of decoded
+audio, the same cap as the `POST /v1/transcribe` body (`payload_too_large`,
+`detail.limit_bytes`). Other closes: `1000` idle (300 s with no client
+message), `1011` a request not answered within 300 s, `1001` server or daemon
+shutdown, `1008` more than 4 pipelined requests, `1003` a binary frame.
 
 ### Streamed audio (specified; not yet served)
 

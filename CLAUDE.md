@@ -202,6 +202,7 @@ whole reason the two can stay installed side by side.
 ```bash
 dictated --api-token          # print the bearer token (create if absent)
 dictated --rotate-api-token   # replace it; a running daemon honors it at once
+                              # (open WebSockets on the old token close)
 ```
 
 `[api] enabled = true` serves `POST /v1/transcribe`, `GET /v1/status` and
