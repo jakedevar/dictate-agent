@@ -748,6 +748,7 @@ dependencies = [
 name = "dictate-fmt"
 version = "0.2.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "dictate-proto",
  "ollama-rs",
