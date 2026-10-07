@@ -130,8 +130,9 @@ pub enum CommandResult {
         session_id: SessionId,
     },
 
-    /// Configuration, after a read or a write.
-    Config(ConfigSnapshot),
+    /// Configuration, after a read or a write. Boxed: a snapshot carries the
+    /// whole file and would otherwise size every result.
+    Config(Box<ConfigSnapshot>),
 
     /// A list of dictionary entries.
     Dictionary {
@@ -361,11 +362,11 @@ mod tests {
             CommandResult::SessionCancelled {
                 session_id: "s1".into(),
             },
-            CommandResult::Config(ConfigSnapshot {
+            CommandResult::Config(Box::new(ConfigSnapshot {
                 values: serde_json::json!({"whisper": {"model": "large-v3-turbo"}}),
                 path: None,
                 ..Default::default()
-            }),
+            })),
             CommandResult::Dictionary {
                 entries: vec![DictionaryEntry::new("Kubernetes")],
             },

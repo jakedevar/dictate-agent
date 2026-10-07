@@ -32,7 +32,7 @@ enabled = true
 
 fn snapshot(result: Result<CommandResult, ProtoError>) -> ConfigSnapshot {
     match result.expect("a config result") {
-        CommandResult::Config(s) => s,
+        CommandResult::Config(s) => *s,
         other => panic!("expected a config snapshot, got {other:?}"),
     }
 }

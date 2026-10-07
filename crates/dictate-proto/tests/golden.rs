@@ -1121,15 +1121,15 @@ fn diagnostics_is_a_local_only_capability() {
 fn golden_config_snapshot() {
     pin(
         "config_snapshot_minimal",
-        CommandResult::Config(ConfigSnapshot {
+        CommandResult::Config(Box::new(ConfigSnapshot {
             values: json!({"grammar": {"enabled": false}}),
             ..Default::default()
-        }),
+        })),
         json!({"type": "config", "values": {"grammar": {"enabled": false}}}),
     );
     pin(
         "config_snapshot_full",
-        CommandResult::Config(ConfigSnapshot {
+        CommandResult::Config(Box::new(ConfigSnapshot {
             values: json!({"grammar": {"enabled": true}}),
             path: None,
             applied: vec!["grammar.enabled".into(), "history.privacy_mode".into()],
@@ -1143,7 +1143,7 @@ fn golden_config_snapshot() {
             warnings: vec!["unknown section [editor] ignored".into()],
             errors: vec![],
             dry_run: true,
-        }),
+        })),
         json!({
             "type": "config",
             "values": {"grammar": {"enabled": true}},
@@ -1162,11 +1162,11 @@ fn golden_config_snapshot() {
     // A file that cannot be resolved is reported, not hidden.
     pin(
         "config_snapshot_errors",
-        CommandResult::Config(ConfigSnapshot {
+        CommandResult::Config(Box::new(ConfigSnapshot {
             values: json!({}),
             errors: vec!["grammar.timeout_s must be a positive number of seconds, got 0".into()],
             ..Default::default()
-        }),
+        })),
         json!({
             "type": "config",
             "values": {},

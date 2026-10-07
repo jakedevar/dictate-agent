@@ -552,7 +552,7 @@ async fn dispatch(
             let snapshot = tokio::task::spawn_blocking(move || service.read(path.as_deref()))
                 .await
                 .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
-            Ok(CommandResult::Config(snapshot))
+            Ok(CommandResult::Config(Box::new(snapshot)))
         }
 
         Command::SetConfig {
@@ -567,7 +567,7 @@ async fn dispatch(
             })
             .await
             .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
-            Ok(CommandResult::Config(snapshot))
+            Ok(CommandResult::Config(Box::new(snapshot)))
         }
 
         Command::GetContext => Ok(CommandResult::Context(Box::new(
