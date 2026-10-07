@@ -156,7 +156,7 @@ export interface ConfigSnapshot {
   path?: string;
   applied?: string[];
   restart_required?: string[];
-  file?: { path: string; exists: boolean; document: string };
+  file?: { path: string; exists: boolean; document: string; revision?: string };
   warnings?: string[];
   errors?: string[];
   dry_run?: boolean;

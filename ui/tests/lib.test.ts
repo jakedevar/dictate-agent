@@ -10,12 +10,14 @@ import {
 } from "../src/lib/format";
 import type { HistoryAnalytics } from "../src/lib/protocol";
 import {
+  ALL_FIELDS,
   LIVE_KEYS,
-  SECTIONS,
   changedEntries,
   displayValue,
   getPath,
   parseInput,
+  sectionsFor,
+  usesLegacyGrammar,
   visibleSections,
   type FieldSpec,
 } from "../src/lib/settings";
@@ -88,20 +90,59 @@ describe("list fields", () => {
 describe("settings model", () => {
   const values = {
     grammar: { enabled: false, model: "example:1b", min_words: 3, timeout_s: 10.0 },
+    format: { enabled: true, llm: { enabled: false, models: ["example:4b", "example:1b"], min_words: 3 } },
     history: { privacy_mode: false, retention_days: null },
     whisper: { device: "cuda" },
   };
   const spec = (path: string): FieldSpec => {
-    const f = SECTIONS.flatMap((s) => s.fields).find((x) => x.path === path);
+    const f = ALL_FIELDS.find((x) => x.path === path);
     if (!f) throw new Error(path);
     return f;
   };
+  const paths = (doc: string) => sectionsFor(values, doc).flatMap((s) => s.fields.map((f) => f.path));
 
   test("only keys the daemon reports are shown", () => {
     const shown = visibleSections(values).flatMap((s) => s.fields.map((f) => f.path));
-    expect(shown).toContain("grammar.model");
+    expect(shown).toContain("format.llm.models");
     expect(shown).toContain("history.retention_days"); // null is a real, unset value
     expect(shown).not.toContain("audio.capture");
+  });
+
+  test("a legacy [grammar] file is edited through [grammar], never by creating [format.llm]", () => {
+    const legacy = "# mine\n[grammar]\nenabled = false\nmodel = \"example:1b\"\n";
+    expect(usesLegacyGrammar(legacy)).toBe(true);
+    expect(paths(legacy)).toContain("grammar.model");
+    expect(paths(legacy).some((p) => p.startsWith("format.llm."))).toBe(false);
+    expect(paths(legacy)).toContain("format.enabled"); // the rules are not the LLM pass
+  });
+
+  test("a file with [format.llm] (or neither section) uses the modern keys", () => {
+    for (const doc of [
+      "[format.llm]\nenabled = true\n",
+      "[grammar]\nenabled = true\n[format.llm]\nenabled = true\n",
+      "[format]\nenabled = true\nllm.enabled = true\n[grammar]\nenabled = false\n",
+      "[format.llm.timeout]\nmax_ms = 900\n[grammar]\nenabled = false\n",
+      "",
+    ]) {
+      expect(usesLegacyGrammar(doc)).toBe(false);
+      expect(paths(doc)).toContain("format.llm.enabled");
+      expect(paths(doc)).not.toContain("grammar.model");
+    }
+    // A commented-out header does not count.
+    expect(usesLegacyGrammar("[grammar]\n# [format.llm]\n")).toBe(true);
+  });
+
+  test("list fields parse, display and diff as arrays", () => {
+    const models = spec("format.llm.models");
+    expect(parseInput(models, " a:1b, b:2b ,, a:1b")).toEqual({ ok: true, value: ["a:1b", "b:2b"] });
+    expect(parseInput(models, " ").ok).toBe(false);
+    expect(displayValue(models, ["a:1b", "b:2b"])).toBe("a:1b, b:2b");
+    const same = new Map<string, unknown>([["format.llm.models", ["example:4b", "example:1b"]]]);
+    expect(changedEntries(values, same)).toEqual([]);
+    const reordered = new Map<string, unknown>([["format.llm.models", ["example:1b", "example:4b"]]]);
+    expect(changedEntries(values, reordered)).toEqual([
+      { path: "format.llm.models", value: ["example:1b", "example:4b"] },
+    ]);
   });
 
   test("an untouched form sends nothing, and only real changes are sent", () => {

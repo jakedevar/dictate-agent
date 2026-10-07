@@ -25,11 +25,12 @@ export const daemon = {
   cancel: () => invoke<unknown>("cancel"),
   getStatus: () => invoke<Status>("get_status"),
   getConfig: (path?: string) => invoke<ConfigSnapshot>("get_config", { path: path ?? null }),
-  setConfig: (args: { entries?: ConfigEntry[]; document?: string; dry_run?: boolean }) =>
+  setConfig: (args: { entries?: ConfigEntry[]; document?: string; dry_run?: boolean; base_revision?: string }) =>
     invoke<ConfigSnapshot>("set_config", {
       entries: args.entries ?? null,
       document: args.document ?? null,
       dry_run: args.dry_run ?? null,
+      base_revision: args.base_revision ?? null,
     }),
   listDictionary: (query?: string) =>
     invoke<{ entries: DictionaryEntry[] }>("list_dictionary", { query: query || null, limit: 1000 }),
