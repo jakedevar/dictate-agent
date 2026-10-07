@@ -28,7 +28,7 @@ export PATH := /opt/cuda/bin:$(PATH)
 .PHONY: release test clippy install install-unit clean uninstall uninstall-legacy
 
 release:
-	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --release --workspace
+	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --release --workspace --features dictated/cuda
 
 test:
 	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo test --workspace

@@ -22,8 +22,15 @@ slice section of
 
 ## 2. Build and test environment
 
-- `export PATH="/opt/cuda/bin:$PATH"` (or use `just`). The first build compiles
-  whisper.cpp with CUDA: about 5 minutes and 5 GB of `target/`.
+- `export PATH="/opt/cuda/bin:$PATH"` (or use `just`). Default builds are
+  **CPU-only**: `--workspace` never compiles whisper.cpp's CUDA backend (the
+  `cuda` feature is opt-in via `dictated/cuda`; see CLAUDE.md "Build & test").
+  The CUDA backend costs about 1000 CPU-seconds / 2.5 minutes wall; do not
+  trigger it unless your diff touches `dictate-stt`, the transcription path or
+  the CUDA config.
+- The host is shared: build with `-j 8` (`CARGO_BUILD_JOBS=8`), one cargo
+  build at a time, and check `uptime` before a cold build (wait if the 1-minute
+  load is above 40).
 - The RSI harness exports a long `TMPDIR`. Unix-socket fixtures must live under
   a short root (see `socket_root()` in `crates/dictated/tests/harness/mod.rs`).
 - Run long commands in the foreground with a generous timeout and `tee` them to
@@ -54,7 +61,13 @@ slice section of
 ## 4. Verify (all must pass before you report green)
 
 ```bash
-cargo test --workspace --all-targets 2>&1 | tee /tmp/<slice>-test.log   # 0 failures
+just check-cpu 2>&1 | tee /tmp/<slice>-gate.log
+```
+
+`just check-cpu` is the worker gate and never compiles the CUDA backend. It runs:
+
+```bash
+cargo test --workspace --all-targets                                    # 0 failures
 cargo clippy --workspace --all-targets -- -D warnings
 # feature-gated targets are invisible to the line above; compile them too
 cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
@@ -62,6 +75,13 @@ cargo clippy -p dictate-context --features x11-tests --all-targets -- -D warning
 cargo fmt --all -- --check
 cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'          # must print nothing
 ```
+
+**CUDA variants are the integrator's job**, once per integration, together
+with the real-GPU `just e2e` (WER 0.000): `just check-cuda` (clippy of the
+workspace and of `-p dictated --features e2e-real,cuda` with the CUDA backend)
+and `just e2e`. A worker runs them only when its diff touches `dictate-stt`,
+the transcription path, a `cuda` feature or `.cargo/config.toml`'s CUDA
+settings — and then says so in its RESULT line.
 
 Report the exact passed/failed counts you saw. Never report a run you did not
 see finish.

@@ -8,6 +8,9 @@ edition.workspace = true
 # integration tests in *other* crates (notably `dictated`) can drive the real
 # engine and the real socket without a microphone, a GPU, or a desktop.
 test-support = []
+# whisper.cpp CUDA backend. Off by default so `--workspace` builds, tests and
+# clippy stay CPU-only; `dictated/cuda` forwards here.
+cuda = ["dictate-stt/cuda"]
 
 [dependencies]
 dictate-dict = { workspace = true }
@@ -19,7 +22,7 @@ dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
 dictate-inject = { workspace = true }
 dictate-proto = { workspace = true }
-dictate-stt = { workspace = true, features = ["cuda"] }
+dictate-stt = { workspace = true, features = ["transcribe"] }
 dictate-vad = { workspace = true }
 uuid = { workspace = true }
 notify-rust = { workspace = true }
