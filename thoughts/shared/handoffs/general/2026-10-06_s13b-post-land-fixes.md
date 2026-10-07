@@ -2,6 +2,7 @@
 
 Implementation: `9d2c4b19c7d074e53088e36c5cfb09830018ac63`, on the assigned
 `rsi/f133b34c-0964-4bad-b0db-9385c2a3c888` branch, based on `ed1ef42`.
+Fixture readiness follow-up: `4c01bd35b98bc9ddb25d3e2ecacd42cc8379cd09`.
 No push, branch change, real-display injection, real clipboard access, or CUDA build.
 
 The X11 selection service snapshots every available payload target as raw bytes,
@@ -55,7 +56,7 @@ ResolvedOptions, HostInjector/Notice, and the post-dispatch history outcome bloc
 | PASTE_TIMEOUT_THEN_LATE_PASTE_OF_OLD_CLIPBOARD | 9d2c4b19c7d074e53088e36c5cfb09830018ac63 | timed_out_paste_keeps_dictation_for_late_request; xterm SIGSTOP for 2300 ms, with extra-character detection |
 | PASTE_TARGET_COVERAGE_GAPS | 9d2c4b19c7d074e53088e36c5cfb09830018ac63 | target_types_legacy_property_and_raw_snapshot_are_preserved; latin1_string_is_not_advertised_for_unrepresentable_unicode |
 | STOP_DESTINATION_NOT_BOUND_TO_INJECTION | 9d2c4b19c7d074e53088e36c5cfb09830018ac63 | changed_focus_sends_no_paste_keys; xterm focus-paste/focus-type; explicit_stop_binds_delivery_and_records_clipboard_only_outcome (including privacy) |
-| TEST_GAPS_X11_SMOKE | 9d2c4b19c7d074e53088e36c5cfb09830018ac63 | seven private-Xvfb raw tests; eleven xterm cases; isolated subprocess DISPLAY with WAYLAND_DISPLAY/XAUTHORITY removed |
+| TEST_GAPS_X11_SMOKE | 9d2c4b19c7d074e53088e36c5cfb09830018ac63; 4c01bd35b98bc9ddb25d3e2ecacd42cc8379cd09 | seven private-Xvfb raw tests; eleven xterm cases; isolated subprocess DISPLAY with WAYLAND_DISPLAY/XAUTHORITY removed |
 | CLIPBOARD_SNAPSHOT_DROPS_UNSUPPORTED_TARGETS | 9d2c4b19c7d074e53088e36c5cfb09830018ac63 | raw 16-bit target plus URI list round trip; PNG byte comparison; incr_and_oversized_payloads_fail_before_claiming_or_sending_keys |
 
 Validation (CARGO_BUILD_JOBS=8; one active build; load below 40):
@@ -76,7 +77,10 @@ Validation (CARGO_BUILD_JOBS=8; one active build; load below 40):
 During implementation, the smoke caught arboard's advertised-but-refused UTF-8
 aliases and a fixture race reading the output file before printf finished.
 Snapshotting now handles refused aliases, and read-back waits for the complete
-payload. Neither assertion was weakened. Two obsolete tests expecting paste
+payload. A post-commit run also caught xclip's launcher exiting before its PNG
+selection owner was ready; the fixture now waits for an image within a fixed
+two-second deadline. All affected tests and both clippy configurations were
+rerun successfully after that fix. No assertion was weakened. Two obsolete tests expecting paste
 errors to enable typing were replaced by the private-Xvfb safety regressions.
 
 Friction: #1482
