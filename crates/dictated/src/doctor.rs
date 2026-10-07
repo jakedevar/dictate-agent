@@ -473,7 +473,7 @@ impl Doctor {
                 )
             };
         };
-        if let Some(problem) = x11_unreachable(&display) {
+        if let Some(problem) = x11_unreachable(&display).await {
             return DiagnosticCheck::fail(
                 ID,
                 TITLE,
@@ -482,9 +482,14 @@ impl Doctor {
             );
         }
         let injector = self.pipeline.injector.clone();
-        let available = tokio::task::spawn_blocking(move || injector.is_available())
-            .await
-            .unwrap_or(false);
+        // Bounded like the socket probe: a wedged X server must not wedge the
+        // doctor (the blocking thread is abandoned, not the report).
+        let available = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            tokio::task::spawn_blocking(move || injector.is_available()),
+        )
+        .await
+        .is_ok_and(|joined| joined.unwrap_or(false));
         if available {
             DiagnosticCheck::ok(
                 ID,
@@ -762,9 +767,12 @@ fn parse_compute_apps(output: &str, pid: u32) -> GpuProbe {
     GpuProbe::NotHeld
 }
 
+/// How long the X server probe may wait for its socket to accept.
+const X11_CONNECT_DEADLINE: Duration = Duration::from_secs(2);
+
 /// `None` when the X server at `display` accepts a connection (or cannot be
 /// checked, e.g. a TCP display); otherwise why not.
-fn x11_unreachable(display: &str) -> Option<String> {
+async fn x11_unreachable(display: &str) -> Option<String> {
     // `:N` or `:N.S` names a local unix socket; `host:N` is TCP, which this
     // cheap probe does not attempt.
     let local = display.strip_prefix(':')?;
@@ -772,10 +780,29 @@ fn x11_unreachable(display: &str) -> Option<String> {
     if number.is_empty() {
         return None;
     }
-    let socket = format!("/tmp/.X11-unix/X{number}");
-    match std::os::unix::net::UnixStream::connect(&socket) {
-        Ok(_) => None,
-        Err(e) => Some(format!("{socket}: {}", short_io_error(&e))),
+    socket_unreachable(
+        Path::new(&format!("/tmp/.X11-unix/X{number}")),
+        X11_CONNECT_DEADLINE,
+    )
+    .await
+}
+
+/// `None` when the unix socket at `path` accepts a connection within
+/// `deadline`; otherwise why not.
+///
+/// The connect is tokio's non-blocking one under a deadline. A blocking
+/// `connect` to a server that has stopped accepting (a hung X server with a
+/// full backlog) waits indefinitely — and on an async worker it would stall
+/// every other connection that worker serves.
+async fn socket_unreachable(path: &Path, deadline: Duration) -> Option<String> {
+    let shown = path.display();
+    match tokio::time::timeout(deadline, tokio::net::UnixStream::connect(path)).await {
+        Ok(Ok(_)) => None,
+        Ok(Err(e)) => Some(format!("{shown}: {}", short_io_error(&e))),
+        Err(_) => Some(format!(
+            "{shown}: no answer within {}s",
+            deadline.as_secs_f64()
+        )),
     }
 }
 
@@ -807,13 +834,81 @@ mod tests {
         assert_eq!(parse_compute_apps("garbage\n", 1), GpuProbe::NotHeld);
     }
 
+    /// A unix socket that is listening but will never accept: backlog 0, and
+    /// already holding the one queued connection Linux allows it.
+    fn wedged_socket(path: &Path) -> (std::os::fd::OwnedFd, std::os::unix::net::UnixStream) {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: plain socket(2)/bind(2)/listen(2) on a fresh descriptor that
+        // is immediately owned; `addr` is zeroed and the path fits sun_path.
+        let fd = unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            assert!(fd >= 0, "socket");
+            let owned = std::os::fd::OwnedFd::from_raw_fd(fd);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            let bytes = path.as_os_str().as_bytes();
+            assert!(bytes.len() < addr.sun_path.len());
+            for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+                *dst = *src as libc::c_char;
+            }
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            assert_eq!(
+                libc::bind(fd, std::ptr::addr_of!(addr).cast(), len),
+                0,
+                "bind"
+            );
+            assert_eq!(libc::listen(fd, 0), 0, "listen");
+            owned
+        };
+        let queued = std::os::unix::net::UnixStream::connect(path).expect("first connect queues");
+        (fd, queued)
+    }
+
+    /// `doctor_unbounded_connect`: a blocking connect to a server that never
+    /// accepts waited forever; the probe must answer within its deadline.
+    #[test]
+    fn a_socket_that_never_accepts_is_reported_within_the_deadline() {
+        // Under /tmp: the harness TMPDIR can be too long for sun_path.
+        let dir = std::path::PathBuf::from("/tmp").join(format!("dd-x11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("X0");
+        let _ = std::fs::remove_file(&path);
+        let _wedged = wedged_socket(&path);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_path = path.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let found = rt.block_on(socket_unreachable(&probe_path, Duration::from_millis(300)));
+            let _ = tx.send(found);
+        });
+        let found = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the X11 probe must not block past its deadline");
+        assert!(
+            found.as_deref().is_some_and(|m| m.contains("X0")),
+            "a server that never accepts is unreachable: {found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_local_display_maps_to_its_socket_and_a_tcp_display_is_not_probed() {
         // Display 9999 has no server.
-        assert!(x11_unreachable(":9999").unwrap().contains("X9999"));
-        assert!(x11_unreachable(":9999.0").unwrap().contains("X9999"));
-        assert_eq!(x11_unreachable("remote.host:0"), None);
-        assert_eq!(x11_unreachable(":"), None);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert!(x11_unreachable(":9999").await.unwrap().contains("X9999"));
+            assert!(x11_unreachable(":9999.0").await.unwrap().contains("X9999"));
+            assert_eq!(x11_unreachable("remote.host:0").await, None);
+            assert_eq!(x11_unreachable(":").await, None);
+        });
     }
 
     #[test]
