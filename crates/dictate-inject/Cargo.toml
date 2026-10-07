@@ -3,6 +3,10 @@ name = "dictate-inject"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Raw-selection regressions launch only private Xvfb servers.
+x11-tests = []
+
 [dependencies]
 anyhow = { workspace = true }
 arboard = { workspace = true }
@@ -10,7 +14,7 @@ dictate-proto = { workspace = true }
 enigo = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
-x11rb = { workspace = true }
+x11rb = { workspace = true, features = ["xtest"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -137,6 +137,12 @@ impl Notifier {
         }
     }
 
+    /// Injection already settled clipboard ownership. Error reporting must
+    /// preserve the dictation (or a concurrent user copy) left there.
+    pub fn injection_failed(&self, message: &str) {
+        self.notify("Dictation", message, "dialog-warning", Some(10000));
+    }
+
     /// No speech detected — clears status, then 1.25s auto-dismiss.
     pub fn no_speech(&mut self) {
         self.clear_status();

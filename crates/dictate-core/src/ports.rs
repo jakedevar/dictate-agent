@@ -438,6 +438,23 @@ pub trait TextInjector: Send + Sync + 'static {
         policy: Option<dictate_inject::InjectionPolicy>,
     ) -> BoxFuture<'_, InjectionOutcome>;
 
+    /// Capture only a destination identity, without reading titles/clipboard.
+    /// Test and portal adapters avoid host X11 I/O by default.
+    fn capture_destination(&self) -> Option<u32> {
+        None
+    }
+
+    /// Additive stop-time binding seam. Host backends validate at delivery;
+    /// synthetic/portal implementations may override their own window identity.
+    fn inject_bound(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+        _destination: Option<Option<u32>>,
+    ) -> BoxFuture<'_, InjectionOutcome> {
+        self.inject(text, policy)
+    }
+
     /// Whether injection is possible here at all. `false` on a headless host,
     /// and the reason the outcome becomes `Unavailable` rather than `Failed`.
     fn is_available(&self) -> bool;
@@ -486,6 +503,33 @@ impl TextInjector for HostInjector {
         })
     }
 
+    fn capture_destination(&self) -> Option<u32> {
+        dictate_inject::focused_window()
+    }
+
+    fn inject_bound(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+        destination: Option<Option<u32>>,
+    ) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = policy.unwrap_or_else(|| self.inner.default_policy());
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                inner.inject_bound_blocking(&text, policy, destination)
+            })
+            .await
+            .unwrap_or_else(|e| InjectionOutcome::Failed {
+                error: dictate_proto::ProtoError::new(
+                    dictate_proto::ErrorCode::InjectionFailed,
+                    format!("injection task failed: {e}"),
+                ),
+            })
+        })
+    }
+
     fn is_available(&self) -> bool {
         use dictate_inject::Injector as _;
         let caps = self.inner.capabilities();
@@ -512,6 +556,8 @@ pub enum Notice {
     Cancelled,
     /// A timer was set.
     TimerSet(String),
+    /// Injection failed or became clipboard-only; never overwrite clipboard.
+    InjectionFailed(String),
     /// Something failed.
     Error(String),
     /// Capture was silent for long enough to indicate a muted microphone.
@@ -554,6 +600,7 @@ impl StatusNotifier for DesktopNotifier {
             Notice::Cancelled => n.cancelled(),
             Notice::TimerSet(msg) => n.timer_set(&msg),
             Notice::Error(msg) => n.error(&msg),
+            Notice::InjectionFailed(msg) => n.injection_failed(&msg),
             Notice::MicrophoneMuted => n.microphone_muted(),
             Notice::Clear => n.clear_status(),
         }

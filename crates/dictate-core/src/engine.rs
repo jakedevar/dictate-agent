@@ -590,6 +590,7 @@ impl Engine {
 
     fn handle_stop(&mut self, actor: &Actor) -> Result<SessionId, ProtoError> {
         let context = self.pipeline.context.clone();
+        let injector = self.pipeline.injector.clone();
         let session = self.authorize(actor)?;
         if session.stop_issued {
             return Err(ProtoError::new(
@@ -598,6 +599,10 @@ impl Engine {
             ));
         }
         if let Some(options) = &session.context_options {
+            if let Some(binding) = &options.stop_destination {
+                *binding.lock().expect("stop destination poisoned") =
+                    Some(injector.capture_destination());
+            }
             // This bounded capture runs at the user's stop action, before the
             // pipeline wakes. Named apps and untrusted callers do not capture.
             session
@@ -806,6 +811,7 @@ pub fn resolve_upload_options(
 ) -> Result<ResolvedOptions, ProtoError> {
     let mut resolved = resolve_options(options, capabilities)?;
     resolved.inject = options.is_some_and(|o| o.inject == Some(true));
+    resolved.stop_destination = None;
     resolved.capture_context = false;
     Ok(resolved)
 }
@@ -858,6 +864,8 @@ pub fn resolve_options(
     }
 
     Ok(ResolvedOptions {
+        stop_destination: (inject && capabilities.features.host_capture)
+            .then(|| Arc::new(std::sync::Mutex::new(None))),
         inject,
         forced_route: options.route.clone(),
         allowed_routes: capabilities.routes.clone(),
@@ -888,6 +896,158 @@ pub fn local_routes() -> Vec<Route> {
 mod tests {
     use super::*;
     use dictate_proto::Features;
+
+    /// The real engine/pipeline run with synthetic window identities. The
+    /// injector refuses delivery when processing outlives the stop window.
+    #[tokio::test]
+    async fn explicit_stop_binds_delivery_and_records_clipboard_only_outcome() {
+        use crate::ports::{mock::*, BoxFuture, Notice, TextInjector};
+        use dictate_proto::InjectionOutcome;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Mutex;
+
+        struct BoundInjector(AtomicU32);
+        impl TextInjector for BoundInjector {
+            fn inject(
+                &self,
+                _: &str,
+                _: Option<dictate_inject::InjectionPolicy>,
+            ) -> BoxFuture<'_, InjectionOutcome> {
+                panic!("live delivery must use the bound injector seam")
+            }
+            fn capture_destination(&self) -> Option<u32> {
+                Some(self.0.load(Ordering::SeqCst))
+            }
+            fn inject_bound(
+                &self,
+                _: &str,
+                _: Option<dictate_inject::InjectionPolicy>,
+                destination: Option<Option<u32>>,
+            ) -> BoxFuture<'_, InjectionOutcome> {
+                assert_eq!(
+                    destination,
+                    Some(Some(101)),
+                    "window at stop, before pipeline wakes"
+                );
+                assert_eq!(
+                    self.capture_destination(),
+                    Some(202),
+                    "focus moved while processing"
+                );
+                Box::pin(async {
+                    InjectionOutcome::Failed {
+                        error: ProtoError::new(
+                            ErrorCode::InjectionFailed,
+                            "Dictation copied: focus changed",
+                        ),
+                    }
+                })
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+        }
+
+        for privacy in [false, true] {
+            let dir = std::path::Path::new("/tmp")
+                .join(format!("dictate-binding-{}", uuid::Uuid::new_v4()));
+            let history = Arc::new(Mutex::new(
+                dictate_history::HistoryStore::new(&dictate_history::HistoryConfig {
+                    db_path: dir.join("history.db").to_string_lossy().into_owned(),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ));
+            let injector = Arc::new(BoundInjector(AtomicU32::new(101)));
+            let notifier = Arc::new(RecordingNotifier::default());
+            let pipeline = Arc::new(Pipeline {
+                context: Arc::new(dictate_context::ContextEngine::disabled()),
+                audio: Arc::new(MockAudio::with_seconds(1.0)),
+                stt: Arc::new(MockStt::returning("synthetic dictation")),
+                dictionary: None,
+                vad: Arc::new(
+                    dictate_vad::SileroVad::new(dictate_vad::VadConfig {
+                        enabled: false,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                ),
+                text_chain: Arc::new(dictate_fmt::TextChain::default()),
+                formatter: Arc::new(MockFormatter::default()),
+                injector: injector.clone(),
+                notifier: notifier.clone(),
+                media: Arc::new(NullMedia),
+                earcons: Arc::new(NullEarcons),
+                history: history.clone(),
+                local: Arc::new(crate::local_executor::LocalExecutor::new(
+                    &Default::default(),
+                )),
+                timer: Arc::new(crate::timer::TimerExecutor::new(&Default::default())),
+                local_model: "synthetic".into(),
+            });
+            let (mut engine, _handle) =
+                Engine::new(pipeline, EventBus::new(64), Default::default());
+            let opts = resolve_options(
+                Some(&SessionOptions {
+                    privacy: Some(privacy),
+                    ..Default::default()
+                }),
+                &Capabilities::local_trusted(),
+            )
+            .unwrap();
+            let binding = opts.stop_destination.clone().unwrap();
+            engine
+                .handle_start(&Actor::Signal, DictationMode::Toggle, opts)
+                .await
+                .unwrap();
+            engine.handle_stop(&Actor::Signal).unwrap();
+            assert_eq!(*binding.lock().unwrap(), Some(Some(101)));
+            injector.0.store(202, Ordering::SeqCst);
+            let finished =
+                tokio::time::timeout(std::time::Duration::from_secs(5), engine.rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let EngineRequest::SessionFinished { outcome, .. } = finished else {
+                panic!("terminal outcome");
+            };
+            assert!(
+                matches!(outcome.transcript.unwrap().injection, InjectionOutcome::Failed { ref error }
+                if error.message == "Dictation copied: focus changed")
+            );
+            assert!(notifier.notices().contains(&Notice::InjectionFailed(
+                "Dictation copied: focus changed".into()
+            )));
+            assert!(
+                !notifier
+                    .notices()
+                    .iter()
+                    .any(|n| matches!(n, Notice::Error(_))),
+                "ordinary error notifier overwrites clipboard"
+            );
+            let store = history.lock().unwrap();
+            let count: i64 = store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM interactions", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, if privacy { 0 } else { 1 });
+            if !privacy {
+                let row: (bool, String) = store
+                    .connection()
+                    .query_row(
+                        "SELECT output_typed, error_summary FROM interactions",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(row, (false, "Dictation copied: focus changed".into()));
+            }
+            drop(store);
+            drop(engine);
+            drop(history);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     fn caps(text_injection: bool) -> Capabilities {
         let mut c = Capabilities::local_trusted();
@@ -920,6 +1080,19 @@ mod tests {
             assert_eq!(
                 resolve_options(Some(&options), &c).unwrap().capture_context,
                 want
+            );
+            assert!(
+                resolve_upload_options(
+                    Some(&SessionOptions {
+                        inject: Some(true),
+                        ..Default::default()
+                    }),
+                    &Capabilities::local_trusted()
+                )
+                .unwrap()
+                .stop_destination
+                .is_none(),
+                "uploads never bind to host focus"
             );
             assert!(
                 !resolve_upload_options(None, &c).unwrap().capture_context,
