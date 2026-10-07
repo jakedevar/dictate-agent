@@ -315,6 +315,9 @@ impl Masked {
     ///
     /// Any [`SpanError`] — the output must then be rejected.
     pub fn restore(&self, output: &str) -> Result<String, SpanError> {
+        // Recasing can change UTF-8 byte lengths (e.g. Kelvin sign ↔ k).
+        // All offsets must be measured in the final string we slice.
+        let output = &self.keep_continuation_case(output);
         let found: Vec<(Range<usize>, usize)> = self
             .style
             .pattern()
@@ -347,7 +350,6 @@ impl Masked {
 
         let mut restored = String::with_capacity(output.len() + self.prefix.len() + 64);
         restored.push_str(&self.prefix);
-        let output = &self.keep_continuation_case(output);
         let mut pos = 0;
         for (range, n) in &found {
             let before = output[..range.start].chars().next_back();
@@ -694,6 +696,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.restore("Look at ⟦1⟧.").unwrap(), "Look at src/a.rs.");
+    }
+
+    #[test]
+    fn continuation_recasing_keeps_unicode_span_offsets_valid() {
+        for style in MaskStyle::ALL {
+            for (input, output_first, expected_first) in [
+                ("/review k check src/a.rs", "K", "k"),
+                ("/review K check src/a.rs", "k", "K"),
+            ] {
+                let m = mask(input, &normalize_spans(input, &[], true).unwrap(), style).unwrap();
+                let output = format!("{output_first} check {}.", style.token(1));
+                assert_eq!(
+                    m.restore(&output).unwrap(),
+                    format!("/review {expected_first} check src/a.rs.")
+                );
+            }
+        }
     }
 
     #[test]

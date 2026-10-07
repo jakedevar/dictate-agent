@@ -33,3 +33,6 @@ rusqlite = { workspace = true, optional = true }
 [[example]]
 name = "eval_llm"
 required-features = ["eval-live"]
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

@@ -65,6 +65,8 @@ pub struct LlmRequest {
     pub vocabulary: Vec<String>,
     /// Detected or pinned STT language (BCP-47).
     pub language: Option<String>,
+    /// Suppress dictated words in diagnostics for a private session.
+    pub private: bool,
 }
 
 impl LlmRequest {
@@ -317,9 +319,23 @@ impl LlmFormatter {
                     return (fail(e.to_string(), None), LlmTrace::default());
                 }
             };
-        let model = match self.resolver.ensure(self.backend.as_ref()).await {
-            Ok(m) => m,
-            Err(reason) => {
+        let total_words = req.text.split_whitespace().count();
+        let budget = self.config.timeout.for_words(total_words);
+        let deadline = start + budget;
+        let model = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.resolver.ensure(self.backend.as_ref()),
+        )
+        .await
+        {
+            Ok(Ok(m)) => m,
+            Err(_) => {
+                return (
+                    fail(BackendError::Timeout(budget).to_string(), None),
+                    LlmTrace::default(),
+                )
+            }
+            Ok(Err(reason)) => {
                 return (
                     fail(format!("no LLM model available: {reason}"), None),
                     LlmTrace::default(),
@@ -327,13 +343,11 @@ impl LlmFormatter {
             }
         };
 
-        let total_words = req.text.split_whitespace().count();
         let ranges: Vec<Range<usize>> = if total_words > self.config.chunking.max_single_words {
             chunk::split(&req.text, &spans, self.config.chunking.chunk_words)
         } else {
             std::iter::once(0..req.text.len()).collect()
         };
-        let deadline = start + self.config.timeout.for_words(total_words);
         let policy = self.config.categories.get(&req.category).clone();
 
         let jobs: Vec<SegmentJob> = ranges
@@ -364,6 +378,7 @@ impl LlmFormatter {
             temperature: self.config.temperature,
             timeout: self.config.timeout.clone(),
             deadline,
+            private: req.private,
         });
         let results = run_segments(ctx, jobs, self.config.chunking.concurrency).await;
 
@@ -408,10 +423,14 @@ impl LlmFormatter {
             text,
         };
         match (&outcome.error, &outcome.validator_rejection) {
-            (Some(e), _) => warn!(
+            (Some(_), rejection) => warn!(
                 model = outcome.model.as_deref().unwrap_or(""),
                 ms = outcome.duration.as_millis() as u64,
-                "LLM pass failed open: {e}"
+                validator = rejection
+                    .as_ref()
+                    .map(|r| r.validator.as_str())
+                    .unwrap_or(""),
+                "LLM pass failed open"
             ),
             (None, Some(r)) => warn!(
                 applied,
@@ -435,6 +454,18 @@ impl LlmFormatter {
     ///
     /// The reason no model could be loaded.
     pub async fn warm_up(&self, prime: Option<(&AppCategory, &Tone)>) -> Result<Duration, String> {
+        // One budget covers lookup, load and cache priming, including fake or
+        // third-party backends that have no transport timeout of their own.
+        let budget = Duration::from_millis(self.config.timeout.max_ms);
+        tokio::time::timeout(budget, self.warm_up_bounded(prime))
+            .await
+            .map_err(|_| BackendError::Timeout(budget).to_string())?
+    }
+
+    async fn warm_up_bounded(
+        &self,
+        prime: Option<(&AppCategory, &Tone)>,
+    ) -> Result<Duration, String> {
         if !self.config.enabled {
             return Err("LLM formatting is disabled".into());
         }
@@ -556,6 +587,7 @@ struct SegmentCtx {
     temperature: f32,
     timeout: config::TimeoutPolicy,
     deadline: Instant,
+    private: bool,
 }
 
 struct SegmentResult {
@@ -573,10 +605,6 @@ async fn run_segments(
     jobs: Vec<SegmentJob>,
     concurrency: usize,
 ) -> Vec<SegmentResult> {
-    if jobs.len() == 1 {
-        let job = jobs.into_iter().next().expect("one job");
-        return vec![format_segment(&ctx, job).await];
-    }
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let n = jobs.len();
@@ -592,7 +620,7 @@ async fn run_segments(
     while let Some(joined) = set.join_next().await {
         match joined {
             Ok((i, r)) => out[i] = Some(r),
-            Err(e) => warn!("LLM chunk task failed: {e}"),
+            Err(_) => warn!("LLM chunk task failed"),
         }
     }
     out.into_iter()
@@ -693,7 +721,17 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
             let e = BackendError::Timeout(timeout);
             return unchanged(trace, Some(e.to_string()), None, Some(e));
         }
-        Ok(Err(e)) => return unchanged(trace, Some(e.to_string()), None, Some(e)),
+        Ok(Err(e)) => {
+            // A server error body can echo its prompt. Preserve the error
+            // class for health reporting, but never forward private text to
+            // the resolver, pipeline timings or status notifier.
+            let e = if ctx.private {
+                private_backend_error(e, &ctx.model)
+            } else {
+                e
+            };
+            return unchanged(trace, Some(e.to_string()), None, Some(e));
+        }
         Ok(Ok(r)) => r,
     };
 
@@ -702,7 +740,10 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
     let truncated = response.done_reason.as_deref() == Some("length");
     trace.response = Some(response);
 
-    let reject = |trace, r: Rejection| {
+    let reject = |trace, mut r: Rejection| {
+        if ctx.private {
+            r.detail = "private session; detail suppressed".into();
+        }
         let msg = format!("validator rejected output: {r}");
         unchanged(trace, Some(msg), Some(r), None)
     };
@@ -746,6 +787,20 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
     }
 }
 
+fn private_backend_error(error: BackendError, model: &str) -> BackendError {
+    let suppressed = || "private session; detail suppressed".to_string();
+    match error {
+        BackendError::Unreachable(_) => BackendError::Unreachable(suppressed()),
+        BackendError::ModelMissing(_) => BackendError::ModelMissing(model.to_string()),
+        BackendError::Timeout(duration) => BackendError::Timeout(duration),
+        BackendError::Http { status, .. } => BackendError::Http {
+            status,
+            message: suppressed(),
+        },
+        BackendError::Malformed(_) => BackendError::Malformed(suppressed()),
+    }
+}
+
 /// Deterministic repairs of harmless wrapping, before validation: a
 /// `<think>` block, echoed delimiters around the whole reply, and one pair of
 /// quotes around the whole reply when the input was not quoted.
@@ -779,6 +834,51 @@ fn clean_output(raw: &str, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PanickingBackend;
+
+    impl ChatBackend for PanickingBackend {
+        fn chat<'a>(
+            &'a self,
+            _: &'a ChatRequest,
+        ) -> client::BoxFuture<'a, Result<ChatResponse, BackendError>> {
+            Box::pin(async { panic!("synthetic backend panic") })
+        }
+        fn list_models(
+            &self,
+        ) -> client::BoxFuture<'_, Result<Vec<client::InstalledModel>, BackendError>> {
+            Box::pin(async {
+                Ok(vec![client::InstalledModel {
+                    name: "gemma4:e4b".into(),
+                    family: String::new(),
+                    size: 0,
+                }])
+            })
+        }
+        fn load<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> client::BoxFuture<'a, Result<Duration, BackendError>> {
+            Box::pin(async { Ok(Duration::ZERO) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_segment_panic_fails_open() {
+        let f = LlmFormatter::with_backend(
+            LlmConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            Arc::new(PanickingBackend),
+        );
+        let req = LlmRequest::new("please check the synthetic example");
+        let out = f.format(&req).await;
+        assert_eq!(out.text, req.text);
+        assert!(!out.changed);
+        assert_eq!(out.error.as_deref(), Some("chunk task failed"));
+    }
 
     #[test]
     fn clean_output_repairs_only_whole_wrapping() {

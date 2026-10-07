@@ -95,6 +95,7 @@ impl Case {
             tone: self.tone.clone(),
             vocabulary: self.vocabulary.clone(),
             language: None,
+            private: false,
         })
     }
 

@@ -91,13 +91,64 @@ impl CategoryPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CategoryPolicies {
+    #[serde(deserialize_with = "deserialize_verbatim")]
     pub terminal: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_verbatim")]
     pub editor: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub browser: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_chat")]
     pub chat: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_email")]
     pub email: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub document: CategoryPolicy,
+    #[serde(deserialize_with = "deserialize_structured")]
     pub other: CategoryPolicy,
+}
+
+// A category table is a patch over that category's defaults. Deserializing
+// it directly as CategoryPolicy would give every omitted field prose defaults.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct CategoryPatch {
+    enabled: Option<bool>,
+    style: Option<Style>,
+    structure: Option<bool>,
+}
+
+fn deserialize_policy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    mut policy: CategoryPolicy,
+) -> Result<CategoryPolicy, D::Error> {
+    let patch = CategoryPatch::deserialize(deserializer)?;
+    if let Some(enabled) = patch.enabled {
+        policy.enabled = enabled;
+    }
+    if let Some(style) = patch.style {
+        policy.style = style;
+    }
+    if let Some(structure) = patch.structure {
+        policy.structure = structure;
+    }
+    Ok(policy)
+}
+
+fn deserialize_verbatim<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<CategoryPolicy, D::Error> {
+    deserialize_policy(d, CategoryPolicy::verbatim())
+}
+fn deserialize_structured<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<CategoryPolicy, D::Error> {
+    deserialize_policy(d, CategoryPolicy::prose(true))
+}
+fn deserialize_chat<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CategoryPolicy, D::Error> {
+    deserialize_policy(d, CategoryPolicy::prose(false))
+}
+fn deserialize_email<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CategoryPolicy, D::Error> {
+    deserialize_policy(d, CategoryPolicy::email())
 }
 
 impl Default for CategoryPolicies {
@@ -460,10 +511,12 @@ struct LegacyGrammar {
 
 impl LegacyGrammar {
     fn into_config(self) -> LlmConfig {
-        let mut config = LlmConfig::default();
-        if let Some(enabled) = self.enabled {
-            config.enabled = enabled;
-        }
+        // The historical [grammar] table enabled the pass unless explicitly
+        // opted out; the new default (no table) remains disabled.
+        let mut config = LlmConfig {
+            enabled: self.enabled.unwrap_or(true),
+            ..LlmConfig::default()
+        };
         if let Some(host) = self.host {
             config.host = host;
         }
@@ -493,6 +546,30 @@ mod tests {
     fn load(toml_src: &str) -> LlmConfigLoad {
         let root: toml::Table = toml::from_str(toml_src).unwrap();
         LlmConfig::from_document(&root).unwrap()
+    }
+
+    #[test]
+    fn partial_category_tables_preserve_each_categorys_defaults() {
+        for category in [
+            "terminal", "editor", "browser", "chat", "email", "document", "other",
+        ] {
+            let text = format!("[format.llm.categories.{category}]\nenabled = false\n");
+            let loaded = load(&text).config;
+            let raw: crate::FormatConfig =
+                toml::from_str(&format!("[llm.categories.{category}]\nenabled = false\n")).unwrap();
+            let mut expected = CategoryPolicies::default()
+                .get(&AppCategory::from(category))
+                .clone();
+            expected.enabled = false;
+            assert_eq!(
+                loaded.categories.get(&AppCategory::from(category)),
+                &expected
+            );
+            assert_eq!(
+                raw.llm.categories.get(&AppCategory::from(category)),
+                &expected
+            );
+        }
     }
 
     #[test]
@@ -600,6 +677,14 @@ min_words = 3
     fn legacy_model_already_in_the_ladder_is_not_duplicated() {
         let l = load("[grammar]\nmodel = \"gemma4:12b\"\n");
         assert_eq!(l.config.models, ["gemma4:12b", "gemma4:e4b"]);
+    }
+
+    #[test]
+    fn legacy_table_without_enabled_keeps_the_historical_opt_in() {
+        for text in ["[grammar]\n", "[grammar]\nmodel = \"qwen3:14b\"\n"] {
+            assert!(load(text).config.enabled);
+        }
+        assert!(!load("").config.enabled);
     }
 
     #[test]

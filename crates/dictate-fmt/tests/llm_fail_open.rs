@@ -761,3 +761,50 @@ fn skip_rules_are_decided_before_the_model_is_called() {
     );
     assert_eq!(disabled.health(), LlmHealth::Disabled);
 }
+
+#[tokio::test]
+async fn model_probe_is_inside_the_pass_deadline() {
+    let fake = Fake::start(|_, _| Reply::Hang).await;
+    let mut c = config(&fake.host());
+    c.timeout.base_ms = 50;
+    c.timeout.per_word_ms = 0;
+    c.timeout.max_ms = 50;
+    let f = LlmFormatter::new(c);
+    let started = std::time::Instant::now();
+    let out = f.format(&request(INPUT)).await;
+    assert_failed_open(&out, INPUT, "timed out");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(fake.chat_requests().is_empty());
+}
+
+#[tokio::test]
+async fn warmup_prime_times_out_and_background_warmup_can_retry() {
+    let fake = Fake::start(|path, body| match path {
+        "/api/tags" => tags(&["gemma4:e4b"]),
+        _ if body["messages"].as_array().is_some_and(Vec::is_empty) => chat(""),
+        _ => Reply::Hang,
+    })
+    .await;
+    let mut c = config(&fake.host());
+    c.timeout.max_ms = 50;
+    let f = Arc::new(LlmFormatter::new(c));
+    let started = std::time::Instant::now();
+    let err = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))),
+    )
+    .await
+    .expect("warm-up must enforce its own deadline")
+    .unwrap_err();
+    assert!(err.contains("timed out"));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        fake.chat_requests().len(),
+        6,
+        "a timed-out prime must release the warming flag"
+    );
+}
