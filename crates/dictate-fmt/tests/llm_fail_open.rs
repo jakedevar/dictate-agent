@@ -761,3 +761,35 @@ fn skip_rules_are_decided_before_the_model_is_called() {
     );
     assert_eq!(disabled.health(), LlmHealth::Disabled);
 }
+
+#[tokio::test]
+async fn private_rejection_logs_no_dictated_words() {
+    #[derive(Clone)]
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let writer = LogWriter(log.clone());
+    let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
+        .with_writer(move || writer.clone()).finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let fake = Fake::start(|path, _| match path {
+        "/api/tags" => tags(&["gemma4:e4b"]),
+        _ => chat("Please check the logs."),
+    }).await;
+    let f = LlmFormatter::new(config(&fake.host()));
+    let req = LlmRequest { private: true, ..request("please check the logs for syntheticsecret") };
+    let out = f.format(&req).await;
+    assert_eq!(out.text, req.text);
+    assert!(out.validator_rejection.is_some());
+    assert!(!out.error.unwrap().contains("syntheticsecret"));
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("LLM pass failed open"), "{logged}");
+    assert!(!logged.contains("syntheticsecret"), "{logged}");
+    assert!(!logged.contains(&req.text), "{logged}");
+}

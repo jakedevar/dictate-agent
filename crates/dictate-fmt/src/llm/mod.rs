@@ -65,6 +65,8 @@ pub struct LlmRequest {
     pub vocabulary: Vec<String>,
     /// Detected or pinned STT language (BCP-47).
     pub language: Option<String>,
+    /// Suppress dictated words in diagnostics for a private session.
+    pub private: bool,
 }
 
 impl LlmRequest {
@@ -364,6 +366,7 @@ impl LlmFormatter {
             temperature: self.config.temperature,
             timeout: self.config.timeout.clone(),
             deadline,
+            private: req.private,
         });
         let results = run_segments(ctx, jobs, self.config.chunking.concurrency).await;
 
@@ -408,10 +411,11 @@ impl LlmFormatter {
             text,
         };
         match (&outcome.error, &outcome.validator_rejection) {
-            (Some(e), _) => warn!(
+            (Some(_), rejection) => warn!(
                 model = outcome.model.as_deref().unwrap_or(""),
                 ms = outcome.duration.as_millis() as u64,
-                "LLM pass failed open: {e}"
+                validator = rejection.as_ref().map(|r| r.validator.as_str()).unwrap_or(""),
+                "LLM pass failed open"
             ),
             (None, Some(r)) => warn!(
                 applied,
@@ -556,6 +560,7 @@ struct SegmentCtx {
     temperature: f32,
     timeout: config::TimeoutPolicy,
     deadline: Instant,
+    private: bool,
 }
 
 struct SegmentResult {
@@ -698,7 +703,10 @@ async fn format_segment(ctx: &SegmentCtx, job: SegmentJob) -> SegmentResult {
     let truncated = response.done_reason.as_deref() == Some("length");
     trace.response = Some(response);
 
-    let reject = |trace, r: Rejection| {
+    let reject = |trace, mut r: Rejection| {
+        if ctx.private {
+            r.detail = "private session; detail suppressed".into();
+        }
         let msg = format!("validator rejected output: {r}");
         unchanged(trace, Some(msg), Some(r), None)
     };

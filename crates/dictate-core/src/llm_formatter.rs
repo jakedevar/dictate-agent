@@ -63,6 +63,7 @@ impl LlmFormatterPort {
             tone: ctx.tone.clone(),
             vocabulary: ctx.vocabulary.clone(),
             language: ctx.language.clone(),
+            private: !ctx.persist,
         }
     }
 
@@ -267,6 +268,15 @@ mod tests {
             route: Route::Type,
             ..FormatContext::default()
         }
+    }
+
+    #[test]
+    fn private_context_reaches_the_llm_request() {
+        let mut context = ctx("synthetic-terminal", AppCategory::Terminal);
+        context.persist = false;
+        assert!(LlmFormatterPort::request("synthetic private words", &context).private);
+        context.persist = true;
+        assert!(!LlmFormatterPort::request("synthetic public words", &context).private);
     }
 
     #[tokio::test]
