@@ -3,7 +3,7 @@ You are a short-lived RSI worker on dictate-agent: a local-first, Rust, Wispr Fl
 ## Start (mandatory, in order)
 1. `git merge --ff-only 6cd2be996de2aebd29d647ee7169c0f18da08873` — the manager's integration tip with S03, S20, S22 and S23 merged (a descendant of `master`; all sandboxes share one object store). Confirm with `git log -1` and a clean `git status`.
 2. Read in order: `thoughts/shared/manager/worker-contract.md` (binding rules — environment, isolation, verification, RESULT format), `CLAUDE.md`, `thoughts/shared/plans/2026-09-29-wave2-integration-contract.md` (binding: pipeline order §1, shared types §2, file ownership §3, conventions §4), then your slice's section in `thoughts/shared/plans/2026-08-07-wisprflow-parity-master-slice-map.md`.
-3. Establish the baseline yourself before editing: `export PATH="/opt/cuda/bin:$PATH"; cargo test --workspace --all-targets 2>&1 | tee /tmp/<slice>-baseline.log` (expect 696 passed, 0 failed; the first build compiles whisper.cpp+CUDA for ~5 min — run it in the foreground with a long timeout; never end your turn to wait).
+3. Establish the baseline yourself before editing: `export PATH="/opt/cuda/bin:$PATH"; cargo test --workspace --all-targets 2>&1 | tee /tmp/<slice>-baseline.log` (expect 696 passed, 0 failed; default builds are CPU-only and never compile the CUDA backend; run long builds in the foreground with a long timeout and never end your turn to wait; gate with `just check-cpu`).
 
 ## Facts verified by the manager on 2026-09-29 (do not re-derive)
 - Jake's daily driver is `~/.local/bin/dictate-agent` (June 2026 monolithic Rust build), not the Python daemon and not `dictated`. Never stop, signal or reconfigure it; never write under `~/.config/dictate-agent/` or `~/.local/share/dictate-agent/`.
@@ -45,5 +45,5 @@ Work key `R1`. Handoff note: `thoughts/shared/handoffs/general/2026-09-30_r1-rev
 Anything not listed; S21/S13b/S32 areas. File new defects as Issues.
 
 ## Acceptance
-Every key above fixed with a failing-first regression test; your RESULT line lists the resolved keys per source slice; workspace gates from the worker contract (including the feature-gated clippy lines and `cargo test -p dictate-context --features x11-tests`) green with exact counts.
+Every key above fixed with a failing-first regression test; your RESULT line lists the resolved keys per source slice; `just check-cpu` (the worker gate: tests, clippy incl. the feature-gated lines, fmt, cli tree) green; the CUDA variants are the integrator's with exact counts.
 

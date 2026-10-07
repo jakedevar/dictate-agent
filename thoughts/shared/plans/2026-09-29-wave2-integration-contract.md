@@ -146,13 +146,17 @@ append in your own block; do not reorder or reformat others' entries.
 - **Performance budgets (p50, RTX 5080):** text stages < 1 ms per 100 words and
   < 5 ms for 1,500 words; LLM pass ≤ 400 ms for a 50-word utterance; end to
   end ≤ 1.0 s for a 10 s utterance. Measure; do not assume.
-- **Quality gates for every slice:** `cargo test --workspace --all-targets`
-  (no new failures, count ≥ base + new tests), `cargo clippy --workspace
-  --all-targets -- -D warnings` plus the feature-gated targets
+- **Quality gates for every slice:** `just check-cpu` — `cargo test --workspace
+  --all-targets` (no new failures, count ≥ base + new tests), `cargo clippy
+  --workspace --all-targets -- -D warnings` plus the feature-gated targets
   (`-p dictated --features e2e-real`, `-p dictate-context --features
   x11-tests`), `cargo fmt --all -- --check`, and
   `cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'` empty (the
-  hotkey CLI must not link the transcription stack).
+  hotkey CLI must not link the transcription stack). The gate is CPU-only: it
+  never compiles whisper.cpp's CUDA backend. The integrator runs the CUDA
+  variants once per integration (`just check-cuda`, then the real-GPU
+  `just e2e`, WER 0.000); a slice whose diff touches `dictate-stt`, the
+  transcription path or the CUDA config runs them itself too.
 
 ## 5. Dispatch plan
 
