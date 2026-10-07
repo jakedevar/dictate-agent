@@ -168,7 +168,10 @@ async fn a_non_type_route_skips_the_llm_as_route_not_eligible() {
     );
     assert_eq!(formatter.calls(), 0, "the LLM pass never ran");
     assert!(matches!(t.timings.fmt_rules, StageTiming::Ran { .. }));
-    assert!(matches!(t.injection, InjectionOutcome::Skipped { .. }));
+    // EDIT is implemented by S25, but this formatting fixture has no selection.
+    // It must fail closed without invoking the prose formatter or typing.
+    assert!(matches!(t.injection, InjectionOutcome::Failed { .. }));
+    assert!(h.injector.replacements().is_empty());
     assert!(h.injector.injected().is_empty());
     h.stop().await;
 }

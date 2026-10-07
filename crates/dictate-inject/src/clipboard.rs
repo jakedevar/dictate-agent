@@ -63,6 +63,10 @@ pub(crate) struct PasteSelection {
 }
 
 impl PasteSelection {
+    pub(crate) fn owner(&self) -> u32 {
+        self.window
+    }
+
     pub(crate) fn new(text: &str) -> Result<Self> {
         let (conn, screen) = x11rb::connect(None).context("opening paste selection")?;
         // Normal dictations fit a single X11 property. Oversized transfers use
@@ -122,6 +126,14 @@ impl PasteSelection {
     }
 
     pub(crate) fn transfer(&self, text: &str) -> Result<()> {
+        self.transfer_inner(text, None)
+    }
+
+    pub(crate) fn transfer_to(&self, text: &str, window: u32) -> Result<()> {
+        self.transfer_inner(text, Some(window))
+    }
+
+    fn transfer_inner(&self, text: &str, destination: Option<u32>) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             match self.conn.poll_for_event()? {
@@ -132,6 +144,34 @@ impl PasteSelection {
                         request.property
                     };
                     let is_text = self.text_targets.contains(&request.target);
+                    if let Some(window) = destination {
+                        let mask = !self.conn.setup().resource_id_mask;
+                        // Clipboard managers and other applications must not
+                        // consume or receive an EDIT replacement. Compare X11
+                        // client IDs, allowing the app's hidden request window.
+                        if (request.requestor & mask) != (window & mask) {
+                            self.conn
+                                .send_event(
+                                    false,
+                                    request.requestor,
+                                    EventMask::NO_EVENT,
+                                    SelectionNotifyEvent {
+                                        response_type: SELECTION_NOTIFY_EVENT,
+                                        sequence: 0,
+                                        time: request.time,
+                                        requestor: request.requestor,
+                                        selection: request.selection,
+                                        target: request.target,
+                                        property: NONE,
+                                    },
+                                )?
+                                .check()?;
+                            continue;
+                        }
+                        if self.conn.get_input_focus()?.reply()?.focus != window {
+                            return Err(anyhow!("edit destination changed before paste transfer"));
+                        }
+                    }
                     let accepted = if request.target == self.targets {
                         let mut targets = self.text_targets.clone();
                         targets.push(self.targets);

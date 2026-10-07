@@ -233,6 +233,7 @@ pub struct SessionHandle {
     bus: EventBus,
     supplied: Option<Arc<SuppliedAudio>>,
     stop_profile: Arc<Mutex<Option<dictate_proto::ResolvedProfile>>>,
+    stop_edit_destination: Arc<Mutex<Option<Option<u32>>>>,
 }
 
 /// Audio a session was handed instead of capturing it.
@@ -263,6 +264,7 @@ impl SessionHandle {
             bus,
             supplied: None,
             stop_profile: Arc::new(Mutex::new(None)),
+            stop_edit_destination: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -297,6 +299,20 @@ impl SessionHandle {
             .lock()
             .expect("stop profile mutex poisoned")
             .clone()
+    }
+
+    pub(crate) fn set_stop_edit_destination(&self, window: Option<u32>) {
+        self.stop_edit_destination
+            .lock()
+            .expect("edit destination mutex poisoned")
+            .get_or_insert(window);
+    }
+
+    pub(crate) fn stop_edit_destination(&self) -> Option<Option<u32>> {
+        *self
+            .stop_edit_destination
+            .lock()
+            .expect("edit destination mutex poisoned")
     }
 
     /// The audio this session was handed, when it is an upload.

@@ -24,7 +24,7 @@ const LOCAL_TRIGGERS: &[&str] = &["simple", "easy", "medium", "hard"];
 ///
 /// Priority:
 /// 1. Empty text → Type
-/// 2. Edit triggers (colon-suffixed) → Edit
+/// 2. Edit triggers (colon-suffixed, or spoken "edit") → Edit
 /// 3. "timer" prefix → Timer
 /// 4. LOCAL_TRIGGERS prefix → Local
 /// 5. Default → Type (with original text preserved)
@@ -61,6 +61,17 @@ pub fn route(text: &str) -> RouteResult {
     // Normalize first word: lowercase, strip trailing punctuation
     let first_clean = first.to_lowercase();
     let first_clean = first_clean.trim_end_matches(&['.', ',', '!', '?', ':', ';'][..]);
+
+    // A spoken "edit" usually has no dictated colon. Keep other verbs
+    // colon-only so ordinary dictation such as "change the setting" stays Type.
+    if first_clean == "edit" {
+        return RouteResult {
+            route: RouteType::Edit,
+            model: "local".into(),
+            text: rest.into(),
+            confidence: 1.0,
+        };
+    }
 
     if first_clean == "timer" {
         return RouteResult {
@@ -128,6 +139,20 @@ mod tests {
         let result = route("Edit: fix this sentence");
         assert_eq!(result.route, RouteType::Edit);
         assert_eq!(result.text, "fix this sentence");
+    }
+
+    #[test]
+    fn spoken_edit_prefix_and_ordinary_verbs() {
+        assert_eq!(route("Edit make this formal").route, RouteType::Edit);
+        assert_eq!(route("edit").route, RouteType::Edit);
+        for text in [
+            "editable text",
+            "change the setting",
+            "rewrite history",
+            "fix the deployment",
+        ] {
+            assert_eq!(route(text).route, RouteType::Type);
+        }
     }
 
     #[test]

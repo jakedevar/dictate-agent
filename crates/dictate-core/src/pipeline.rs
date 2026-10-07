@@ -225,6 +225,8 @@ pub struct Pipeline {
     pub history: Arc<Mutex<HistoryStore>>,
     /// Ollama executor for the `local` route.
     pub local: Arc<LocalExecutor>,
+    /// Selection rewrite executor (S25).
+    pub editor: Arc<crate::edit_executor::EditExecutor>,
     /// `systemd-run` executor for the `timer` route.
     pub timer: Arc<TimerExecutor>,
     /// Model name used by the `local` route, for notifications.
@@ -346,6 +348,39 @@ impl Pipeline {
                 });
             }
         }
+
+        // Pin EDIT to the stop-time widget before recognition can outlast focus.
+        // Uploads and callers without injection never read a host selection.
+        let edit_destination = if !upload
+            && opts.inject
+            && opts.capture_context
+            && context_policy(&opts.profile) != Some(dictate_inject::InjectionPolicy::Off)
+        {
+            if let Some(window) = handle.stop_edit_destination() {
+                window
+            } else {
+                // A VAD stop has no explicit engine stop action.
+                let injector = self.injector.clone();
+                match self
+                    .race(&token, async move {
+                        tokio::task::spawn_blocking(move || injector.edit_destination())
+                            .await
+                            .ok()
+                            .flatten()
+                    })
+                    .await
+                {
+                    Step::Continue(window) => window,
+                    Step::Cancelled => {
+                        return self
+                            .finish(&handle, stages, None, Outcome::cancelled())
+                            .await
+                    }
+                }
+            }
+        } else {
+            None
+        };
 
         let mut interaction = {
             let store = self.history.lock().expect("history mutex poisoned");
@@ -695,7 +730,7 @@ impl Pipeline {
             info!("Routed to {:?}: \"{}\"", resolved_route, routed.text);
         }
 
-        interaction.route_type = Some(format!("{:?}", routed.route).to_lowercase());
+        interaction.route_type = Some(resolved_route.as_str().to_string());
         interaction.route_model = Some(routed.model.clone());
         interaction.route_confidence = Some(routed.confidence);
 
@@ -827,6 +862,7 @@ impl Pipeline {
                 resolved_route.clone(),
                 &routed.text,
                 &text,
+                edit_destination,
             )
             .await;
 
@@ -963,6 +999,7 @@ impl Pipeline {
         route: Route,
         route_text: &str,
         full_text: &str,
+        edit_destination: Option<u32>,
     ) -> Step<(String, InjectionOutcome)> {
         match route {
             Route::Type => {
@@ -977,6 +1014,22 @@ impl Pipeline {
                         Step::Continue((full_text.to_string(), o))
                     }
                 }
+            }
+            Route::Edit => {
+                let instruction = if router::route(full_text).route == RouteType::Edit {
+                    route_text
+                } else {
+                    full_text
+                };
+                self.edit(
+                    token,
+                    stages,
+                    interaction,
+                    opts,
+                    instruction,
+                    edit_destination,
+                )
+                .await
             }
             Route::Local => {
                 self.notifier
@@ -1067,7 +1120,7 @@ impl Pipeline {
                 ))
             }
             other => {
-                // `edit` and `command` are named by the protocol but have no
+                // `command` is named by the protocol but has no
                 // implementation yet. Reporting the stage as `not_supported`
                 // is the honest answer; inventing a plausible-looking success
                 // would corrupt the parity measurements.
@@ -1084,6 +1137,148 @@ impl Pipeline {
                 ))
             }
         }
+    }
+
+    async fn edit(
+        &self,
+        token: &CancelToken,
+        stages: &mut Stages,
+        interaction: &mut Interaction,
+        opts: &ResolvedOptions,
+        instruction: &str,
+        destination: Option<u32>,
+    ) -> Step<(String, InjectionOutcome)> {
+        // Ctrl+C is a copy operation in editors, but interrupts shell programs.
+        // Never send it to a terminal, or read selections for an upload.
+        if !opts.inject
+            || !opts.capture_context
+            || destination.is_none()
+            || context_policy(&opts.profile)
+                .is_some_and(|policy| policy != dictate_inject::InjectionPolicy::Paste)
+            || opts
+                .context
+                .as_ref()
+                .is_some_and(|c| c.category == dictate_proto::AppCategory::Terminal)
+        {
+            stages.timings.inject = StageTiming::skipped(SkipReason::NotPermitted);
+            interaction.execution_success = Some(false);
+            return Step::Continue((
+                String::new(),
+                InjectionOutcome::Skipped {
+                    reason: SkipReason::NotPermitted,
+                },
+            ));
+        }
+        if instruction
+            .trim()
+            .trim_matches(['.', ',', ':', ';', '!', '?'])
+            .trim()
+            .is_empty()
+        {
+            return self.edit_failure(stages, interaction, "edit instruction is empty".into());
+        }
+        let selection = match self
+            .race(
+                token,
+                self.injector
+                    .capture_selection(destination.expect("checked above")),
+            )
+            .await
+        {
+            Step::Cancelled => return Step::Cancelled,
+            Step::Continue(Ok(selection)) => selection,
+            Step::Continue(Err(error)) => {
+                return self.edit_failure(stages, interaction, error.to_string())
+            }
+        };
+        self.notifier
+            .notify(Notice::Processing(self.local_model.clone()));
+        let clock = StageClock::start();
+        let replacement = match self
+            .race(token, self.editor.execute(instruction, &selection.text))
+            .await
+        {
+            Step::Cancelled => {
+                stages.timings.fmt_llm = clock.failed("cancelled during edit");
+                return Step::Cancelled;
+            }
+            Step::Continue(Ok(text)) => {
+                stages.timings.fmt_llm = clock.ran();
+                text
+            }
+            Step::Continue(Err(error)) => {
+                stages.timings.fmt_llm = clock.failed(error.to_string());
+                return self.edit_failure(stages, interaction, error.to_string());
+            }
+        };
+        if self.editor.preview_only {
+            if token.is_cancelled() {
+                return Step::Cancelled;
+            }
+            // Preview can contain selected text; privacy mode suppresses it.
+            if !opts.privacy
+                && !self
+                    .history
+                    .lock()
+                    .map(|store| store.is_privacy_mode())
+                    .unwrap_or(true)
+            {
+                self.notifier
+                    .notify(Notice::EditPreview(replacement.clone()));
+            }
+            interaction.execution_success = Some(true);
+            stages.timings.inject = StageTiming::skipped(SkipReason::Disabled);
+            return Step::Continue((
+                replacement,
+                InjectionOutcome::Skipped {
+                    reason: SkipReason::Disabled,
+                },
+            ));
+        }
+        let Some(guard) = token.enter_commit() else {
+            return Step::Cancelled;
+        };
+        let clock = StageClock::start();
+        let outcome = self
+            .injector
+            .replace_selection(selection, replacement.clone())
+            .await;
+        drop(guard);
+        stages.timings.inject = match &outcome {
+            InjectionOutcome::Failed { error } => clock.failed(error.message.clone()),
+            _ => clock.ran(),
+        };
+        interaction.execution_success = Some(outcome.did_inject());
+        interaction.output_typed = outcome.did_inject();
+        if let InjectionOutcome::Failed { error } = &outcome {
+            interaction.execution_error = Some(error.message.clone());
+            self.notifier
+                .notify(Notice::EditError(error.message.clone()));
+        }
+        if outcome.did_inject() {
+            interaction.output_char_count = Some(replacement.chars().count());
+            interaction.response_text = Some(replacement.clone());
+        }
+        Step::Continue((replacement, outcome))
+    }
+
+    fn edit_failure(
+        &self,
+        stages: &mut Stages,
+        interaction: &mut Interaction,
+        message: String,
+    ) -> Step<(String, InjectionOutcome)> {
+        interaction.execution_success = Some(false);
+        interaction.execution_error = Some(message.clone());
+        interaction.error_summary = Some(message.clone());
+        self.notifier.notify(Notice::EditError(message.clone()));
+        stages.timings.inject = StageTiming::skipped(SkipReason::DependencyUnavailable);
+        Step::Continue((
+            String::new(),
+            InjectionOutcome::Failed {
+                error: ProtoError::new(ErrorCode::InjectionFailed, message),
+            },
+        ))
     }
 
     /// The irreversible stage.

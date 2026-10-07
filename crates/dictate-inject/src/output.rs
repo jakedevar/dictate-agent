@@ -84,11 +84,11 @@ pub trait Injector: Send + Sync + 'static {
 /// contract required by Wayland portal backends.
 #[derive(Clone)]
 pub struct X11Injector {
-    enabled: bool,
+    pub(crate) enabled: bool,
     default_policy: InjectionPolicy,
     chunk_chars: usize,
     // Serialize transactions and keep restored X11 selection ownership alive.
-    clipboard: Arc<Mutex<Option<Clipboard>>>,
+    pub(crate) clipboard: Arc<Mutex<Option<Clipboard>>>,
 }
 
 impl std::fmt::Debug for X11Injector {
@@ -209,7 +209,7 @@ impl X11Injector {
         settle_paste(paste_result, restore_result)
     }
 
-    fn send_paste(&self) -> Result<()> {
+    pub(crate) fn send_paste(&self) -> Result<()> {
         let mut enigo = Enigo::new(&Settings::default()).context("opening X11 input backend")?;
         enigo.key(Key::Control, Direction::Press)?;
         let result = enigo.key(Key::Unicode('v'), Direction::Click);
