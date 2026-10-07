@@ -88,11 +88,15 @@ poll_interval_ms = 32
 enabled = true
 
 [format.rules]
-# Historical Whisper fixes: cloud/clod/clawed -> Claude, .cloud/ -> .claude/,
-# and "create plan", "implement plan", "validate plan", "create handoff",
-# "research code base" -> /create_plan, /implement_plan, /validate_plan,
-# /create_handoff, /research_codebase. Whole words only ("cloudy" is safe).
+# Historical spoken slash commands: "create plan", "implement plan",
+# "validate plan", "create handoff", "research code base" -> /create_plan,
+# /implement_plan, /validate_plan, /create_handoff, /research_codebase.
 builtin_corrections = true
+# Historical Whisper fixes cloud/clod/clawed -> Claude and .cloud/ -> .claude/.
+# Off by default: they are real words ("the cloud is dark") and a real
+# directory name. For a narrower fix, add a dictionary entry instead:
+# Claude, sounds like "cloud", optionally scoped to one app.
+claude_corrections = false
 # Drop whisper.cpp's [BLANK_AUDIO], a trailing /no_think, and a trailing
 # stand-alone "Thank you." (Whisper's silence hallucination); normalize spaces.
 hallucination_scrub = true
@@ -100,11 +104,14 @@ hallucination_scrub = true
 fillers = true
 # "the the" -> "the", "wh- what" -> "what". Keeps "that that", "very very".
 stutters = true
-# "twenty five" -> 25, "three point five percent" -> 3.5%, "ten dollars" -> $10,
+# "twenty five" -> 25, "twenty five thousand" -> 25000 (never comma-grouped,
+# so ports and timer arguments stay one token), "three point five percent"
+# -> 3.5%, "ten dollars" -> $10,
 # "five thirty pm" -> 5:30 PM. A lone number below ten stays a word
 # ("two people") unless a unit, percent or currency follows.
 numbers = true
-# Capitalize sentence starts and the pronoun I (a loop variable i stays).
+# Capitalize sentence starts and the pronoun I (a loop variable i stays, and
+# so does an identifier starting an expression: "x = y").
 casing = true
 # Collapse spaces; no space before , ; ! ? and sentence-ending . :
 spacing = true

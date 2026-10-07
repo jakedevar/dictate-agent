@@ -1,23 +1,33 @@
-//! `builtin_corrections`: the 23 historical Whisper mis-hearings.
+//! `builtin_corrections`: the historical Whisper mis-hearings.
 //!
 //! Moved here from `dictate-stt::apply_corrections`, which applied them as
 //! raw substring replacements (so `" cloud"` turned "cloudy" into "claudey"
 //! and "cloud.google.com" into "claude.google.com"). Here they are whole-word
-//! matches that never reach inside a protected span, with three fixes:
+//! matches that never reach inside a protected span.
 //!
-//! - word forms produce the proper noun `Claude` regardless of input case;
-//! - the dot-directory forms (`.clod`, `.cloud`, `.clawed`) are corrected as
-//!   **path segments**, inside detected paths (`~/.cloud/settings.json` →
-//!   `~/.claude/settings.json`) — the only place this stage edits a span;
-//! - the slash-command outputs (`/create_plan`, …) are protected, so no later
-//!   stage or LLM can strip the slash.
+//! Two groups, with different defaults:
+//!
+//! - **Spoken slash commands — on by default.** "create plan" →
+//!   `/create_plan` and the rest. The output is protected, so no later stage
+//!   or LLM can strip the slash. The phrases are specific enough that the
+//!   rewrite is what the speaker meant.
+//! - **`→ Claude` — opt-in (`[format.rules] claude_corrections`).** `cloud`,
+//!   `clod` and `clawed` are ordinary English words and `.cloud/` is a real
+//!   directory name, so rewriting them by default changes meaning ("The cloud
+//!   is dark" → "The Claude is dark", `~/.cloud/config` → `~/.claude/config`;
+//!   `AMBIGUOUS_ACOUSTIC_DEFAULTS`). With the option on, word forms become
+//!   the proper noun `Claude` and the dot-directory forms are corrected as
+//!   path segments inside detected paths (`~/.cloud/settings.json` →
+//!   `~/.claude/settings.json`) — the only place this stage edits a span. A
+//!   narrower, user-authorized mapping is a personal dictionary entry
+//!   (`Claude` sounds like `cloud`), which can be scoped to an app.
 //!
 //! The historical table, for the record (all 23 intents are covered):
 //!
 //! | historical pattern | now |
 //! |---|---|
-//! | `.clod` `.cloud` `.clawed` | `.claude` path segment |
-//! | ` clod` ` cloud` ` clawed` `Clod` `Cloud` `Clawed` | word → `Claude` |
+//! | `.clod` `.cloud` `.clawed` | `.claude` path segment (opt-in) |
+//! | ` clod` ` cloud` ` clawed` `Clod` `Cloud` `Clawed` | word → `Claude` (opt-in) |
 //! | `research code base`, `research codebase` (+ capitalized) | `/research_codebase` |
 //! | `create plan` (+ capitalized) | `/create_plan` |
 //! | `implement plan` (+ capitalized) | `/implement_plan` |
@@ -29,7 +39,19 @@ use crate::text::{FormatContext, SpanKind, TextDoc, TextStage};
 
 /// The historical acoustic corrections, word-boundary aware.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct BuiltinCorrections;
+pub struct BuiltinCorrections {
+    claude: bool,
+}
+
+impl BuiltinCorrections {
+    /// The corrections, with the ambiguous `→ Claude` group on or off.
+    #[must_use]
+    pub fn new(claude_corrections: bool) -> Self {
+        Self {
+            claude: claude_corrections,
+        }
+    }
+}
 
 impl TextStage for BuiltinCorrections {
     fn name(&self) -> &'static str {
@@ -37,17 +59,20 @@ impl TextStage for BuiltinCorrections {
     }
 
     fn apply(&self, doc: &mut TextDoc, _ctx: &FormatContext) {
-        let fixes: Vec<(usize, String)> = doc
-            .spans()
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.kind == SpanKind::Path)
-            .filter_map(|(i, s)| fix_dot_dirs(&s.text).map(|t| (i, t)))
-            .collect();
-        for (i, text) in fixes {
-            doc.amend_span(i, text);
+        if self.claude {
+            let fixes: Vec<(usize, String)> = doc
+                .spans()
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.kind == SpanKind::Path)
+                .filter_map(|(i, s)| fix_dot_dirs(&s.text).map(|t| (i, t)))
+                .collect();
+            for (i, text) in fixes {
+                doc.amend_span(i, text);
+            }
         }
-        doc.edit(correct_words);
+        let claude = self.claude;
+        doc.edit(|ed| correct_words(ed, claude));
     }
 }
 
@@ -118,7 +143,7 @@ fn glue_after(ed: &Editor<'_>, i: usize) -> bool {
     })
 }
 
-fn correct_words(ed: &mut Editor<'_>) {
+fn correct_words(ed: &mut Editor<'_>, claude: bool) {
     let n = ed.len();
     let mut i = 0;
     while i < n {
@@ -130,7 +155,9 @@ fn correct_words(ed: &mut Editor<'_>) {
             i = next;
             continue;
         }
-        try_claude(ed, i);
+        if claude {
+            try_claude(ed, i);
+        }
         i += 1;
     }
 }
@@ -155,10 +182,16 @@ fn try_command(ed: &mut Editor<'_>, i: usize) -> Option<usize> {
         if glue_before(ed, i) || glue_after(ed, cur) {
             continue;
         }
+        // Capacity first: deleting the tail and then failing to insert the
+        // command would lose words (`SPAN_CAPACITY_CORRUPTS_TEXT`).
+        if !ed.can_protect() {
+            return None;
+        }
         for &k in &consumed[1..] {
             ed.delete(k);
         }
-        ed.replace_protected(i, (*command).to_string(), SpanKind::SlashCommand);
+        let inserted = ed.replace_protected(i, (*command).to_string(), SpanKind::SlashCommand);
+        debug_assert!(inserted, "capacity was checked");
         return Some(cur + 1);
     }
     None
@@ -193,11 +226,13 @@ mod tests {
 
     use super::*;
 
+    /// With the opt-in `→ Claude` group on: the historical behavior.
     fn fix(input: &str) -> String {
-        stage_after_protect(&BuiltinCorrections, input)
+        stage_after_protect(&BuiltinCorrections::new(true), input)
     }
 
-    /// One assertion per historical pair: every intent keeps working.
+    /// One assertion per historical pair: every intent keeps working when
+    /// `claude_corrections` is on.
     #[test]
     fn all_23_historical_intents_keep_working() {
         let cases: [(&str, &str); 23] = [
@@ -277,7 +312,7 @@ mod tests {
 
     #[test]
     fn slash_commands_it_produces_are_protected_from_later_stages() {
-        let run = chain_with(&[&BuiltinCorrections], "create plan");
+        let run = chain_with(&[&BuiltinCorrections::default()], "create plan");
         assert_eq!(run.doc.restore(), "/create_plan");
         let span = &run.doc.spans()[0];
         assert_eq!(span.kind, SpanKind::SlashCommand);
@@ -298,5 +333,25 @@ mod tests {
             fix("run /research_codebase now"),
             "run /research_codebase now"
         );
+    }
+
+    /// `AMBIGUOUS_ACOUSTIC_DEFAULTS`: cloud/clod/clawed are real words and
+    /// `.cloud` a real directory; by default they are never rewritten.
+    #[test]
+    fn ambiguous_words_and_real_dot_directories_are_kept_by_default() {
+        let chain = crate::text::TextChain::default();
+        let ctx = FormatContext::default();
+        for input in [
+            "The cloud is dark today.",
+            "Open ~/.cloud/config now.",
+            "A clod of earth fell.",
+            "The cat clawed at the door.",
+            "Back up the .clawed/ folder.",
+            "Cloud storage is cheap.",
+        ] {
+            assert_eq!(chain.format(input, &ctx), input, "input: {input:?}");
+        }
+        // The unambiguous spoken commands still work by default.
+        assert_eq!(chain.format("then create plan", &ctx), "Then /create_plan");
     }
 }

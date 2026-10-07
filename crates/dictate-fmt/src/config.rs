@@ -65,9 +65,14 @@ impl Default for FormatConfig {
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct RulesConfig {
-    /// The historical Whisper mis-hearing fixes (`cloud` → `Claude`,
-    /// `create plan` → `/create_plan`, …), word-boundary aware.
+    /// The historical spoken slash commands (`create plan` →
+    /// `/create_plan`, …), word-boundary aware.
     pub builtin_corrections: bool,
+    /// The historical `cloud`/`clod`/`clawed` → `Claude` and `.cloud/` →
+    /// `.claude/` fixes. Off by default: those are real words and a real
+    /// directory name, so the rewrite can change meaning. Applies only when
+    /// `builtin_corrections` is on.
+    pub claude_corrections: bool,
     /// Trailing Whisper/LLM artifacts (a lone `Thank you.`, `/no_think`) and
     /// whitespace normalization.
     pub hallucination_scrub: bool,
@@ -93,6 +98,7 @@ impl Default for RulesConfig {
     fn default() -> Self {
         Self {
             builtin_corrections: true,
+            claude_corrections: false,
             hallucination_scrub: true,
             fillers: true,
             stutters: true,
