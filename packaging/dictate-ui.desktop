@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dictate
+Comment=Hub and Flow bar for the dictate-agent dictation daemon
+Exec=dictate-ui --hub
+Icon=dictate-ui
+Terminal=false
+Categories=Utility;Audio;
+StartupNotify=false
