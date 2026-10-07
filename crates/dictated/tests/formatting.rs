@@ -182,7 +182,7 @@ async fn routing_runs_on_the_rules_output_before_the_llm() {
     // The timer route is withheld from this connection so the test never runs
     // `systemd-run` on the host; the route decision is still recorded.
     let formatter = Arc::new(MockFormatter::appending(" [llm]"));
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.routes = vec![Route::Type];
     let h = Harness::with(
         Setup::default()

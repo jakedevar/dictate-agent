@@ -109,7 +109,7 @@ impl Default for Setup {
                 })
                 .unwrap(),
             ),
-            capabilities: dictated::server::local_capabilities(true),
+            capabilities: dictated::server::host_capabilities(true, false),
             history_enabled: false,
             history_privacy: false,
             media: Arc::new(NullMedia),

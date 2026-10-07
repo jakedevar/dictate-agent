@@ -87,9 +87,18 @@ pub struct ServerDeps {
 /// up front rather than discovering it from a failed injection.
 #[must_use]
 pub fn local_capabilities(injection_available: bool) -> Capabilities {
-    let mut caps = Capabilities::local_trusted();
     let headless =
         std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
+    host_capabilities(injection_available, headless)
+}
+
+/// [`local_capabilities`] with the display decision passed in instead of read
+/// from this process's environment. Tests use it so their result never depends
+/// on whether the machine running them has a `$DISPLAY` (a headless CI runner
+/// would otherwise silently withdraw `text_injection`).
+#[must_use]
+pub fn host_capabilities(injection_available: bool, headless: bool) -> Capabilities {
+    let mut caps = Capabilities::local_trusted();
     caps.features.headless = headless;
     caps.features.text_injection = injection_available && !headless;
     // Partials are specified but never emitted; advertising them would make a

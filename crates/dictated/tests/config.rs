@@ -460,7 +460,7 @@ async fn privacy_mode_applies_live_and_is_not_reported_as_needing_a_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn config_access_is_capability_gated() {
     // A connection whose capabilities withhold config writes may read only.
-    let mut read_only = dictated::server::local_capabilities(true);
+    let mut read_only = dictated::server::host_capabilities(true, false);
     read_only.features.config_write = false;
     let dir = std::env::temp_dir().join(format!("dictated-config-cap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

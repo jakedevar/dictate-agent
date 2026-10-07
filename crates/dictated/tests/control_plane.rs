@@ -1204,7 +1204,7 @@ async fn an_unsubscribed_client_receives_no_events_but_still_gets_responses() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn asking_to_inject_without_the_capability_is_forbidden_not_downgraded() {
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.features.text_injection = false;
     let h = Harness::with(Setup::default().with_capabilities(caps)).await;
     let mut client = h.client().await;

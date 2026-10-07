@@ -96,7 +96,7 @@ async fn snippet_crud_validation_and_live_snapshot() {
 
 #[tokio::test]
 async fn snippet_capabilities_deny_reads_and_writes() {
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.features.snippets_read = false;
     caps.features.snippets_write = false;
     let h = Harness::with(Setup::default().with_capabilities(caps)).await;

@@ -360,7 +360,7 @@ async fn list_search_show_and_delete_over_the_protocol() {
 
 #[tokio::test]
 async fn a_connection_without_history_access_cannot_read_or_delete_notes() {
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.features.history_read = false;
     caps.features.history_write = false;
     let h = Harness::with(setup("unused").with_capabilities(caps)).await;
@@ -384,7 +384,7 @@ async fn a_connection_without_history_access_cannot_read_or_delete_notes() {
 async fn a_connection_not_granted_the_note_route_cannot_store_one() {
     // Deny-by-default routes: a remote-style grant of `type` only must not be
     // able to write to the local scratchpad by saying the trigger.
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.routes = vec![Route::Type];
     let h = Harness::with(setup("note: sneaky").with_capabilities(caps)).await;
     let mut client = h.client().await;

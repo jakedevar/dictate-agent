@@ -31,6 +31,7 @@ jobs:
   check-cpu:
     name: just check-cpu + install smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +61,7 @@ jobs:
   ui:
     name: ui tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
