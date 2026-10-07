@@ -95,6 +95,9 @@ The one pre-merge security review (Codex gpt-6.1-sol xhigh, receipt
 2. `1497d53` fix(core): NETWORK_TRANSCRIPTS_LOGGED, per the manager ruling.
 3. `80e7e9f` fix(server): the other seven findings. Design §15 has the
    finding → fix → test table.
+4. `ee86d22` fix(server): a WS request is also abandoned when its peer
+   disconnects, which completes WS_IDLE_SHUTDOWN_NOT_ENFORCED_IN_FLIGHT. Docs
+   are in `26a2294` and in this file.
 
 Decisions the integrator should know:
 - Host/Origin refusals are **not** charged to the per-IP request bucket.
@@ -112,7 +115,7 @@ Decisions the integrator should know:
   A thread-scoped subscriber in the shared transport binary lost events to
   tracing's per-callsite interest cache, which other test threads populate.
 
-Gate: `just check-cpu` (`-j 8`) passed 1145, failed 0, ignored 0. All three
+Gate: `just check-cpu` (`-j 8`) at `ee86d22` passed 1146, failed 0, ignored 0. All three
 clippy lines, fmt, the dictate-cli tree check and `scripts/cutover-test.sh` are
 clean. No CUDA, no `just e2e`. The STT path is untouched; the pipeline change
 is only to log statements.
