@@ -24,7 +24,7 @@ use dictate_core::ports::mock::{
 use dictate_core::ports::{AudioSource, DisabledAudioSource};
 use dictate_proto::{
     AudioEncoding, AudioFormat, AudioSource as Upload, Capabilities, Command, CommandResult,
-    ErrorCode, Event, InjectionOutcome, SessionOptions, StageTiming, State, Transcript,
+    ErrorCode, Event, InjectionOutcome, RequestId, SessionOptions, StageTiming, State, Transcript,
 };
 use harness::{Client, Harness, Setup};
 
@@ -430,20 +430,26 @@ async fn an_over_long_clip_is_payload_too_large_and_leaves_the_slot_free() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_larger_than_the_message_limit_is_answered_then_the_connection_closes() {
+    let limit: usize = 64 * 1024;
     let mut caps = Capabilities::local_trusted();
-    caps.limits.max_message_bytes = 64 * 1024;
+    caps.limits.max_message_bytes = limit as u32;
     let h = Harness::with(Setup::default().with_capabilities(caps)).await;
     let mut client = h.client().await;
 
-    // ~80 KB of WAV becomes ~107 KB of base64 on one line: past the 64 KB limit
-    // before it is ever parsed, so the framing layer answers, not the decoder.
-    // (Small enough to be written in one go: a peer that keeps writing into a
-    // closing socket would see a broken pipe, which is the client's problem.)
-    client.fire(transcribe(wav(16_000, 1, 2.5))).await;
+    // The start of a real upload request, padded to exactly one byte past the
+    // limit with no newline: the framing layer must answer before anything is
+    // parsed. Sending *only* enough to cross the limit keeps this
+    // deterministic — every byte written is one the daemon reads before it
+    // decides, so the write can never race the close into a broken pipe.
+    let mut line = br#"{"id":7,"command":{"type":"transcribe_audio","audio":{"data":""#.to_vec();
+    line.resize(limit + 1, b'A');
+    client.write_raw(&line).await;
     match client.next_event().await {
         Event::Error { error, .. } => assert_eq!(error.code, ErrorCode::PayloadTooLarge),
         other => panic!("expected a payload_too_large error event, got {other:?}"),
     }
+    // The stream is out of sync after an oversized line, so it is closed.
+    client.expect_closed().await;
 
     // A fresh connection is unaffected: the daemon did not fall over.
     let mut fresh = h.client().await;
@@ -749,6 +755,90 @@ async fn an_uploader_that_hangs_up_takes_its_session_with_it() {
             .request(transcribe(wav(16_000, 1, 1.0)))
             .await
             .unwrap(),
+    );
+    h.stop().await;
+}
+
+/// An uploader that pipelined more requests behind its upload, then hung up.
+async fn pipelined_hangup_injects_nothing(pipelined: Vec<u8>) {
+    let gate = Gate::closed();
+    let injector = Arc::new(MockInjector::new());
+    let mut caps = Capabilities::local_trusted();
+    caps.limits.max_message_bytes = 256 * 1024;
+    let h = Harness::with(
+        gated_setup(&gate)
+            .with_injector(injector.clone())
+            .with_capabilities(caps),
+    )
+    .await;
+
+    let mut uploader = h.client().await;
+    uploader
+        .fire(Command::TranscribeAudio {
+            audio: upload_wav(wav(16_000, 1, 1.0)),
+            options: Some(SessionOptions {
+                inject: Some(true),
+                ..Default::default()
+            }),
+        })
+        .await;
+    uploader.write_raw(&pipelined).await;
+    gate.wait_entered().await;
+    uploader.disconnect().await;
+
+    let mut probe = h.client().await;
+    harness::within("the daemon to return to idle", async {
+        loop {
+            if let CommandResult::Status(s) = probe.request(Command::GetStatus).await.unwrap() {
+                if s.state == State::Idle {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    gate.open();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        injector.injected().is_empty(),
+        "an upload whose connection is gone must never type, whatever was pipelined behind it"
+    );
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploader_that_pipelined_a_request_then_hung_up_injects_nothing() {
+    pipelined_hangup_injects_nothing(
+        b"{\"id\":99,\"command\":{\"type\":\"get_status\"}}\n".to_vec(),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploader_that_pipelined_past_the_read_ahead_bound_then_hung_up_injects_nothing() {
+    // More than the connection's message limit, with no newline: the daemon
+    // stops reading at its bound and must still notice the close.
+    pipelined_hangup_injects_nothing(vec![b' '; 300 * 1024]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requests_pipelined_behind_an_upload_are_answered_in_order() {
+    // Must-not-change: reading ahead to watch for a hang-up keeps what it read.
+    let gate = Gate::closed();
+    let h = Harness::with(gated_setup(&gate)).await;
+    let mut client = h.client().await;
+    client.fire(transcribe(wav(16_000, 1, 1.0))).await;
+    client
+        .write_raw(b"{\"id\":\"after\",\"command\":{\"type\":\"get_status\"}}\n")
+        .await;
+    gate.wait_entered().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    gate.open();
+    let ids = client.read_response_ids(2).await;
+    assert!(
+        matches!(ids[0], RequestId::Number(_)) && ids[1] == RequestId::Text("after".into()),
+        "pipelined requests are answered after the upload, in order: {ids:?}"
     );
     h.stop().await;
 }
