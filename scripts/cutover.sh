@@ -113,7 +113,7 @@ doctor_check postflight "$attempt/postflight.json"
 if [ "$claude_dictionary" = true ]; then
     "$cli" dict list --json >"$attempt/dictionary.json"
     if ! python3 "$helper" has-entry "$attempt/dictionary.json" Claude; then
-        "$cli" dict add Claude --sounds-like cloud
+        "$cli" dict add Claude --sounds-like cloud,clod,clawed
     fi
 fi
 # The running process already read its startup config. Future starts use the

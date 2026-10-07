@@ -14,3 +14,4 @@ export XDG_CONFIG_HOME="$HOME/.config" XDG_DATA_HOME="$HOME/.local/share" \
 export PATH="$cutover_test_root/bin:$PATH"
 unset DICTATE_SOCKET DBUS_SESSION_BUS_ADDRESS
 python3 "$script_dir/cutover-test.py"
+sh "$script_dir/run-sh-test.sh"
