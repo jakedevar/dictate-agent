@@ -32,7 +32,7 @@ clippy:
 # Workers whose diff touches dictate-stt, the transcription path or the CUDA
 # config also run `just check-cuda`.
 check-cpu:
-    python3 scripts/cutover-test.py
+    scripts/cutover-test.sh
     cargo test --workspace --all-targets
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
@@ -42,7 +42,7 @@ check-cpu:
 
 # Cutover/rollback integration harness: temporary HOME, stub service manager.
 cutover-test:
-    python3 scripts/cutover-test.py
+    scripts/cutover-test.sh
 
 # The INTEGRATOR gate (once per integration, with `just e2e`): the CUDA
 # variants of clippy. First run compiles whisper.cpp CUDA for sm_120 only.

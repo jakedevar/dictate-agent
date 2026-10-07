@@ -17,7 +17,7 @@ recover=false
 cleanup_probe() {
     if [ -n "$probe_pid" ]; then
         kill -TERM "$probe_pid" 2>/dev/null || true
-        python3 "$helper" wait exit "$probe_pid" "$new_binary"
+        python3 "$helper" wait exit "$probe_pid" "$new_binary" || return 1
         wait "$probe_pid" 2>/dev/null || true
         probe_pid=""
     fi
