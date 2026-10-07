@@ -2,6 +2,7 @@
 name = "dictate-proto"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Wire protocol for dictate-agent: commands, events, errors, versioned envelope, and the binary audio-frame codec. Types and (de)serialization only — no transport, no async runtime, no I/O."
 
 # DEPENDENCY BUDGET (deliberate — see lib.rs "Dependency budget").

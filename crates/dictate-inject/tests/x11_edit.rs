@@ -19,15 +19,9 @@ use x11rb::{COPY_DEPTH_FROM_PARENT, CURRENT_TIME, NONE};
 
 struct DisplayGuard {
     server: Child,
-    prior: Option<std::ffi::OsString>,
 }
 impl Drop for DisplayGuard {
     fn drop(&mut self) {
-        if let Some(value) = &self.prior {
-            std::env::set_var("DISPLAY", value);
-        } else {
-            std::env::remove_var("DISPLAY");
-        }
         let _ = self.server.kill();
         let _ = self.server.wait();
     }
@@ -40,6 +34,8 @@ struct Widget {
     primary: String,
     ignore_paste: bool,
     paste_requests: usize,
+    late_request: bool,
+    rejected_pastes: usize,
 }
 
 fn wait_for(mut predicate: impl FnMut() -> bool) {
@@ -62,6 +58,10 @@ fn private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and
         eprintln!("skipping selection roundtrip: Xvfb unavailable");
         return;
     }
+    if std::env::var_os("DICTATE_PRIVATE_X11_EDIT").is_some() {
+        run_edit();
+        return;
+    }
     // Xvfb allocates an unused display instead of guessing an existing one.
     let path = format!("/tmp/s25-display-{}", std::process::id());
     let display_file = std::fs::File::create(&path).unwrap();
@@ -80,12 +80,26 @@ fn private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let prior = std::env::var_os("DISPLAY");
-    let _display_guard = DisplayGuard { server, prior };
+    let _display_guard = DisplayGuard { server };
     wait_for(|| std::fs::read_to_string(&path).is_ok_and(|s| !s.trim().is_empty()));
     let number = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_file(path).unwrap();
-    std::env::set_var("DISPLAY", format!(":{}", number.trim()));
+    assert!(Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and_focus",
+            "--nocapture"
+        ])
+        .env("DISPLAY", format!(":{}", number.trim()))
+        .env("DICTATE_PRIVATE_X11_EDIT", "1")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("XAUTHORITY")
+        .status()
+        .unwrap()
+        .success());
+}
+
+fn run_edit() {
     let (conn, screen) = x11rb::connect(None).unwrap();
     let atom = |s: &[u8]| conn.intern_atom(false, s).unwrap().reply().unwrap().atom;
     let primary = AtomEnum::PRIMARY.into();
@@ -145,12 +159,20 @@ fn private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and
         pastes: 0,
         ignore_paste: false,
         paste_requests: 0,
+        late_request: false,
+        rejected_pastes: 0,
     }));
     let stop = Arc::new(AtomicBool::new(false));
     let thread_state = state.clone();
     let thread_stop = stop.clone();
     let worker = std::thread::spawn(move || {
         while !thread_stop.load(Ordering::Acquire) {
+            if std::mem::take(&mut thread_state.lock().unwrap().late_request) {
+                conn.convert_selection(window, clipboard_atom, utf8, property, CURRENT_TIME)
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
             match conn.poll_for_event().unwrap() {
                 Some(Event::KeyPress(e))
                     if e.event == window && e.state.contains(KeyButMask::CONTROL) =>
@@ -236,6 +258,9 @@ fn private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and
                     .unwrap()
                     .check()
                     .unwrap();
+                }
+                Some(Event::SelectionNotify(e)) if e.property == NONE => {
+                    thread_state.lock().unwrap().rejected_pastes += 1;
                 }
                 Some(Event::SelectionNotify(e)) if e.property == property => {
                     let reply = conn
@@ -372,6 +397,17 @@ fn private_xvfb_selection_roundtrip_and_failures_preserve_document_clipboard_and
         "original synthetic clipboard α"
     );
     assert_eq!(focused_window().unwrap(), window);
+    // A request queued after the unconfirmed Ctrl+V must receive no payload,
+    // rather than replacing the selection with the restored old clipboard.
+    state.lock().unwrap().late_request = true;
+    wait_for(|| state.lock().unwrap().rejected_pastes == 1);
+    assert_eq!(state.lock().unwrap().document, document);
+    assert_eq!(state.lock().unwrap().selected, "new selection");
+    assert_eq!(state.lock().unwrap().pastes, 1);
+    assert_eq!(
+        clipboard.get_text().unwrap(),
+        "original synthetic clipboard α"
+    );
 
     stop.store(true, Ordering::Release);
     worker.join().unwrap();

@@ -55,9 +55,23 @@ release:
 install: release
     make install
 
-# Install the systemd user unit for the new daemon
+# Install the systemd user unit for the new daemon (ExecStart follows BINDIR)
 install-unit:
     make install-unit
+
+# Optional desktop UI: dictate-ui + desktop entry + icon (needs bun, cargo tauri)
+install-ui:
+    make install-ui
+
+# Daemon + CLI + unit + UI. Honours PREFIX/BINDIR/DESTDIR/SYSTEMD_USER_DIR, e.g.
+#   DESTDIR=$(mktemp -d) just install-all
+# See docs/INSTALL.md. Nothing here starts, stops or enables a service.
+install-all: install install-unit install-ui
+
+# Stage dist/dictate-agent-<ver>-linux-<arch>-<variant>.tar.gz from built
+# binaries (builds nothing, publishes nothing). Variant is `cpu` or `cuda`.
+package variant="cpu" *args="":
+    scripts/package.sh --variant {{variant}} {{args}}
 
 # Everything CI checks, in one go
 check: test clippy

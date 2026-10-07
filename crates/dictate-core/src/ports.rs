@@ -438,6 +438,23 @@ pub trait TextInjector: Send + Sync + 'static {
         policy: Option<dictate_inject::InjectionPolicy>,
     ) -> BoxFuture<'_, InjectionOutcome>;
 
+    /// Capture only a destination identity, without reading titles/clipboard.
+    /// Test and portal adapters avoid host X11 I/O by default.
+    fn capture_destination(&self) -> Option<u32> {
+        self.edit_destination()
+    }
+
+    /// Additive stop-time binding seam. Host backends validate at delivery;
+    /// synthetic/portal implementations may override their own window identity.
+    fn inject_bound(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+        _destination: Option<Option<u32>>,
+    ) -> BoxFuture<'_, InjectionOutcome> {
+        self.inject(text, policy)
+    }
+
     /// Stop-time window snapshot for EDIT; unsupported backends return None.
     fn edit_destination(&self) -> Option<u32> {
         None
@@ -513,10 +530,37 @@ impl TextInjector for HostInjector {
         })
     }
 
+    fn capture_destination(&self) -> Option<u32> {
+        dictate_inject::focused_window()
+    }
+
+    fn inject_bound(
+        &self,
+        text: &str,
+        policy: Option<dictate_inject::InjectionPolicy>,
+        destination: Option<Option<u32>>,
+    ) -> BoxFuture<'_, InjectionOutcome> {
+        let policy = policy.unwrap_or_else(|| self.inner.default_policy());
+        let inner = self.inner.clone();
+        let text = text.to_owned();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                inner.inject_bound_blocking(&text, policy, destination)
+            })
+            .await
+            .unwrap_or_else(|e| InjectionOutcome::Failed {
+                error: dictate_proto::ProtoError::new(
+                    dictate_proto::ErrorCode::InjectionFailed,
+                    format!("injection task failed: {e}"),
+                ),
+            })
+        })
+    }
+
     fn edit_destination(&self) -> Option<u32> {
         (self.enabled && self.inner.default_policy() == dictate_inject::InjectionPolicy::Paste)
-            .then(dictate_inject::selection::focused_window)
-            .and_then(Result::ok)
+            .then(|| self.capture_destination())
+            .flatten()
     }
 
     fn capture_selection(
@@ -575,6 +619,8 @@ pub enum Notice {
     TimerSet(String),
     /// A scratchpad note was saved (S35); carries the saved text.
     NoteSaved(String),
+    /// Injection failed or became clipboard-only; never overwrite clipboard.
+    InjectionFailed(String),
     /// Selection rewrite preview; does not change the clipboard.
     EditPreview(String),
     /// Edit failure; unlike the legacy error notice, never overwrites clipboard.
@@ -622,6 +668,7 @@ impl StatusNotifier for DesktopNotifier {
             Notice::TimerSet(msg) => n.timer_set(&msg),
             Notice::Error(msg) => n.error(&msg),
             Notice::NoteSaved(text) => n.note_saved(&text),
+            Notice::InjectionFailed(msg) => n.injection_failed(&msg),
             Notice::EditPreview(msg) => n.edit_preview(&msg),
             Notice::EditError(msg) => n.edit_error(&msg),
             Notice::MicrophoneMuted => n.microphone_muted(),
@@ -1187,6 +1234,7 @@ pub mod mock {
     /// Injector that records what it was asked to type.
     #[derive(Debug)]
     pub struct MockInjector {
+        destination_captures: AtomicUsize,
         selection: Arc<Mutex<Option<dictate_inject::selection::Selection>>>,
         replacements: Arc<Mutex<Vec<String>>>,
         injected: Arc<Mutex<Vec<String>>>,
@@ -1200,6 +1248,7 @@ pub mod mock {
     impl Default for MockInjector {
         fn default() -> Self {
             Self {
+                destination_captures: AtomicUsize::new(0),
                 selection: Arc::new(Mutex::new(None)),
                 replacements: Arc::new(Mutex::new(Vec::new())),
                 injected: Arc::new(Mutex::new(Vec::new())),
@@ -1213,6 +1262,10 @@ pub mod mock {
     }
 
     impl MockInjector {
+        pub fn destination_captures(&self) -> usize {
+            self.destination_captures.load(Ordering::Acquire)
+        }
+
         pub fn select(&self, text: &str, window: u32) {
             *self.selection.lock().unwrap() = Some(dictate_inject::selection::Selection {
                 text: text.into(),
@@ -1354,7 +1407,8 @@ pub mod mock {
             })
         }
 
-        fn edit_destination(&self) -> Option<u32> {
+        fn capture_destination(&self) -> Option<u32> {
+            self.destination_captures.fetch_add(1, Ordering::AcqRel);
             self.available.then(|| {
                 self.selection
                     .lock()

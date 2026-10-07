@@ -140,12 +140,18 @@ impl StageClock {
     }
 }
 
+/// Stop-time X11 identity shared between the engine and the pipeline.
+pub type StopDestination = Arc<Mutex<Option<Option<u32>>>>;
+
 /// How a session's options resolved against the caller's capabilities.
 #[derive(Debug, Clone)]
 pub struct ResolvedOptions {
     /// Whether to inject the result into the focused app. `false` means the
     /// caller takes delivery instead, which is a success, not a skip.
     pub inject: bool,
+    /// Shared with the engine's explicit stop action. Outer None means not yet
+    /// stopped, inner None means no X11 focus could be verified. Uploads omit it.
+    pub stop_destination: Option<StopDestination>,
     /// A route forced by the caller, bypassing the router.
     pub forced_route: Option<Route>,
     /// Routes this caller may invoke at all. Deny-by-default per S01 item 2:
@@ -174,6 +180,7 @@ impl Default for ResolvedOptions {
     fn default() -> Self {
         Self {
             inject: true,
+            stop_destination: None,
             forced_route: None,
             allowed_routes: Route::known().to_vec(),
             privacy: false,
@@ -334,6 +341,12 @@ impl Pipeline {
         }
 
         if !upload {
+            if let Some(binding) = &opts.stop_destination {
+                let mut slot = binding.lock().expect("stop destination poisoned");
+                if slot.is_none() {
+                    *slot = Some(self.injector.capture_destination());
+                }
+            }
             // Explicit stops were captured synchronously by the engine; VAD
             // stops arrive here immediately after observing trailing silence.
             let profile = handle.stop_profile().unwrap_or_else(|| {
@@ -350,35 +363,17 @@ impl Pipeline {
             }
         }
 
-        // Pin EDIT to the stop-time widget before recognition can outlast focus.
-        // Uploads and callers without injection never read a host selection.
+        // EDIT consumes the same stop-time identity as ordinary dictation.
+        // A failed capture stays failed; recognition must never recapture focus.
         let edit_destination = if !upload
             && opts.inject
             && opts.capture_context
             && context_policy(&opts.profile) != Some(dictate_inject::InjectionPolicy::Off)
         {
-            if let Some(window) = handle.stop_edit_destination() {
-                window
-            } else {
-                // A VAD stop has no explicit engine stop action.
-                let injector = self.injector.clone();
-                match self
-                    .race(&token, async move {
-                        tokio::task::spawn_blocking(move || injector.edit_destination())
-                            .await
-                            .ok()
-                            .flatten()
-                    })
-                    .await
-                {
-                    Step::Continue(window) => window,
-                    Step::Cancelled => {
-                        return self
-                            .finish(&handle, stages, None, Outcome::cancelled())
-                            .await
-                    }
-                }
-            }
+            opts.stop_destination
+                .as_ref()
+                .and_then(|binding| *binding.lock().expect("stop destination poisoned"))
+                .flatten()
         } else {
             None
         };
@@ -880,6 +875,14 @@ impl Pipeline {
             }
             Step::Continue(v) => v,
         };
+
+        if let InjectionOutcome::Failed { error } = &injection {
+            interaction.error_summary = Some(error.message.clone());
+            if resolved_route != Route::Edit {
+                self.notifier
+                    .notify(Notice::InjectionFailed(error.message.clone()));
+            }
+        }
 
         let word_count = final_text.split_whitespace().count() as u32;
         let transcript = Transcript {
@@ -1434,7 +1437,13 @@ impl Pipeline {
         // keeping the port async preserves both contracts.
         let outcome = self
             .injector
-            .inject(text, context_policy(&opts.profile))
+            .inject_bound(
+                text,
+                context_policy(&opts.profile),
+                opts.stop_destination
+                    .as_ref()
+                    .and_then(|binding| *binding.lock().expect("stop destination poisoned")),
+            )
             .await;
         drop(guard);
 

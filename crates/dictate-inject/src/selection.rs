@@ -5,11 +5,10 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
 use dictate_proto::{ErrorCode, InjectMethod, InjectionOutcome, ProtoError};
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::ConnectionExt;
 
-use crate::clipboard::{PasteSelection, Snapshot};
+use crate::clipboard::PasteSelection;
 use crate::X11Injector;
 
 /// A copy of selected text bound to its input window. Never logged.
@@ -47,33 +46,33 @@ fn check_focus(window: u32) -> Result<()> {
 /// Copy from the active widget, using an ownership marker to distinguish a
 /// fresh Ctrl+C from stale clipboard contents. PRIMARY is only accepted when
 /// confirmed by that copy: a stale PRIMARY from another widget is unsafe.
-fn copy_selection(clipboard: &mut Clipboard, window: u32) -> Result<String> {
-    check_focus(window)?;
-    let (probe, _) = x11rb::connect(None)?;
-    let primary_owner = probe
-        .get_selection_owner(x11rb::protocol::xproto::AtomEnum::PRIMARY.into())?
-        .reply()?
-        .owner;
-    let client_mask = !probe.setup().resource_id_mask;
-    let primary = if primary_owner != 0 && (primary_owner & client_mask) == (window & client_mask) {
-        clipboard
-            .get()
-            .clipboard(LinuxClipboardKind::Primary)
-            .text()
-            .ok()
-    } else {
-        None
-    };
-    let marker = PasteSelection::new("")?;
-    marker.claim()?;
+fn copy_selection(
+    clipboard: &mut Clipboard,
+    marker: &PasteSelection,
+    window: u32,
+) -> (Result<String>, Option<u32>) {
+    let mut copied_owner = None;
     let result = (|| {
         check_focus(window)?;
-        let mut keys = Enigo::new(&Settings::default()).context("opening copy input")?;
-        keys.key(Key::Control, Direction::Press)?;
-        let copy = keys.key(Key::Unicode('c'), Direction::Click);
-        let release = keys.key(Key::Control, Direction::Release);
-        copy?;
-        release?;
+        let (probe, _) = x11rb::connect(None)?;
+        let primary_owner = probe
+            .get_selection_owner(x11rb::protocol::xproto::AtomEnum::PRIMARY.into())?
+            .reply()?
+            .owner;
+        let client_mask = !probe.setup().resource_id_mask;
+        let primary =
+            if primary_owner != 0 && (primary_owner & client_mask) == (window & client_mask) {
+                clipboard
+                    .get()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text()
+                    .ok()
+            } else {
+                None
+            };
+        if !marker.send_copy(window)? {
+            bail!("edit destination changed; selection left untouched");
+        }
         let (conn, _) = x11rb::connect(None)?;
         let atom = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -82,9 +81,10 @@ fn copy_selection(clipboard: &mut Clipboard, window: u32) -> Result<String> {
             let owner = conn.get_selection_owner(atom)?.reply()?.owner;
             let client_mask = !conn.setup().resource_id_mask;
             if owner != 0
-                && owner != marker.owner()
+                && owner != marker.window()
                 && (owner & client_mask) == (window & client_mask)
             {
+                copied_owner = Some(owner);
                 break;
             }
             if Instant::now() >= deadline {
@@ -99,6 +99,9 @@ fn copy_selection(clipboard: &mut Clipboard, window: u32) -> Result<String> {
         if copied.len() > 65_536 {
             bail!("selection exceeds 64 KiB edit limit");
         }
+        if Some(conn.get_selection_owner(atom)?.reply()?.owner) != copied_owner {
+            bail!("clipboard changed while reading selection");
+        }
         check_focus(window)?;
         if primary.as_ref().is_some_and(|text| text != &copied) {
             bail!("PRIMARY and focused copy disagree; selection left untouched");
@@ -106,7 +109,20 @@ fn copy_selection(clipboard: &mut Clipboard, window: u32) -> Result<String> {
         Ok(copied)
     })();
     // Caller owns restoration even on every error above.
-    result
+    (result, copied_owner)
+}
+
+fn capture_selection(window: u32) -> Result<Selection> {
+    check_focus(window)?;
+    let mut clipboard = Clipboard::new()?;
+    let mut marker = PasteSelection::new("")?;
+    let (owner, saved) = marker.snapshot()?;
+    marker.claim(owner)?;
+    let (result, copied_owner) = copy_selection(&mut clipboard, &marker, window);
+    let restored = marker.restore_after_copy(saved, copied_owner);
+    marker.retain();
+    restored?;
+    result.map(|text| Selection { text, window })
 }
 
 impl X11Injector {
@@ -114,18 +130,11 @@ impl X11Injector {
         if !self.enabled || self.default_policy() != crate::InjectionPolicy::Paste {
             bail!("selection editing requires enabled clipboard-paste injection");
         }
-        let mut guard = self
+        let _guard = self
             .clipboard
             .lock()
             .map_err(|_| anyhow!("clipboard lock poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(Clipboard::new()?);
-        }
-        let clipboard = guard.as_mut().expect("initialized above");
-        let saved = Snapshot::capture(clipboard)?;
-        let result = copy_selection(clipboard, window);
-        saved.restore(clipboard)?;
-        result.map(|text| Selection { text, window })
+        capture_selection(window)
     }
 
     /// One paste, after verifying the same widget still has the same selected
@@ -155,38 +164,41 @@ impl X11Injector {
             bail!("empty edit output rejected");
         }
         // Allocate/validate the paste payload before sending any input.
-        let paste = PasteSelection::new(text)?;
-        let mut guard = self
+        let mut paste = PasteSelection::new(text)?;
+        let _guard = self
             .clipboard
             .lock()
             .map_err(|_| anyhow!("clipboard lock poisoned"))?;
-        if guard.is_none() {
-            *guard = Some(Clipboard::new()?);
+        let current = capture_selection(selection.window)?;
+        if current != *selection {
+            bail!("selected text changed; edit discarded");
         }
-        let clipboard = guard.as_mut().expect("initialized above");
-        let saved = Snapshot::capture(clipboard)?;
-        let result = (|| {
-            let current = copy_selection(clipboard, selection.window)?;
-            if current != selection.text {
-                bail!("selected text changed; edit discarded");
+        check_focus(selection.window)?;
+        let (owner, saved) = paste.snapshot()?;
+        paste.claim(owner)?;
+        match paste.send_paste(selection.window) {
+            Ok(false) => {
+                // The atomic focus check prevented all keys.
+                paste.restore(saved)?;
+                paste.retain();
+                bail!("edit destination changed; selection left untouched");
             }
-            check_focus(selection.window)?;
-            paste.claim()?;
-            check_focus(selection.window)?;
-            self.send_paste()?;
-            paste.transfer_to(text, selection.window)
-        })();
-        let restored = saved.restore(clipboard);
-        match (result, restored) {
-            (Ok(()), Err(error)) => {
-                // Delivery has already occurred. Never retry or claim that the
-                // selection was unchanged after a restoration-only failure.
-                tracing::warn!("edit pasted but clipboard restoration failed: {error}");
-                Ok(())
-            }
-            (result, Ok(())) => result,
-            (Err(error), Err(restore)) => {
-                Err(anyhow!("{error}; clipboard restoration failed: {restore}"))
+            sent => {
+                // A failed send may still have queued Ctrl+V. Never retry.
+                let result = sent.and_then(|_| paste.transfer_to(selection.window));
+                let restored = paste.restore(saved);
+                if result.is_ok() {
+                    if let Err(error) = restored {
+                        tracing::warn!("edit pasted but clipboard restoration failed: {error}");
+                    }
+                    paste.retain();
+                } else {
+                    // Preserve the prior clipboard and deny delayed requests
+                    // from the EDIT client, rather than pasting stale contents.
+                    paste.retain_aborted_edit(selection.window);
+                    restored?;
+                }
+                result
             }
         }
     }

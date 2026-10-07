@@ -132,6 +132,11 @@ async fn edit_rewrites_only_the_selection_once_and_accounts_for_the_llm() {
         "EDIT must never use ordinary typing"
     );
     assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        h.injector.destination_captures(),
+        1,
+        "one stop-time capture for EDIT"
+    );
     h.stop().await;
 }
 
@@ -327,6 +332,11 @@ async fn focus_changed_during_stt_cannot_capture_a_new_destination() {
     ));
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
     assert!(h.injector.replacements().is_empty());
+    assert_eq!(
+        h.injector.destination_captures(),
+        1,
+        "never recapture after recognition"
+    );
     h.stop().await;
 }
 
@@ -429,5 +439,20 @@ async fn cancellation_after_replacement_commit_is_too_late_and_pastes_once() {
         ["Please send the synthetic report."]
     );
     assert!(h.injector.injected().is_empty());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn ordinary_dictation_uses_one_stop_capture_without_edit_permission() {
+    let fake = Arc::new(Fake::reply("unused"));
+    let mut setup =
+        setup(fake.clone(), false).with_stt(Arc::new(MockStt::returning("synthetic dictation")));
+    setup.capabilities.routes = vec![Route::Type];
+    let h = Harness::with(setup).await;
+    let transcript = run(&h, None).await;
+    assert_eq!(transcript.route, Route::Type);
+    assert!(transcript.injection.did_inject());
+    assert_eq!(h.injector.destination_captures(), 1);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
     h.stop().await;
 }

@@ -42,3 +42,6 @@ config/config.toml
 
 # The Python `lib/` rule above must not swallow the UI's TypeScript modules (S32)
 !ui/src/lib/
+
+# Release tarballs staged by scripts/package.sh
+dist/

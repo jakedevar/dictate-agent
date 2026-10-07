@@ -7,7 +7,8 @@ work. A local protocol client may set `SessionOptions.route = "edit"` and
 speak only the instruction. Other ordinary verbs remain dictation: “change
 the setting” does not trigger an edit.
 
-When recording stops, the daemon pins the input window. After recognizing
+When recording stops, the daemon captures the input window once for both
+ordinary dictation and EDIT. After recognizing
 an EDIT instruction, it reads PRIMARY and confirms the selected text with
 a fresh Ctrl+C from that window, preserving the clipboard. A stale PRIMARY,
 a stale clipboard, or no selected text cannot supply an edit target in apps
@@ -24,6 +25,12 @@ retries a paste, or falls back to ordinary typing. Moving focus or changing
 the selected bytes discards the edit. Cancelling during selection capture or
 LLM work produces no replacement. Once replacement begins, cancel returns
 the existing “too late” result and the clipboard transaction finishes.
+If a paste is unconfirmed, EDIT restores the prior clipboard for other clients
+and refuses subsequent requests from the destination's X11 client until the
+next copy changes ownership. This prevents a queued paste from replacing the
+selection with stale clipboard contents. It also blocks that client's manual
+paste of the restored clipboard until another copy. Ordinary dictation instead
+keeps the dictated text available for a late or manual paste.
 
 EDIT uses the `[local]` host/model ladder (preferred `qwen3:14b`), plus S21's
 `[format.llm]` timeout and keep-alive settings. It works independently of
@@ -53,8 +60,10 @@ copy a whole line when nothing is selected must disable that behavior before
 using EDIT; X11's clipboard fallback cannot distinguish it from a selection.
 A clipboard manager
 or a separate-client copy owner cannot act as an edit target. Clipboard
-preservation has the existing S13b limits: text, HTML with text, or image
-pixels; arbitrary target bundles and file lists are not supported.
+preservation shares S13b's raw target snapshots: text, HTML, PNG bytes, file
+lists, and unknown ordinary targets retain their property types and 8/16/32-bit
+formats. Incremental transfers and oversized properties are refused before
+clipboard ownership or key injection changes. A concurrent copy keeps ownership.
 
 X11 exposes focus, selection owners and text, not a portable editable-widget
 selection range. Checks cannot distinguish two identical selections within

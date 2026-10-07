@@ -1,0 +1,72 @@
+# Maintainer: Jake Devar <jakedevar1@gmail.com>
+#
+# Local, unpublished PKGBUILD for dictate-agent (the `dictated` daemon, the
+# `dictate` CLI, the systemd user unit). Not on the AUR: publishing is an
+# operator decision. Build it from a checkout:
+#
+#   cd packaging/aur && makepkg -si              # CPU build
+#   cd packaging/aur && _cuda=1 makepkg -si      # CUDA backend (needs `cuda`)
+#
+# The build downloads the ONNX Runtime for the VAD (ort-sys) and crates, so it
+# needs network access; the installed package needs none. The desktop UI
+# (dictate-ui) is a separate Tauri build and is not packaged here; see
+# docs/INSTALL.md (`just install-ui`).
+
+pkgname=dictate-agent-git
+pkgver=0.2.0.r0.g0000000
+pkgrel=1
+pkgdesc='Local-first voice dictation daemon: whisper.cpp STT, local-LLM cleanup, X11 text injection'
+arch=('x86_64')
+url='https://github.com/jakedevar/dictate-agent'
+license=('MIT')
+depends=('alsa-lib' 'openssl' 'systemd')
+makedepends=('git' 'rust' 'cmake' 'clang' 'pkgconf')
+optdepends=('cuda: GPU transcription when built with _cuda=1'
+            'ollama: local LLM formatting and edit/command routes')
+provides=('dictate-agent')
+conflicts=('dictate-agent')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+if [ -n "${_cuda:-}" ]; then
+  makedepends+=('cuda')
+  _features=(--features dictated/cuda)
+else
+  _features=()
+fi
+
+pkgver() {
+  cd "$srcdir/dictate-agent"
+  printf '%s.r%s.g%s' \
+    "$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' Cargo.toml)" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$srcdir/dictate-agent"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked
+}
+
+build() {
+  cd "$srcdir/dictate-agent"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  # whisper.cpp builds through CMake; the CUDA variant additionally needs nvcc.
+  [ -z "${_cuda:-}" ] || export PATH="/opt/cuda/bin:$PATH"
+  cargo build --release --frozen --workspace "${_features[@]}"
+}
+
+check() {
+  cd "$srcdir/dictate-agent"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  ./target/release/dictated --check-config --config config/config.example.toml >/dev/null
+}
+
+package() {
+  cd "$srcdir/dictate-agent"
+  make install-files install-unit \
+    DESTDIR="$pkgdir" PREFIX=/usr SYSTEMD_USER_DIR=/usr/lib/systemd/user \
+    TARGET_DIR=target/release
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 THIRD_PARTY.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
+}
