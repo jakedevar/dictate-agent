@@ -174,6 +174,10 @@ pub struct ResolvedOptions {
     pub context: Option<dictate_proto::AppContext>,
     /// Resolved overrides consumed by formatting and injection.
     pub profile: dictate_proto::ResolvedProfile,
+    /// The session arrived over the network API (S33). Its words never reach
+    /// the logs, at any level — like a privacy session's, but without
+    /// changing what history keeps.
+    pub remote: bool,
 }
 
 impl Default for ResolvedOptions {
@@ -190,6 +194,7 @@ impl Default for ResolvedOptions {
             capture_context: true,
             context: None,
             profile: dictate_proto::ResolvedProfile::default(),
+            remote: false,
         }
     }
 }
@@ -616,16 +621,25 @@ impl Pipeline {
         interaction.corrected_transcription = Some(raw_text.clone());
         // One privacy decision for everything below: the session asked for it,
         // or the store is globally private (an unreadable store counts as
-        // private). Logs reach the journal, so in private sessions they carry
-        // no transcript text at any stage.
+        // private).
         let private = opts.privacy
             || self
                 .history
                 .lock()
                 .map(|store| store.is_privacy_mode())
                 .unwrap_or(true);
-        if !private {
-            info!("Transcribed: \"{}\"", raw_text);
+        // Logs reach the journal. Transcript text is never written there at
+        // INFO or above, for any session: INFO carries lengths and timings.
+        // The words go to DEBUG only, and never for a private session or one
+        // that arrived over the network.
+        let log_text = !private && !opts.remote;
+        info!(
+            chars = raw_text.chars().count(),
+            stt_ms = stages.timings.stt.elapsed_ms().unwrap_or_default(),
+            "transcribed"
+        );
+        if log_text {
+            debug!(text = %raw_text, "transcribed text");
         }
 
         // --- Formatting -----------------------------------------------------
@@ -680,9 +694,8 @@ impl Pipeline {
             // which spans it must not let the model touch.
             (TextDoc::protected(&raw_text), raw_text.clone())
         };
-        // Logs reach the journal: in privacy mode they carry no text.
-        if rules_text != raw_text && !private {
-            info!("Formatted: \"{}\"", rules_text);
+        if rules_text != raw_text && log_text {
+            debug!(text = %rules_text, "formatted text");
         }
         interaction.grammar_input = Some(rules_text.clone());
         interaction.corrected_transcription = Some(rules_text.clone());
@@ -722,10 +735,13 @@ impl Pipeline {
             .clone()
             .unwrap_or_else(|| route_to_proto(routed.route.clone()));
         ctx.route = resolved_route.clone();
-        if private {
-            info!("Routed to {:?}", resolved_route);
-        } else {
-            info!("Routed to {:?}: \"{}\"", resolved_route, routed.text);
+        info!(
+            route = resolved_route.as_str(),
+            chars = routed.text.chars().count(),
+            "routed"
+        );
+        if log_text {
+            debug!(route = resolved_route.as_str(), text = %routed.text, "routed text");
         }
 
         interaction.route_type = Some(resolved_route.as_str().to_string());
@@ -791,19 +807,26 @@ impl Pipeline {
                         interaction.grammar_changed = formatted.changed && error.is_none();
                         interaction.grammar_error = error.clone();
                         interaction.grammar_duration_s = Some(formatted.duration_s);
+                        // The rejection names the span it lost, which is
+                        // transcript text: DEBUG, and only when loggable.
                         if let Some(reason) = &rejected {
-                            if private {
-                                warn!(
-                                    "formatter altered a protected span; keeping the rules output"
-                                );
-                            } else {
-                                warn!("{reason}; keeping the rules output");
+                            warn!("formatter altered a protected span; keeping the rules output");
+                            if log_text {
+                                debug!("{reason}");
                             }
-                        } else if formatted.changed && error.is_none() && !private {
+                        } else if formatted.changed && error.is_none() {
                             info!(
-                                "Grammar corrected: \"{}\" → \"{}\"",
-                                rules_text, formatted.text
+                                chars_in = rules_text.chars().count(),
+                                chars_out = formatted.text.chars().count(),
+                                "LLM pass changed the text"
                             );
+                            if log_text {
+                                debug!(
+                                    before = %rules_text,
+                                    after = %formatted.text,
+                                    "LLM pass changed the text"
+                                );
+                            }
                         }
                         if error.is_some() {
                             rules_text.clone()

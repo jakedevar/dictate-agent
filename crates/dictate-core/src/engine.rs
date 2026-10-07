@@ -876,6 +876,8 @@ pub fn resolve_options(
         capture_context: capabilities.features.context_read && capabilities.features.host_capture,
         context: None,
         profile: Default::default(),
+        // Set by the transport: the socket leaves it off, the network API on.
+        remote: false,
     })
 }
 

@@ -371,7 +371,10 @@ impl TimerExecutor {
             .output()
         {
             Ok(output) if output.status.success() => {
-                info!("Timer set: {} ({})", human_dur, label);
+                // The label is what the user said: it stays out of the logs
+                // (they reach the journal, and this executor cannot tell a
+                // private session from any other).
+                info!(duration = %human_dur, "timer set");
                 TimerResult {
                     success: true,
                     response: format!("Timer set for {}: {}", human_dur, label),

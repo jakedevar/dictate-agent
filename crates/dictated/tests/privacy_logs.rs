@@ -2,9 +2,10 @@
 //!
 //! Logs reach the systemd journal, so a private session that wrote its text
 //! there would defeat privacy mode as surely as a history row. This binary
-//! installs one global subscriber that captures everything at INFO and runs
-//! sessions through the real daemon: the private ones must leave no trace of
-//! their words; a normal one must (which proves the capture works).
+//! installs one global subscriber that captures everything down to DEBUG and
+//! runs sessions through the real daemon: the private ones must leave no trace
+//! of their words at any level; a normal one leaves them at DEBUG only (which
+//! proves the capture works) — never at INFO or above, for any session.
 
 mod harness;
 
@@ -36,6 +37,7 @@ fn logs() -> &'static Capture {
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
                 .with_max_level(tracing::Level::DEBUG)
+                .with_ansi(false)
                 .with_writer(move || writer.clone())
                 .finish(),
         )
@@ -108,7 +110,22 @@ async fn private_sessions_log_no_transcript_text() {
     let logs = captured();
     assert!(
         logs.contains("pangolin"),
-        "the capture must see a normal session's text at INFO"
+        "the capture must see a normal session's text at DEBUG"
+    );
+    // Manager ruling on NETWORK_TRANSCRIPTS_LOGGED: transcript text is never
+    // logged at INFO or above, for any session; INFO carries lengths.
+    for line in logs.lines().filter(|l| l.contains("pangolin")) {
+        assert_eq!(
+            line.split_whitespace().nth(1),
+            Some("DEBUG"),
+            "transcript text above DEBUG: {line}"
+        );
+    }
+    assert!(
+        logs.lines().any(
+            |l| l.split_whitespace().nth(1) == Some("INFO") && l.contains("transcribed chars=")
+        ),
+        "INFO reports the transcript's length instead"
     );
     for secret in ["quokka", "ledger", "axolotl", "invoice"] {
         assert!(
