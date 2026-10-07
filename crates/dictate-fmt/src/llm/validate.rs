@@ -855,9 +855,42 @@ fn weighted_edits(input: &[&str], output: &[&str]) -> f64 {
 /// Cost of dropping one dictated word in [`weighted_edits`].
 const DELETE_COST: f64 = 0.5;
 
+/// Consume output tokens in order, using each dictated occurrence at most
+/// once. Only local spelling joins/splits and in-scope vocabulary repairs
+/// may replace a token; deletion explanations are checked separately.
+fn verbatim_alignment(c: &Check<'_>, input: &[&str], output: &[&str]) -> bool {
+    let vocabulary: HashSet<String> = c.vocabulary.iter().flat_map(|v| words(v)).collect();
+    let mut reachable = vec![vec![false; output.len() + 1]; input.len() + 1];
+    reachable[0][0] = true;
+    for i in 0..input.len() {
+        for j in 0..=output.len() {
+            if !reachable[i][j] { continue; }
+            reachable[i + 1][j] = true; // A deletion; checked by DroppedWords.
+            if j == output.len() { continue; }
+            if input[i] == output[j] { reachable[i + 1][j + 1] = true; }
+            for n in 1..=3.min(input.len() - i) {
+                let joined = input[i..i + n].concat();
+                if joined == output[j] || (vocabulary.contains(output[j])
+                    && normalized_similarity(&joined, output[j]) >= 0.6) {
+                    reachable[i + n][j + 1] = true;
+                }
+            }
+            for n in 2..=3.min(output.len() - j) {
+                if output[j..j + n].concat() == input[i] {
+                    reachable[i + 1][j + n] = true;
+                }
+            }
+        }
+    }
+    reachable[input.len()][output.len()]
+}
+
 fn edit_distance(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(), Rejection> {
     let input = collapse_numbers(input);
     let output = collapse_numbers(output);
+    if c.policy.style == Style::Verbatim && !verbatim_alignment(c, &input, &output) {
+        return Err(Rejection::new(Validator::EditDistance, "verbatim tokens are reordered or duplicated"));
+    }
     if input.is_empty() {
         return Ok(());
     }
@@ -1493,6 +1526,22 @@ mod tests {
             "chat",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn verbatim_requires_ordered_single_use_word_alignment() {
+        for category in ["terminal", "editor"] {
+            for (input, output) in [
+                ("Alice from Bob", "Bob from Alice."),
+                ("do not", "Do not not."),
+                ("copy alpha to beta", "Copy beta to alpha."),
+                ("send the report", "Send the report report."),
+            ] {
+                assert_eq!(rejected_by(run(input, output, category)), Validator::EditDistance);
+            }
+            run("um Alice from Bob", "Alice from Bob.", category).unwrap();
+            run("do not not deploy", "Do not deploy.", category).unwrap();
+        }
     }
 
     #[test]
