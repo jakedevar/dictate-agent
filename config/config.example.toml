@@ -348,3 +348,44 @@ recase_phrases = true
 fuzzy = false
 # Single-token edit similarity, 0.8..1.0; short words and ambiguous matches skip.
 fuzzy_threshold = 0.9
+
+# Network API (S33): dictate-proto over HTTP + WebSocket for a phone or a second
+# machine. OFF by default — a default install opens no TCP port. Security design:
+# thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md
+#
+# Every request needs `Authorization: Bearer <token>`, loopback included. Create
+# the token with `dictated --api-token` (prints it, plus the URL and any TLS
+# fingerprint to pin); replace it with `dictated --rotate-api-token`. The daemon
+# never creates one on its own and refuses to start the API without one.
+#
+# A network peer may only transcribe audio it sends (POST /v1/transcribe, or
+# transcribe_audio over GET /v1/ws). It can never type into this desktop, switch
+# on the microphone, read window titles, history or the dictionary, or read or
+# write this configuration.
+[api]
+enabled = false
+# IP:port. Loopback unless allow_lan; hostnames and 0.0.0.0/:: are refused.
+bind = "127.0.0.1:7313"
+# Required for any non-loopback bind, together with TLS or allow_plaintext_lan.
+allow_lan = false
+# Only for a bind address on an encrypted tunnel (WireGuard/Tailscale). Never on
+# Wi-Fi: the bearer token would cross the network in the clear.
+allow_plaintext_lan = false
+# PEM files (e.g. from `tailscale cert`); set both to serve HTTPS.
+tls_cert = ""
+tls_key = ""
+# Empty uses $XDG_DATA_HOME/dictated/api-token (must be mode 0600).
+token_file = ""
+# Extra Host values to accept, e.g. a *.ts.net name when `tailscale serve`
+# fronts a loopback bind (the recommended phone setup).
+allowed_hosts = []
+# Browsers send Origin; any request carrying one is refused unless listed here.
+allowed_origins = []
+# Let network peers see raw_text (recognizer output before formatting).
+expose_raw_text = false
+max_upload_bytes = 33554432
+max_audio_seconds = 300
+max_connections = 16
+max_ws_sessions = 4
+requests_per_minute = 120
+burst = 20

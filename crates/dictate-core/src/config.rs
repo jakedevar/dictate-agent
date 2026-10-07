@@ -8,6 +8,7 @@ pub use dictate_dict::DictionaryConfig;
 pub use dictate_fmt::{FormatConfig, GrammarConfig, RulesConfig};
 pub use dictate_history::HistoryConfig;
 pub use dictate_inject::OutputConfig;
+pub use dictate_server::ApiConfig;
 pub use dictate_stt::WhisperConfig;
 pub use dictate_vad::VadConfig;
 
@@ -39,6 +40,8 @@ pub struct Config {
     pub context: ContextConfig,
     pub dictionary: DictionaryConfig,
     pub upload: UploadConfig,
+    /// `[api]`: the S33 network API. Off by default; see `dictate-server`.
+    pub api: ApiConfig,
 }
 
 /// Limits on audio a client uploads with `transcribe_audio`.
@@ -493,6 +496,15 @@ fn finalize(mut config: Config) -> Config {
     config.timer.sound_file = expand_tilde(&config.timer.sound_file)
         .to_string_lossy()
         .into_owned();
+    for path in [
+        &mut config.api.token_file,
+        &mut config.api.tls_cert,
+        &mut config.api.tls_key,
+    ] {
+        if !path.is_empty() {
+            *path = expand_tilde(path).to_string_lossy().into_owned();
+        }
+    }
     config
 }
 
@@ -530,6 +542,9 @@ fn validate(config: &Config) -> Vec<String> {
     if let Err(e) = config.dictionary.validate() {
         errors.push(e.to_string());
     }
+    // S33: an enabled API that would expose more than it opted into is a
+    // startup error, reported by `--check-config` before a restart.
+    errors.extend(config.api.validate());
     let device = config.whisper.device.to_ascii_lowercase();
     if device != "cuda" && device != "cpu" {
         errors.push(format!(
@@ -1060,5 +1075,73 @@ mod context_tests {
             toml::from_str(include_str!("../../../config/config.example.toml")).unwrap();
         assert!(config.context.enabled);
         assert!(config.context.profiles.is_empty(), "examples are opt-in");
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+
+    #[test]
+    fn the_api_is_off_by_default_and_documented_off_in_the_example() {
+        assert!(!Config::default().api.enabled);
+        let (config, report) =
+            parse_config(include_str!("../../../config/config.example.toml")).unwrap();
+        assert!(
+            !config.api.enabled,
+            "the shipped example must not open a port"
+        );
+        assert_eq!(config.api.bind, ApiConfig::default().bind);
+        assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn an_enabled_lan_bind_without_the_opt_in_is_a_config_error() {
+        let (_, report) =
+            parse_config("[api]\nenabled = true\nbind = \"192.168.1.20:7313\"\n").unwrap();
+        assert!(
+            report.errors.iter().any(|e| e.contains("allow_lan")),
+            "{:#?}",
+            report.errors
+        );
+        let (_, report) =
+            parse_config("[api]\nenabled = true\nbind = \"192.168.1.20:7313\"\nallow_lan = true\n")
+                .unwrap();
+        assert!(
+            report.errors.iter().any(|e| e.contains("plaintext")),
+            "{:#?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn a_disabled_api_never_blocks_startup() {
+        let (_, report) = parse_config("[api]\nenabled = false\nbind = \"0.0.0.0:1\"\n").unwrap();
+        assert!(report.errors.is_empty(), "{:#?}", report.errors);
+    }
+
+    #[test]
+    fn unknown_api_keys_are_named() {
+        let (_, report) = parse_config("[api]\ntoken = \"dct1_x\"\n").unwrap();
+        assert!(
+            report.warnings.iter().any(|w| w.contains("api.token")),
+            "{:#?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn api_paths_expand_tildes() {
+        let (config, _) = parse_config(
+            "[api]\ntoken_file = \"~/t/api-token\"\ntls_cert = \"~/c.pem\"\ntls_key = \"~/k.pem\"\n",
+        )
+        .unwrap();
+        for path in [
+            &config.api.token_file,
+            &config.api.tls_cert,
+            &config.api.tls_key,
+        ] {
+            assert!(!path.starts_with('~'), "{path}");
+        }
     }
 }
