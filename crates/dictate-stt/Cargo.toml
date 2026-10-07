@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["cuda"]
+# The default is the CPU build of whisper.cpp: a plain `cargo test|clippy
+# --workspace` must never compile the CUDA backend (cicc/ptxas, ~1000 CPU-s).
+# CUDA is opt-in: `dictated/cuda` -> `dictate-core/cuda` -> `dictate-stt/cuda`.
+default = ["transcribe"]
 # Provider/decode support is optional so the tiny control CLI can manage the
 # model catalog without linking whisper.cpp or CUDA.
 transcribe = ["dep:tokio", "dep:tracing", "dep:whisper-rs"]
-# Production default: whisper.cpp CUDA on the RTX 5080.
+# whisper.cpp CUDA on the RTX 5080 (sm_120, pinned in .cargo/config.toml).
+# Release/install builds and `just e2e` enable it; the worker gate does not.
 cuda = ["transcribe", "whisper-rs/cuda"]
 # CI/runtime fallback: selects tiny.en + CPU defaults. Combine with
 # `--no-default-features` to ensure no CUDA backend is required.
