@@ -38,13 +38,19 @@ struct Calls {
     dropped: AtomicUsize,
 }
 
+/// The socket's pre-handshake ceiling, as `dictated` applies it.
+const PRE_HANDSHAKE: usize = 64 * 1024;
+
 struct FakeBackend {
     calls: Arc<Calls>,
+    /// The negotiated message limit after a handshake.
+    granted: usize,
 }
 
 struct FakeSession {
     calls: Arc<Calls>,
     handshaken: bool,
+    granted: usize,
 }
 
 impl Drop for FakeSession {
@@ -59,7 +65,12 @@ impl Backend for FakeBackend {
         Box::new(FakeSession {
             calls: self.calls.clone(),
             handshaken: false,
+            granted: self.granted,
         })
+    }
+
+    fn max_message_bytes(&self) -> usize {
+        PRE_HANDSHAKE.max(self.granted)
     }
 }
 
@@ -125,6 +136,14 @@ impl Session for FakeSession {
         })
     }
 
+    fn max_message_bytes(&self) -> usize {
+        if self.handshaken {
+            self.granted
+        } else {
+            PRE_HANDSHAKE
+        }
+    }
+
     fn execute(
         &mut self,
         command: Command,
@@ -156,12 +175,23 @@ struct Running {
     server: Option<ApiServer>,
     addr: SocketAddr,
     token: String,
+    token_file: PathBuf,
     calls: Arc<Calls>,
     dir: PathBuf,
 }
 
 impl Running {
     async fn start(tweak: impl FnOnce(&mut ApiConfig)) -> Self {
+        Self::start_with(
+            tweak,
+            ApiConfig::default().limits().max_message_bytes as usize,
+        )
+        .await
+    }
+
+    /// As [`Running::start`], with the message limit the fake daemon grants
+    /// at handshake.
+    async fn start_with(tweak: impl FnOnce(&mut ApiConfig), granted: usize) -> Self {
         let dir = temp_dir();
         let token_file = dir.join("api-token");
         let (token, _) = dictate_server::token::ensure(&token_file).unwrap();
@@ -177,6 +207,7 @@ impl Running {
             &config,
             Arc::new(FakeBackend {
                 calls: calls.clone(),
+                granted,
             }),
         )
         .await
@@ -186,6 +217,7 @@ impl Running {
             addr: server.local_addr(),
             server: Some(server),
             token,
+            token_file,
             calls,
             dir,
         }
@@ -636,6 +668,7 @@ async fn startup_refuses_a_lan_bind_without_the_opt_in() {
     let backend = || -> Arc<dyn Backend> {
         Arc::new(FakeBackend {
             calls: Arc::new(Calls::default()),
+            granted: PRE_HANDSHAKE,
         })
     };
     for config in [
@@ -683,6 +716,7 @@ async fn startup_refuses_without_a_usable_token() {
     };
     let backend: Arc<dyn Backend> = Arc::new(FakeBackend {
         calls: Arc::new(Calls::default()),
+        granted: PRE_HANDSHAKE,
     });
     assert!(matches!(
         ApiServer::start(&config, backend.clone()).await,
@@ -884,6 +918,270 @@ async fn shutdown_closes_open_websocket_sessions() {
     })
     .await;
     api.stop().await;
+    assert_eq!(close_code(&mut ws).await, 1001);
+}
+
+// --- every WebSocket request is admitted again ---------------------------------
+
+async fn ws_send(ws: &mut tokio_tungstenite::WebSocketStream<TcpStream>, line: String) {
+    ws.send(WsMessage::Text(line.into())).await.unwrap();
+}
+
+fn handshake_line(id: u64) -> String {
+    request_line(
+        id,
+        serde_json::json!({"type":"handshake","protocol_version":1,"client":{"name":"t"}}),
+    )
+}
+
+fn commands(calls: &Calls) -> Vec<String> {
+    calls.commands.lock().unwrap().clone()
+}
+
+async fn authed_ws(api: &Running) -> tokio_tungstenite::WebSocketStream<TcpStream> {
+    let auth = bearer(&api.token);
+    ws_connect(api, &[("Authorization", &auth)]).await.unwrap()
+}
+
+/// Wait for the server to end the session, however it does it.
+async fn ended(ws: &mut tokio_tungstenite::WebSocketStream<TcpStream>) -> Option<u16> {
+    loop {
+        match within("the session to end", ws.next()).await {
+            Some(Ok(WsMessage::Close(frame))) => return frame.map(|f| f.code.into()),
+            Some(Ok(_)) => {}
+            Some(Err(_)) | None => return None,
+        }
+    }
+}
+
+/// WS_TOKEN_REVOCATION_BYPASS: rotating the token ends every session opened
+/// with the old one; the next command does not run.
+#[tokio::test]
+async fn rotating_the_token_closes_open_websocket_sessions() {
+    let api = Running::start(|_| {}).await;
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    assert_eq!(next_text(&mut ws).await["id"], 1);
+
+    let rotated = dictate_server::token::rotate(&api.token_file).unwrap();
+    ws_send(
+        &mut ws,
+        request_line(2, serde_json::json!({"type":"get_status"})),
+    )
+    .await;
+    assert_eq!(close_code(&mut ws).await, 1008);
+    assert_eq!(
+        commands(&api.calls),
+        vec!["handshake"],
+        "nothing ran on the revoked token"
+    );
+
+    // The rotated token opens a session as usual.
+    let auth = bearer(&rotated);
+    assert!(ws_connect(&api, &[("Authorization", &auth)]).await.is_ok());
+    api.stop().await;
+}
+
+/// A session that sends nothing is closed too, when the token file is
+/// deleted or made readable by others.
+#[tokio::test]
+async fn revoking_the_token_closes_an_idle_websocket_session() {
+    use std::os::unix::fs::PermissionsExt;
+    for revoke in ["delete", "chmod 644"] {
+        let api = Running::start(|_| {}).await;
+        let mut ws = authed_ws(&api).await;
+        ws_send(&mut ws, handshake_line(1)).await;
+        let _ = next_text(&mut ws).await;
+        if revoke == "delete" {
+            std::fs::remove_file(&api.token_file).unwrap();
+        } else {
+            std::fs::set_permissions(&api.token_file, std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        assert_eq!(close_code(&mut ws).await, 1008, "{revoke}");
+        api.stop().await;
+    }
+}
+
+/// WS_THROTTLE_FAIL_OPEN: a request the peer's rate will not admit within
+/// the bounded wait is answered `rate_limited` and never runs.
+#[tokio::test]
+async fn an_over_rate_websocket_request_is_refused_not_run() {
+    let api = Running::start(|c| {
+        c.requests_per_minute = 1;
+        c.burst = 1;
+    })
+    .await;
+    // The upgrade spends the only token; the next one is a minute away.
+    let mut ws = authed_ws(&api).await;
+    let started = std::time::Instant::now();
+    ws_send(&mut ws, handshake_line(1)).await;
+    let reply = next_text(&mut ws).await;
+    assert_eq!(reply["id"], 1, "{reply}");
+    assert_eq!(reply["error"]["code"], "rate_limited", "{reply}");
+    assert!(reply["error"]["detail"]["retry_after_s"].as_u64().unwrap() > 5);
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "refused at once, not after a wait that ends in running it"
+    );
+    assert!(commands(&api.calls).is_empty(), "nothing ran");
+    api.stop().await;
+}
+
+/// A short wait is waited out, then the request runs on a token it holds.
+#[tokio::test]
+async fn a_websocket_request_waits_out_a_short_refill() {
+    let api = Running::start(|c| {
+        c.requests_per_minute = 600;
+        c.burst = 1;
+    })
+    .await;
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    let reply = next_text(&mut ws).await;
+    assert_eq!(reply["result"]["type"], "handshake", "{reply}");
+    assert_eq!(commands(&api.calls), vec!["handshake"]);
+    api.stop().await;
+}
+
+/// A peer locked out over HTTP is locked out on the WebSocket it already
+/// holds: its commands are refused for the lockout, not run after a pause.
+#[tokio::test]
+async fn a_locked_out_peer_runs_nothing_on_its_open_websocket() {
+    let api = Running::start(|c| {
+        c.requests_per_minute = 6000;
+        c.burst = 100;
+    })
+    .await;
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    let _ = next_text(&mut ws).await;
+    let wrong = bearer(&dictate_server::token::generate().unwrap());
+    for _ in 0..dictate_server::limit::MAX_AUTH_FAILURES {
+        let reply = exchange(
+            api.addr,
+            request(
+                "GET",
+                "/v1/status",
+                &api.host(),
+                &[("Authorization", &wrong)],
+                b"",
+            ),
+        )
+        .await;
+        assert_eq!(reply.status, 401);
+    }
+    let started = std::time::Instant::now();
+    ws_send(
+        &mut ws,
+        request_line(2, serde_json::json!({"type":"get_status"})),
+    )
+    .await;
+    let reply = next_text(&mut ws).await;
+    assert_eq!(reply["id"], 2, "{reply}");
+    assert_eq!(reply["error"]["code"], "rate_limited", "{reply}");
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert_eq!(commands(&api.calls), vec!["handshake"]);
+    api.stop().await;
+}
+
+/// WS_NEGOTIATED_MESSAGE_LIMIT_BYPASS: after the handshake a message is held
+/// to the grant's limit, not the API's encoded upload size.
+#[tokio::test]
+async fn a_websocket_message_over_the_negotiated_limit_is_refused_unread() {
+    let api = Running::start_with(|_| {}, 1024).await;
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    let _ = next_text(&mut ws).await;
+    let padded = serde_json::json!({
+        "kind": "request", "v": 1, "id": 2,
+        "command": {"type": "get_status"},
+        "padding": "x".repeat(4096),
+    })
+    .to_string();
+    ws_send(&mut ws, padded).await;
+    let reply = next_text(&mut ws).await;
+    assert_eq!(reply["kind"], "event", "{reply}");
+    assert_eq!(
+        reply["event"]["error"]["code"], "payload_too_large",
+        "{reply}"
+    );
+    assert_eq!(close_code(&mut ws).await, 1009);
+    assert_eq!(commands(&api.calls), vec!["handshake"]);
+
+    // The transport buffers no more than the connection could ever accept
+    // (here the 64 KiB pre-handshake ceiling), whatever [api] allows uploads.
+    let mut ws = authed_ws(&api).await;
+    let huge = serde_json::json!({
+        "kind": "request", "v": 1, "id": 3,
+        "command": {"type": "handshake", "protocol_version": 1, "client": {"name": "t"}},
+        "padding": "x".repeat(128 * 1024),
+    })
+    .to_string();
+    let _ = ws.send(WsMessage::Text(huge.into())).await;
+    let _ = ended(&mut ws).await;
+    assert_eq!(
+        commands(&api.calls),
+        vec!["handshake"],
+        "the huge one never ran"
+    );
+    api.stop().await;
+}
+
+/// Before the handshake, the socket's 64 KiB ceiling applies, however large
+/// the grant the handshake would bring.
+#[tokio::test]
+async fn before_the_handshake_a_websocket_message_is_held_to_64_kib() {
+    let api = Running::start(|_| {}).await;
+    let mut ws = authed_ws(&api).await;
+    let padded = serde_json::json!({
+        "kind": "request", "v": 1, "id": 1,
+        "command": {"type": "handshake", "protocol_version": 1, "client": {"name": "t"}},
+        "padding": "x".repeat(70 * 1024),
+    })
+    .to_string();
+    ws_send(&mut ws, padded).await;
+    let reply = next_text(&mut ws).await;
+    assert_eq!(
+        reply["event"]["error"]["code"], "payload_too_large",
+        "{reply}"
+    );
+    assert_eq!(close_code(&mut ws).await, 1009);
+    assert!(commands(&api.calls).is_empty());
+    api.stop().await;
+}
+
+/// WS_IDLE_SHUTDOWN_NOT_ENFORCED_IN_FLIGHT: shutdown interrupts a request in
+/// flight, closes the session, and returns only once its daemon connection
+/// has been dropped (which is what cancels an upload).
+#[tokio::test]
+async fn shutdown_interrupts_a_websocket_request_in_flight() {
+    let api = Running::start(|_| {}).await;
+    let calls = api.calls.clone();
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    let _ = next_text(&mut ws).await;
+    ws_send(
+        &mut ws,
+        request_line(
+            2,
+            serde_json::json!({"type":"transcribe_audio","audio":{"source":"inline","format":{"encoding":"wav"},"data":"UklGRg=="},"options":{"app":"block"}}),
+        ),
+    )
+    .await;
+    within("the upload to start", async {
+        while !commands(&calls).contains(&"transcribe_audio".to_string()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    within("shutdown", api.stop()).await;
+    assert_eq!(calls.opened.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        calls.dropped.load(Ordering::SeqCst),
+        1,
+        "the daemon connection is dropped before shutdown returns"
+    );
     assert_eq!(close_code(&mut ws).await, 1001);
 }
 

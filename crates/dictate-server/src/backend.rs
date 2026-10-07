@@ -35,6 +35,12 @@ pub trait Backend: Send + Sync + 'static {
     /// not handshaken yet; until it does, every command but `handshake` is
     /// refused (`handshake_required`).
     fn open(&self) -> Box<dyn Session>;
+
+    /// The largest envelope any connection this backend opens may accept at
+    /// any point in its life (before or after its handshake). The WebSocket
+    /// transport buffers no more than this per message; each message is then
+    /// held to [`Session::max_message_bytes`].
+    fn max_message_bytes(&self) -> usize;
 }
 
 /// One network peer's connection to the daemon.
@@ -46,6 +52,12 @@ pub trait Session: Send + 'static {
     /// unix socket's line handling, including the `unsupported_command`
     /// answer for an unknown command and connection-level error events.
     fn handle_text<'a>(&'a mut self, text: &'a str, hangup: Hangup) -> BoxFuture<'a, Message>;
+
+    /// The largest envelope this connection accepts now: the socket's
+    /// pre-handshake ceiling until it handshakes, then its grant's
+    /// `limits.max_message_bytes`. A longer message is refused unread
+    /// (`payload_too_large`) and ends the connection, as on the socket.
+    fn max_message_bytes(&self) -> usize;
 
     /// One typed command, for transports that build the command themselves
     /// (`POST /v1/transcribe`).

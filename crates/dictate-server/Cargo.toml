@@ -30,4 +30,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The same tokio-tungstenite axum's `ws` feature links, as the test client.
 tokio-tungstenite = "0.29"
+# Captures the transport's own log lines (admission-refusal budget).
+tracing-subscriber = { workspace = true }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }

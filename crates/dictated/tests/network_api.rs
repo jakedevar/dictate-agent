@@ -272,7 +272,16 @@ async fn raw_text_reaches_a_network_peer_only_when_the_operator_opts_in() {
 async fn a_network_peer_cannot_type_or_run_host_routes() {
     let mut h = Harness::start().await;
     let api = start_api(&mut h, |_| {}).await;
-    for query in ["inject=true", "route=timer", "route=local", "route=command"] {
+    // `edit` (S25) and `note` (S35) arrived with the master merge: host
+    // routes too, so just as unreachable from the network.
+    for query in [
+        "inject=true",
+        "route=timer",
+        "route=local",
+        "route=command",
+        "route=edit",
+        "route=note",
+    ] {
         let reply = http(&api, "POST", &format!("/v1/transcribe?{query}"), &wav(0.5)).await;
         assert_eq!(
             reply.status,
@@ -435,6 +444,22 @@ async fn every_command_beyond_transcription_is_refused_over_the_network() {
             entry: dictate_proto::DictionaryEntry::new("Kubernetes"),
         },
         Command::DeleteDictionaryEntry { id: 1 },
+        // S24 snippets and S35 notes landed on master after this slice was
+        // cut: implemented on the socket, and still outside the network grant.
+        Command::ListSnippets {
+            query: None,
+            limit: None,
+        },
+        Command::UpsertSnippet {
+            snippet: dictate_proto::Snippet::new("synthetic trigger", "synthetic expansion"),
+        },
+        Command::DeleteSnippet { id: 1 },
+        Command::ListNotes {
+            query: None,
+            limit: None,
+            id: None,
+        },
+        Command::DeleteNote { id: 1 },
         Command::QueryHistory {
             query: dictate_proto::HistoryQuery::default(),
         },
@@ -452,10 +477,6 @@ async fn every_command_beyond_transcription_is_refused_over_the_network() {
             options: None,
         },
         Command::EndAudioStream { stream_id: 1 },
-        Command::ListSnippets {
-            query: None,
-            limit: None,
-        },
     ] {
         let name = command.name();
         expect_code(
@@ -651,5 +672,156 @@ async fn an_inline_upload_over_the_websocket_honors_the_network_limits() {
         Message::Response(r) => assert!(r.outcome.is_ok(), "{:?}", r.outcome.error()),
         other => panic!("expected a response, got {other:?}"),
     }
+    h.stop().await;
+}
+
+// --- pre-merge security review findings ----------------------------------------
+
+/// The token file the API in `h` authenticates against.
+fn token_file(h: &Harness) -> PathBuf {
+    h.dir().join("api-token")
+}
+
+/// Send one raw text frame and return what comes back first: a message, or
+/// `None` when the session ends instead.
+async fn send_raw(ws: &mut Ws, line: String) -> Option<Message> {
+    ws.ws.send(WsMessage::Text(line.into())).await.unwrap();
+    within("an answer or the close", ws.read()).await
+}
+
+fn error_event_code(message: Option<Message>) -> ErrorCode {
+    match message {
+        Some(Message::Event(e)) => match e.event {
+            Event::Error { error, .. } => error.code,
+            other => panic!("expected an error event, got {other:?}"),
+        },
+        other => panic!("expected an error event, got {other:?}"),
+    }
+}
+
+/// WS_DECODED_UPLOAD_LIMIT_BYPASS: `[api] max_upload_bytes` is one cap on
+/// audio bytes for both transports. The same WAV that `POST /v1/transcribe`
+/// refuses is refused over the WebSocket, where it arrives as base64.
+#[tokio::test]
+async fn the_websocket_takes_no_more_audio_than_http() {
+    let mut h = Harness::start().await;
+    let api = start_api(&mut h, |c| c.max_upload_bytes = 1_000).await;
+    let over = wav(0.04);
+    assert_eq!(over.len(), 1_324);
+    let under = wav(0.029);
+    assert!(under.len() <= 1_000);
+
+    let http_over = http(&api, "POST", "/v1/transcribe", &over).await;
+    assert_eq!(http_over.status, 413);
+    assert_eq!(http_over.json()["code"], "payload_too_large");
+
+    let mut ws = Ws::connect(&api).await;
+    let caps = ws.handshake().await;
+    assert!(
+        caps.limits.max_message_bytes as usize > over.len() * 4 / 3 + 200,
+        "the envelope fits, so only the audio cap can refuse it"
+    );
+    let refused = ws
+        .request(Command::TranscribeAudio {
+            audio: AudioSource::Inline {
+                format: AudioFormat::wav(),
+                data: over,
+            },
+            options: None,
+        })
+        .await;
+    match refused {
+        Err(e) => {
+            assert_eq!(e.code, ErrorCode::PayloadTooLarge, "{}", e.message);
+            assert_eq!(e.detail.as_deref().unwrap()["limit_bytes"], 1_000);
+        }
+        Ok(r) => panic!("the WebSocket accepted what HTTP refused: {r:?}"),
+    }
+
+    // Under the cap both transports accept it.
+    assert_eq!(
+        http(&api, "POST", "/v1/transcribe", &under).await.status,
+        200
+    );
+    assert!(ws
+        .request(Command::TranscribeAudio {
+            audio: AudioSource::Inline {
+                format: AudioFormat::wav(),
+                data: under,
+            },
+            options: None,
+        })
+        .await
+        .is_ok());
+    h.stop().await;
+}
+
+/// WS_NEGOTIATED_MESSAGE_LIMIT_BYPASS: after the handshake a WebSocket
+/// message is held to the limit the connection was granted (here the local
+/// 1 KiB), refused unparsed, and the session closed — as on the socket.
+#[tokio::test]
+async fn a_websocket_message_is_held_to_the_negotiated_limit() {
+    let mut caps = dictated::server::host_capabilities(true, false);
+    caps.limits.max_message_bytes = 1_024;
+    let mut h = Harness::with(Setup::default().with_capabilities(caps)).await;
+    let api = start_api(&mut h, |_| {}).await;
+    let mut ws = Ws::connect(&api).await;
+    let granted = ws.handshake().await;
+    assert_eq!(granted.limits.max_message_bytes, 1_024, "advertised");
+
+    let padded = serde_json::json!({
+        "kind": "request", "v": 1, "id": 9,
+        "command": {"type": "get_status"},
+        "padding": "x".repeat(4_096),
+    })
+    .to_string();
+    assert!(padded.len() > 4_096);
+    assert_eq!(
+        error_event_code(send_raw(&mut ws, padded).await),
+        ErrorCode::PayloadTooLarge
+    );
+    assert!(
+        within("the close", ws.read()).await.is_none(),
+        "the session is closed"
+    );
+    h.stop().await;
+}
+
+/// Before the handshake the socket's 64 KiB ceiling applies over the
+/// WebSocket too, not the API's (much larger) upload size.
+#[tokio::test]
+async fn before_its_handshake_a_websocket_is_held_to_64_kib() {
+    let mut h = Harness::start().await;
+    let api = start_api(&mut h, |_| {}).await;
+    let mut ws = Ws::connect(&api).await;
+    let padded = serde_json::json!({
+        "kind": "request", "v": 1, "id": 1,
+        "command": {"type": "handshake", "protocol_version": 1, "client": {"name": "phone"}},
+        "padding": "x".repeat(70 * 1024),
+    })
+    .to_string();
+    assert_eq!(
+        error_event_code(send_raw(&mut ws, padded).await),
+        ErrorCode::PayloadTooLarge
+    );
+    assert!(within("the close", ws.read()).await.is_none());
+    h.stop().await;
+}
+
+/// WS_TOKEN_REVOCATION_BYPASS, against the real daemon: rotating the token
+/// (`dictated --rotate-api-token`) ends a WebSocket opened with the old one
+/// before its next command runs.
+#[tokio::test]
+async fn rotating_the_token_ends_an_open_websocket_session() {
+    let mut h = Harness::start().await;
+    let api = start_api(&mut h, |_| {}).await;
+    let mut ws = Ws::connect(&api).await;
+    ws.handshake().await;
+    dictate_server::token::rotate(&token_file(&h)).unwrap();
+    let line = serde_json::to_string(&Message::request(5u64, Command::GetStatus)).unwrap();
+    assert!(
+        send_raw(&mut ws, line).await.is_none(),
+        "no answer: the session is closed"
+    );
     h.stop().await;
 }

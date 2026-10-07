@@ -65,7 +65,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, error, info, warn};
 
 /// Message ceiling applied before a connection has negotiated its own limits.
-const PRE_HANDSHAKE_MAX_BYTES: usize = 64 * 1024;
+pub(crate) const PRE_HANDSHAKE_MAX_BYTES: usize = 64 * 1024;
 
 /// Sessions a network connection remembers starting, for event scoping.
 const OWNED_SESSIONS: usize = 16;
@@ -272,6 +272,11 @@ struct Conn {
     /// Sessions this connection started, oldest first, at most
     /// [`OWNED_SESSIONS`].
     owned: VecDeque<SessionId>,
+    /// Largest inline upload, in bytes of audio *data* (decoded, not the
+    /// base64 on the wire), when it is tighter than the message limit. A
+    /// network connection carries `[api] max_upload_bytes` here, so the
+    /// WebSocket accepts no more audio than `POST /v1/transcribe` does.
+    max_upload_bytes: Option<u64>,
 }
 
 impl Conn {
@@ -373,6 +378,7 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
         network: false,
         offered: None,
         owned: VecDeque::new(),
+        max_upload_bytes: None,
     };
 
     let result = connection_loop(&mut reader, &mut write_half, &mut events, &mut conn, &deps).await;
@@ -765,16 +771,16 @@ async fn dispatch(
         Command::Handshake(hello) => handshake(hello, conn, deps),
 
         Command::StartDictation { mode, options } => {
-            let resolved = resolve_options(options.as_ref(), &capabilities)?;
+            let mut resolved = resolve_options(options.as_ref(), &capabilities)?;
+            resolved.remote = conn.network;
             let session_id = deps.engine.start(conn.actor(), mode, resolved).await?;
             Ok(CommandResult::SessionStarted { session_id })
         }
 
         Command::Toggle => {
-            let outcome = deps
-                .engine
-                .toggle(conn.actor(), resolve_options(None, &capabilities)?)
-                .await?;
+            let mut resolved = resolve_options(None, &capabilities)?;
+            resolved.remote = conn.network;
+            let outcome = deps.engine.toggle(conn.actor(), resolved).await?;
             Ok(match outcome {
                 dictate_core::ToggleOutcome::Started(session_id) => {
                     CommandResult::SessionStarted { session_id }
@@ -1018,7 +1024,27 @@ async fn transcribe_audio(
     deps: &ServerDeps,
     hangup: &mut Hangup<'_>,
 ) -> Result<CommandResult, ProtoError> {
-    let resolved = resolve_upload_options(options.as_ref(), capabilities)?;
+    let mut resolved = resolve_upload_options(options.as_ref(), capabilities)?;
+    // The pipeline never logs a network session's words, at any level.
+    resolved.remote = conn.network;
+
+    if let (Some(cap), dictate_proto::AudioSource::Inline { data, .. }) =
+        (conn.max_upload_bytes, &audio)
+    {
+        if data.len() as u64 > cap {
+            return Err(ProtoError::new(
+                ErrorCode::PayloadTooLarge,
+                format!(
+                    "the audio payload is {} bytes; this connection accepts at most {cap}",
+                    data.len()
+                ),
+            )
+            .with_detail(serde_json::json!({
+                "limit_bytes": cap,
+                "actual_bytes": data.len(),
+            })));
+        }
+    }
 
     let limits = capabilities.limits.clone();
     let supplied = tokio::task::spawn_blocking(move || decode_upload(&audio, &limits))
@@ -1161,12 +1187,13 @@ pub struct NetworkConnection {
 }
 
 impl NetworkConnection {
-    /// A fresh, not-yet-handshaken connection offered `grant`.
+    /// A fresh, not-yet-handshaken connection offered `grant`, accepting
+    /// inline uploads of at most `max_upload_bytes` bytes of audio data.
     ///
     /// The id comes from the daemon's one [`ClientIdGen`], so a network peer
     /// can never be mistaken for a socket peer's session owner.
     #[must_use]
-    pub fn open(deps: Arc<ServerDeps>, grant: Capabilities) -> Self {
+    pub fn open(deps: Arc<ServerDeps>, grant: Capabilities, max_upload_bytes: u64) -> Self {
         let id = deps.ids.next();
         info!(%id, "network control connection opened");
         let events = deps.engine.subscribe();
@@ -1179,6 +1206,7 @@ impl NetworkConnection {
                 network: true,
                 offered: Some(grant),
                 owned: VecDeque::new(),
+                max_upload_bytes: Some(max_upload_bytes),
             },
             deps,
             events,
@@ -1187,13 +1215,34 @@ impl NetworkConnection {
 
     /// Answer one envelope given as text, exactly as the socket answers one
     /// line. `hangup` resolves if the peer goes away mid-request.
+    ///
+    /// A line longer than [`Self::max_message_bytes`] is refused unparsed
+    /// with `payload_too_large`, the socket's answer; the transport then
+    /// closes the connection, as the socket does.
     pub async fn handle_line(
         &mut self,
         line: &str,
         hangup: impl std::future::Future<Output = ()> + Send,
     ) -> Message {
+        let limit = self.max_message_bytes();
+        if line.len() > limit {
+            return Message::event(Event::Error {
+                session_id: None,
+                error: ProtoError::new(
+                    ErrorCode::PayloadTooLarge,
+                    format!("message exceeds the {limit}-byte limit for this connection"),
+                ),
+            });
+        }
         let mut hangup: Hangup<'_> = Box::pin(hangup);
         process(line, &mut self.conn, &self.deps, &mut hangup).await
+    }
+
+    /// The largest envelope this connection accepts now: the socket's
+    /// pre-handshake ceiling, then the negotiated grant's.
+    #[must_use]
+    pub fn max_message_bytes(&self) -> usize {
+        self.conn.max_message_bytes()
     }
 
     /// Execute one typed command.
@@ -1324,6 +1373,7 @@ mod tests {
             network: false,
             offered: None,
             owned: VecDeque::new(),
+            max_upload_bytes: None,
         };
         let event = Event::Error {
             session_id: None,
@@ -1342,6 +1392,7 @@ mod tests {
             network: false,
             offered: None,
             owned: VecDeque::new(),
+            max_upload_bytes: None,
         };
         assert!(conn.wants(&Event::Error {
             session_id: None,
@@ -1359,6 +1410,7 @@ mod tests {
             network: false,
             offered: None,
             owned: VecDeque::new(),
+            max_upload_bytes: None,
         };
         assert!(conn.wants(&Event::StateChanged {
             session_id: dictate_proto::SessionId("s".into()),
@@ -1631,6 +1683,7 @@ mod tests {
             network: true,
             offered: None,
             owned: owned.iter().map(|s| SessionId((*s).into())).collect(),
+            max_upload_bytes: None,
         }
     }
 

@@ -1,10 +1,16 @@
-//! Per-peer request throttling and the authentication-failure lockout
-//! (design §9).
+//! Per-peer request throttling, the authentication-failure lockout, and the
+//! budget for warnings about refused requests (design §9).
 //!
 //! Keyed on the TCP peer address only. No forwarding header is trusted: behind
 //! a reverse proxy every client shares one bucket, which fails conservative.
-//! The table is bounded, so a scan from many addresses cannot grow it without
-//! limit.
+//!
+//! The table has a hard cap ([`TABLE_CAP`]), enforced under the one lock that
+//! every admission and every failure update takes. Idle peers are dropped
+//! first, then the least recently seen peer that is not locked out. A live
+//! lockout is never evicted to make room: when every entry is one, a peer the
+//! table does not already know is refused ([`Throttled::Saturated`]) until the
+//! earliest lockout expires. So a scan from many source addresses can neither
+//! grow the table nor wash a lockout out of it.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -17,8 +23,8 @@ pub const MAX_AUTH_FAILURES: u32 = 5;
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// How long a locked-out peer is refused.
 pub const LOCKOUT: Duration = Duration::from_secs(60);
-/// Peers tracked before idle entries are pruned.
-const TABLE_CAP: usize = 1024;
+/// The most peers ever tracked.
+pub const TABLE_CAP: usize = 1024;
 /// An entry untouched this long is dropped when the table is full.
 const IDLE: Duration = Duration::from_secs(600);
 
@@ -29,16 +35,35 @@ pub enum Throttled {
     Rate(Duration),
     /// The peer failed authentication too often.
     LockedOut(Duration),
+    /// The table is full of live lockouts and this peer is not in it: refused
+    /// until the earliest lockout expires (fail closed).
+    Saturated(Duration),
 }
 
 impl Throttled {
+    /// How long to wait.
+    #[must_use]
+    pub fn wait(&self) -> Duration {
+        match self {
+            Self::Rate(d) | Self::LockedOut(d) | Self::Saturated(d) => *d,
+        }
+    }
+
     /// Seconds to put in `Retry-After` (at least 1).
     #[must_use]
     pub fn retry_after_secs(&self) -> u64 {
-        let d = match self {
-            Self::Rate(d) | Self::LockedOut(d) => *d,
-        };
+        let d = self.wait();
         (d.as_secs() + u64::from(d.subsec_nanos() > 0)).max(1)
+    }
+
+    /// A short class name for logs.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rate(_) => "rate",
+            Self::LockedOut(_) => "lockout",
+            Self::Saturated(_) => "saturated",
+        }
     }
 }
 
@@ -50,6 +75,23 @@ struct Peer {
     window_start: Instant,
     locked_until: Option<Instant>,
     seen: Instant,
+}
+
+impl Peer {
+    fn new(burst: f64, now: Instant) -> Self {
+        Self {
+            tokens: burst,
+            refilled: now,
+            failures: 0,
+            window_start: now,
+            locked_until: None,
+            seen: now,
+        }
+    }
+
+    fn locked(&self, now: Instant) -> bool {
+        self.locked_until.is_some_and(|until| until > now)
+    }
 }
 
 /// Token-bucket rate limit plus failure lockout, per peer IP.
@@ -71,26 +113,22 @@ impl Throttle {
         }
     }
 
-    /// Charge one request to `ip`.
+    /// Charge one request to `ip`. Only an admitted request spends a token,
+    /// so a caller that waits [`Throttled::wait`] and asks again is charged
+    /// once, and two callers can never spend the same refill.
     ///
     /// # Errors
     ///
-    /// [`Throttled`] when the peer is locked out or over its rate.
+    /// [`Throttled`] when the peer is locked out or over its rate, or when it
+    /// cannot be tracked because the table is full of live lockouts.
     pub fn check(&self, ip: IpAddr, now: Instant) -> Result<(), Throttled> {
         let Ok(mut peers) = self.peers.lock() else {
             // A poisoned table must not become an open door.
             return Err(Throttled::Rate(Duration::from_secs(1)));
         };
-        self.make_room(&mut peers, now);
-        let burst = self.burst;
-        let peer = peers.entry(ip).or_insert_with(|| Peer {
-            tokens: burst,
-            refilled: now,
-            failures: 0,
-            window_start: now,
-            locked_until: None,
-            seen: now,
-        });
+        let peer = self
+            .slot(&mut peers, ip, now)
+            .map_err(Throttled::Saturated)?;
         peer.seen = now;
         if let Some(until) = peer.locked_until {
             if now < until {
@@ -113,20 +151,15 @@ impl Throttle {
     }
 
     /// Record an authentication failure from `ip`; returns whether the peer
-    /// is now locked out.
+    /// is now locked out. A peer the full table cannot take is reported as
+    /// locked out (fail closed).
     pub fn record_failure(&self, ip: IpAddr, now: Instant) -> bool {
         let Ok(mut peers) = self.peers.lock() else {
             return true;
         };
-        let burst = self.burst;
-        let peer = peers.entry(ip).or_insert_with(|| Peer {
-            tokens: burst,
-            refilled: now,
-            failures: 0,
-            window_start: now,
-            locked_until: None,
-            seen: now,
-        });
+        let Ok(peer) = self.slot(&mut peers, ip, now) else {
+            return true;
+        };
         peer.seen = now;
         if now.saturating_duration_since(peer.window_start) > FAILURE_WINDOW {
             peer.window_start = now;
@@ -147,31 +180,117 @@ impl Throttle {
         self.peers.lock().map(|p| p.len()).unwrap_or(0)
     }
 
-    /// Keep the table bounded: drop idle peers, and if that is not enough,
-    /// drop the least recently seen ones that are not locked out.
-    fn make_room(&self, peers: &mut HashMap<IpAddr, Peer>, now: Instant) {
-        if peers.len() < TABLE_CAP {
-            return;
+    /// `ip`'s entry, inserting one if the table has (or can make) room.
+    ///
+    /// # Errors
+    ///
+    /// The time until the earliest lockout expires, when `ip` is not tracked
+    /// and every entry is a live lockout.
+    fn slot<'a>(
+        &self,
+        peers: &'a mut HashMap<IpAddr, Peer>,
+        ip: IpAddr,
+        now: Instant,
+    ) -> Result<&'a mut Peer, Duration> {
+        if !peers.contains_key(&ip) {
+            make_room(peers, now)?;
         }
-        peers.retain(|_, p| {
-            now.saturating_duration_since(p.seen) < IDLE || p.locked_until.is_some_and(|u| u > now)
-        });
-        if peers.len() < TABLE_CAP {
-            return;
+        Ok(peers
+            .entry(ip)
+            .or_insert_with(|| Peer::new(self.burst, now)))
+    }
+}
+
+/// Free one slot if the table is full: drop idle peers, then the least
+/// recently seen peer that is not locked out. Never a live lockout.
+fn make_room(peers: &mut HashMap<IpAddr, Peer>, now: Instant) -> Result<(), Duration> {
+    if peers.len() < TABLE_CAP {
+        return Ok(());
+    }
+    peers.retain(|_, p| now.saturating_duration_since(p.seen) < IDLE || p.locked(now));
+    if peers.len() < TABLE_CAP {
+        return Ok(());
+    }
+    let oldest = peers
+        .iter()
+        .filter(|(_, p)| !p.locked(now))
+        .min_by_key(|(_, p)| p.seen)
+        .map(|(ip, _)| *ip);
+    if let Some(ip) = oldest {
+        peers.remove(&ip);
+        return Ok(());
+    }
+    // Every entry is a live lockout.
+    let earliest = peers
+        .values()
+        .filter_map(|p| p.locked_until)
+        .min()
+        .map_or(LOCKOUT, |until| until.saturating_duration_since(now));
+    Err(earliest.max(Duration::from_secs(1)))
+}
+
+/// Lines per minute, and at once, for warnings about refused requests.
+const LOG_PER_MINUTE: u32 = 30;
+const LOG_BURST: u32 = 20;
+
+/// A process-wide budget for the warnings written about refused requests
+/// (foreign `Host`, any `Origin`, failed authentication).
+///
+/// Those refusals happen before a peer has proved anything, so their log
+/// lines must cost an attacker something too: a peer that cannot get a single
+/// request admitted must not be able to fill the journal. Past the budget a
+/// refusal is still refused, and logged at DEBUG only; the next warning
+/// written says how many were suppressed.
+#[derive(Debug)]
+pub struct LogBudget {
+    per_second: f64,
+    burst: f64,
+    state: Mutex<LogState>,
+}
+
+#[derive(Debug)]
+struct LogState {
+    tokens: f64,
+    refilled: Instant,
+    suppressed: u64,
+}
+
+impl Default for LogBudget {
+    fn default() -> Self {
+        Self::new(LOG_PER_MINUTE, LOG_BURST)
+    }
+}
+
+impl LogBudget {
+    /// `per_minute` lines sustained, `burst` at once.
+    #[must_use]
+    pub fn new(per_minute: u32, burst: u32) -> Self {
+        let burst = f64::from(burst.max(1));
+        Self {
+            per_second: f64::from(per_minute.max(1)) / 60.0,
+            burst,
+            state: Mutex::new(LogState {
+                tokens: burst,
+                refilled: Instant::now(),
+                suppressed: 0,
+            }),
         }
-        let mut by_age: Vec<(IpAddr, Instant)> = peers
-            .iter()
-            .filter(|(_, p)| p.locked_until.is_none_or(|u| u <= now))
-            .map(|(ip, p)| (*ip, p.seen))
-            .collect();
-        by_age.sort_by_key(|(_, seen)| *seen);
-        let excess = peers.len() + 1 - TABLE_CAP;
-        for (ip, _) in by_age.into_iter().take(excess) {
-            peers.remove(&ip);
+    }
+
+    /// `Some(n)` when a warning may be written now, `n` being how many were
+    /// suppressed since the last one; `None` when this one is suppressed.
+    pub fn admit(&self, now: Instant) -> Option<u64> {
+        let mut state = self.state.lock().ok()?;
+        let elapsed = now.saturating_duration_since(state.refilled).as_secs_f64();
+        state.tokens = (state.tokens + elapsed * self.per_second).min(self.burst);
+        state.refilled = now;
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
+            Some(std::mem::take(&mut state.suppressed))
+        } else {
+            state.suppressed += 1;
+            None
         }
-        // If every entry is a live lockout the table may exceed the cap by
-        // the number of attacking addresses still locked; they expire within
-        // LOCKOUT, and each costs a few dozen bytes.
     }
 }
 
@@ -233,6 +352,106 @@ mod tests {
             let _ = t.check(addr, now);
         }
         assert!(t.tracked() <= TABLE_CAP, "{}", t.tracked());
+    }
+
+    fn addr(n: u32) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(0x0A00_0000 + n))
+    }
+
+    /// The review's interleaving (THROTTLE_TABLE_UNBOUNDED): every attacking
+    /// address is admitted before any of its failures is recorded, so the
+    /// lockouts land in slots the admissions already filled. The table must
+    /// still never exceed its cap, keep every lockout it holds, and refuse a
+    /// new address rather than grow.
+    #[test]
+    fn live_lockouts_never_push_the_table_past_its_cap() {
+        let t = Throttle::new(6000, 100);
+        let now = Instant::now();
+        let attackers: Vec<IpAddr> = (0..TABLE_CAP as u32 + 64).map(addr).collect();
+        for a in &attackers {
+            let _ = t.check(*a, now);
+            assert!(t.tracked() <= TABLE_CAP);
+        }
+        for a in &attackers {
+            for _ in 0..MAX_AUTH_FAILURES {
+                let _ = t.record_failure(*a, now);
+                assert!(t.tracked() <= TABLE_CAP);
+            }
+        }
+        assert_eq!(t.tracked(), TABLE_CAP);
+        let locked = attackers
+            .iter()
+            .filter(|a| matches!(t.check(**a, now), Err(Throttled::LockedOut(_))))
+            .count();
+        assert_eq!(locked, TABLE_CAP, "every tracked lockout is still enforced");
+
+        // A scan from fresh addresses: refused, and the table does not grow.
+        for i in 0..4096 {
+            let fresh = IpAddr::V4(Ipv4Addr::from(0xAC10_0000 + i));
+            match t.check(fresh, now) {
+                Err(Throttled::Saturated(wait)) => assert!(wait <= LOCKOUT),
+                other => panic!("a new peer on a table full of lockouts got {other:?}"),
+            }
+            assert!(t.record_failure(fresh, now), "fails closed");
+        }
+        assert_eq!(t.tracked(), TABLE_CAP);
+
+        // Once the lockouts expire, new peers are admitted again.
+        assert!(t.check(ip(1), now + LOCKOUT).is_ok());
+        assert!(t.tracked() <= TABLE_CAP);
+    }
+
+    /// The cap holds under real concurrency, admissions and failure updates
+    /// interleaving freely on many threads.
+    #[test]
+    fn the_cap_holds_under_concurrent_admission_and_failures() {
+        let t = std::sync::Arc::new(Throttle::new(6000, 100));
+        let now = Instant::now();
+        let threads: Vec<_> = (0..8u32)
+            .map(|n| {
+                let t = t.clone();
+                std::thread::spawn(move || {
+                    for i in 0..600u32 {
+                        let a = addr(n * 10_000 + i);
+                        let _ = t.check(a, now);
+                        for _ in 0..MAX_AUTH_FAILURES {
+                            let _ = t.record_failure(a, now);
+                        }
+                        assert!(t.tracked() <= TABLE_CAP, "{}", t.tracked());
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(t.tracked() <= TABLE_CAP, "{}", t.tracked());
+    }
+
+    /// WS_THROTTLE_FAIL_OPEN: a refused check spends nothing, and one refill
+    /// admits exactly one caller however many ask for it.
+    #[test]
+    fn a_refill_admits_exactly_one_caller() {
+        let t = Throttle::new(60, 1);
+        let now = Instant::now();
+        assert!(t.check(ip(1), now).is_ok());
+        let Err(Throttled::Rate(wait)) = t.check(ip(1), now) else {
+            panic!("the burst is spent");
+        };
+        let later = now + wait;
+        let admitted = (0..4).filter(|_| t.check(ip(1), later).is_ok()).count();
+        assert_eq!(admitted, 1);
+    }
+
+    #[test]
+    fn the_log_budget_suppresses_a_flood_and_reports_it() {
+        let budget = LogBudget::new(60, 3);
+        let now = Instant::now();
+        let written: Vec<_> = (0..100).filter_map(|_| budget.admit(now)).collect();
+        assert_eq!(written, vec![0, 0, 0], "the burst, then silence");
+        // One line per second refills; the next line counts what was dropped.
+        assert_eq!(budget.admit(now + Duration::from_secs(1)), Some(97));
+        assert_eq!(budget.admit(now + Duration::from_secs(1)), None);
     }
 
     #[test]

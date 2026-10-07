@@ -18,8 +18,9 @@ use crate::backend::Backend;
 use crate::config::{ApiConfig, BindPlan, BindRefusal, Transport};
 use crate::guard::HostPolicy;
 use crate::http::{router, AppState, PeerAddr};
-use crate::limit::Throttle;
+use crate::limit::{LogBudget, Throttle};
 use crate::token::{TokenError, TokenStore};
+use crate::ws::{WsTasks, CLOSE_TIMEOUT};
 
 /// The request head must arrive within this (slowloris).
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -57,6 +58,7 @@ pub struct ApiServer {
     stop: Arc<Notify>,
     closing: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
+    ws_tasks: Arc<WsTasks>,
 }
 
 impl ApiServer {
@@ -96,6 +98,8 @@ impl ApiServer {
         let bound = BindPlan { addr, ..plan };
 
         let (closing, closing_rx) = watch::channel(false);
+        let ws_tasks = Arc::new(WsTasks::new());
+        let ws_message_limit = backend.max_message_bytes();
         let state = Arc::new(AppState {
             backend,
             tokens,
@@ -103,8 +107,10 @@ impl ApiServer {
             hosts: HostPolicy::new(&bound, &config.allowed_hosts),
             origins: config.allowed_origins.clone(),
             max_upload_bytes: config.max_upload_bytes,
-            limits: config.limits(),
+            ws_message_limit,
             ws_slots: Arc::new(Semaphore::new(config.max_ws_sessions as usize)),
+            ws_tasks: ws_tasks.clone(),
+            log_budget: LogBudget::default(),
             closing: closing_rx,
         });
         let app = router(state);
@@ -138,6 +144,7 @@ impl ApiServer {
             stop,
             closing,
             task,
+            ws_tasks,
         }))
     }
 
@@ -161,13 +168,19 @@ impl ApiServer {
 
     /// Stop accepting, drop every HTTP connection, and close every WebSocket
     /// session (each one's daemon connection is dropped, which cancels what
-    /// it owned).
+    /// it owned). Returns once every session has ended: those that do not
+    /// close within the close handshake's bound are aborted.
     pub async fn shutdown(self) {
         let _ = self.closing.send(true);
         // `notify_one` stores a permit, so this is not lost if the loop is
         // between polls.
         self.stop.notify_one();
         let _ = self.task.await;
+        // A session closes in at most two CLOSE_TIMEOUTs (the close frame,
+        // then the socket); a little more, then abort.
+        self.ws_tasks
+            .shutdown(CLOSE_TIMEOUT * 2 + Duration::from_millis(500))
+            .await;
         info!("network API stopped");
     }
 }

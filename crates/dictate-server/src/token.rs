@@ -272,6 +272,17 @@ struct Loaded {
     digest: Option<[u8; 32]>,
 }
 
+/// What a connection keeps of the token it authenticated with: the digest,
+/// never the token, and never printed.
+#[derive(Clone, Copy)]
+pub struct Credential([u8; 32]);
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Credential(..)")
+    }
+}
+
 /// The server's view of the token file.
 pub struct TokenStore {
     path: PathBuf,
@@ -315,10 +326,26 @@ impl TokenStore {
     /// Whether `presented` is the current token. Fails closed: a deleted,
     /// replaced-with-garbage, or newly insecure file rejects everything.
     pub fn verify(&self, presented: &str) -> bool {
+        self.authenticate(presented).is_some()
+    }
+
+    /// A [`Credential`] for `presented` if it is the current token.
+    #[must_use]
+    pub fn authenticate(&self, presented: &str) -> Option<Credential> {
+        let credential = Credential(digest(presented));
+        self.still_valid(&credential).then_some(credential)
+    }
+
+    /// Whether `credential` is still the current token: `false` once the file
+    /// is rotated, deleted, or made insecure. A connection that outlives its
+    /// request (a WebSocket) asks this before every command, so revoking the
+    /// token revokes the connections opened with it.
+    #[must_use]
+    pub fn still_valid(&self, credential: &Credential) -> bool {
         let Some(expected) = self.current() else {
             return false;
         };
-        constant_time_eq(&digest(presented), &expected)
+        constant_time_eq(&credential.0, &expected)
     }
 
     /// The digest of the file as it is now, reloading if it changed.
@@ -524,6 +551,31 @@ mod tests {
         // Made insecure while running: fails closed.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(!store.verify(&newer));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// WS_TOKEN_REVOCATION_BYPASS: a credential held by a long-lived
+    /// connection dies with the token it was issued for.
+    #[test]
+    fn a_held_credential_is_revoked_by_rotation_deletion_or_insecurity() {
+        let dir = temp_dir("credential");
+        let path = dir.join("api-token");
+        let (token, _) = ensure(&path).unwrap();
+        let store = TokenStore::open(&path).unwrap();
+        assert!(store.authenticate(&generate().unwrap()).is_none());
+        let held = store.authenticate(&token).expect("the current token");
+        assert!(store.still_valid(&held));
+        assert!(!format!("{held:?}").contains(&token));
+
+        let rotated = rotate(&path).unwrap();
+        assert!(!store.still_valid(&held), "rotation revokes it");
+        let held = store.authenticate(&rotated).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(!store.still_valid(&held), "an insecure file revokes it");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(store.still_valid(&held), "the same token, secure again");
+        std::fs::remove_file(&path).unwrap();
+        assert!(!store.still_valid(&held), "deletion revokes it");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

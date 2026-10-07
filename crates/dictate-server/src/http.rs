@@ -9,6 +9,10 @@
 //! [`gate`] runs before every handler, every WebSocket upgrade and the 404
 //! fallback, in this order: `Host`, `Origin`, the per-peer throttle, the
 //! bearer token. Nothing reaches the daemon before all four pass.
+//!
+//! Every refusal closes its connection (`Connection: close`), so a peer that
+//! cannot get a request admitted pays a TCP handshake per attempt, and the
+//! warnings refusals write share one budget ([`LogBudget`]).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,7 +30,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use dictate_proto::{
     AudioEncoding, AudioFormat, AudioSource, ClientInfo, ClientKind, Command, CommandResult,
-    ErrorCode, Hello, Limits, ProtoError, Route, SessionOptions,
+    ErrorCode, Hello, ProtoError, Route, SessionOptions,
 };
 use serde::Deserialize;
 use tokio::sync::{watch, Semaphore};
@@ -34,8 +38,9 @@ use tracing::{debug, info, warn};
 
 use crate::backend::{never, Backend, Session};
 use crate::guard::{bearer, origin_allowed, AuthFailure, HostPolicy};
-use crate::limit::{Throttle, Throttled};
-use crate::token::TokenStore;
+use crate::limit::{LogBudget, Throttle, Throttled};
+use crate::token::{Credential, TokenStore};
+use crate::ws::WsTasks;
 
 /// The whole upload body must arrive within this.
 const BODY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -53,8 +58,14 @@ pub(crate) struct AppState {
     pub hosts: HostPolicy,
     pub origins: Vec<String>,
     pub max_upload_bytes: u64,
-    pub limits: Limits,
+    /// The most a WebSocket buffers per message: [`Backend::max_message_bytes`].
+    pub ws_message_limit: usize,
     pub ws_slots: Arc<Semaphore>,
+    /// Upgraded WebSocket sessions, so shutdown can wait for them and abort
+    /// what will not finish.
+    pub ws_tasks: Arc<WsTasks>,
+    /// Shared by every warning about a refused request.
+    pub log_budget: LogBudget,
     /// Flips to `true` when the server shuts down, so WebSocket sessions
     /// (which outlive their HTTP connection) close too.
     pub closing: watch::Receiver<bool>,
@@ -97,6 +108,27 @@ fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response 
     }
 }
 
+/// A warning about a refused request, within [`AppState::log_budget`]. Past
+/// the budget it is written at DEBUG instead: still there for an operator who
+/// asks, never a flood in the journal.
+macro_rules! refusal {
+    ($state:expr, $($field:tt)+) => {
+        match $state.log_budget.admit(Instant::now()) {
+            Some(suppressed) => warn!(suppressed, $($field)+),
+            None => debug!($($field)+),
+        }
+    };
+}
+
+/// Ask the client to go away after this response: a refused peer must
+/// reconnect to try again rather than reuse a warm keep-alive connection.
+fn close_after(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    response
+}
+
 /// Admission: `Host`, `Origin`, throttle, token — then the handler.
 async fn gate(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     let Some(PeerAddr(peer)) = request.extensions().get::<PeerAddr>().copied() else {
@@ -114,41 +146,30 @@ async fn gate(State(state): State<Arc<AppState>>, request: Request, next: Next) 
         .hosts
         .allows(headers.get(header::HOST).and_then(|v| v.to_str().ok()))
     {
-        warn!(peer = %peer.ip(), %method, %path, "network API refused a request: Host not allowed");
-        return json_response(
+        refusal!(state, peer = %peer.ip(), %method, %path, "network API refused a request: Host not allowed");
+        return close_after(json_response(
             StatusCode::MISDIRECTED_REQUEST,
             &ProtoError::new(
                 ErrorCode::Forbidden,
                 "this Host is not served here; add it to [api] allowed_hosts if it should be",
             ),
-        );
+        ));
     }
 
     let origin = headers
         .get(header::ORIGIN)
         .map(|v| v.to_str().unwrap_or("\u{fffd}"));
     if !origin_allowed(origin, &state.origins) {
-        warn!(peer = %peer.ip(), %method, %path, "network API refused a browser request (Origin present)");
-        return error_response(&ProtoError::new(
+        refusal!(state, peer = %peer.ip(), %method, %path, "network API refused a browser request (Origin present)");
+        return close_after(error_response(&ProtoError::new(
             ErrorCode::Forbidden,
             "requests from web pages are refused (Origin header present)",
-        ));
+        )));
     }
 
     if let Err(throttled) = state.throttle.check(peer.ip(), Instant::now()) {
-        let (what, message) = match throttled {
-            Throttled::Rate(_) => ("rate", "too many requests from this address"),
-            Throttled::LockedOut(_) => (
-                "lockout",
-                "too many failed authentications from this address",
-            ),
-        };
-        debug!(peer = %peer.ip(), %path, what, "network API throttled a request");
-        let mut response = error_response(&ProtoError::new(ErrorCode::RateLimited, message));
-        if let Ok(v) = HeaderValue::from_str(&throttled.retry_after_secs().to_string()) {
-            response.headers_mut().insert(header::RETRY_AFTER, v);
-        }
-        return response;
+        debug!(peer = %peer.ip(), %path, what = throttled.as_str(), "network API throttled a request");
+        return close_after(throttled_response(throttled));
     }
 
     let verdict = match bearer(
@@ -156,30 +177,39 @@ async fn gate(State(state): State<Arc<AppState>>, request: Request, next: Next) 
             .get(header::AUTHORIZATION)
             .map(HeaderValue::as_bytes),
     ) {
-        Ok(token) if state.tokens.verify(token) => Ok(()),
-        Ok(_) => Err(AuthFailure::Mismatch),
+        Ok(token) => state
+            .tokens
+            .authenticate(token)
+            .ok_or(AuthFailure::Mismatch),
         Err(failure) => Err(failure),
     };
-    if let Err(failure) = verdict {
-        let locked = state.throttle.record_failure(peer.ip(), Instant::now());
-        warn!(
-            peer = %peer.ip(),
-            %method,
-            %path,
-            reason = failure.as_str(),
-            locked_out = locked,
-            "network API authentication failed"
-        );
-        let mut response = error_response(&ProtoError::new(
-            ErrorCode::Unauthorized,
-            "a valid bearer token is required (Authorization: Bearer <token>)",
-        ));
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        return response;
-    }
+    let credential = match verdict {
+        Ok(credential) => credential,
+        Err(failure) => {
+            let locked = state.throttle.record_failure(peer.ip(), Instant::now());
+            refusal!(
+                state,
+                peer = %peer.ip(),
+                %method,
+                %path,
+                reason = failure.as_str(),
+                locked_out = locked,
+                "network API authentication failed"
+            );
+            let mut response = error_response(&ProtoError::new(
+                ErrorCode::Unauthorized,
+                "a valid bearer token is required (Authorization: Bearer <token>)",
+            ));
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            return close_after(response);
+        }
+    };
 
+    // A WebSocket keeps this, to re-check before every command it runs.
+    let mut request = request;
+    request.extensions_mut().insert(credential);
     let started = Instant::now();
     let mut response = next.run(request).await;
     let h = response.headers_mut();
@@ -196,6 +226,26 @@ async fn gate(State(state): State<Arc<AppState>>, request: Request, next: Next) 
         debug!(peer = %peer.ip(), %method, %path, status = status.as_u16(), ms, "network API request");
     }
     response
+}
+
+/// `429` for a throttled request, with `Retry-After`.
+pub(crate) fn throttled_response(throttled: Throttled) -> Response {
+    let mut response = error_response(&throttled_error(throttled));
+    if let Ok(v) = HeaderValue::from_str(&throttled.retry_after_secs().to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    response
+}
+
+/// The protocol error for a throttled request (HTTP and WebSocket alike).
+pub(crate) fn throttled_error(throttled: Throttled) -> ProtoError {
+    let message = match throttled {
+        Throttled::Rate(_) => "too many requests from this address",
+        Throttled::LockedOut(_) => "too many failed authentications from this address",
+        Throttled::Saturated(_) => "too many addresses are locked out; try again later",
+    };
+    ProtoError::new(ErrorCode::RateLimited, message)
+        .with_detail(serde_json::json!({ "retry_after_s": throttled.retry_after_secs() }))
 }
 
 async fn not_found() -> Response {
@@ -406,6 +456,7 @@ async fn status(State(state): State<Arc<AppState>>) -> Response {
 async fn ws(
     State(state): State<Arc<AppState>>,
     axum::Extension(PeerAddr(peer)): axum::Extension<PeerAddr>,
+    axum::Extension(credential): axum::Extension<Credential>,
     upgrade: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
 ) -> Response {
     let upgrade = match upgrade {
@@ -418,12 +469,19 @@ async fn ws(
             &ProtoError::new(ErrorCode::Busy, "too many WebSocket sessions"),
         );
     };
-    let limit = usize::try_from(state.limits.max_message_bytes).unwrap_or(usize::MAX);
+    // The most any message on this connection may ever be; each one is then
+    // held to the connection's current limit before it is parsed.
+    let limit = state.ws_message_limit;
     upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
         .on_upgrade(move |socket| async move {
-            crate::ws::run(socket, state, peer).await;
-            drop(permit);
+            // Run in the tracked set, not in the task hyper spawned for the
+            // upgrade, so shutdown can wait for the session and abort it.
+            let tasks = state.ws_tasks.clone();
+            tasks.spawn(async move {
+                crate::ws::run(socket, state, peer, credential).await;
+                drop(permit);
+            });
         })
 }

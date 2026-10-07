@@ -12,7 +12,7 @@ use std::sync::Arc;
 use dictate_proto::{Capabilities, Command, CommandResult, Event, Message, ProtoError};
 use dictate_server::{ApiConfig, Backend, BoxFuture, Hangup, Session};
 
-use crate::server::{NetworkConnection, ServerDeps};
+use crate::server::{NetworkConnection, ServerDeps, PRE_HANDSHAKE_MAX_BYTES};
 
 /// What a network connection is offered (design §7.1).
 ///
@@ -37,10 +37,22 @@ pub fn network_grant(api: &ApiConfig, local: &Capabilities) -> Capabilities {
     dictate_server::network_ceiling(grant)
 }
 
+/// The most audio *data* (decoded bytes, not base64) one network upload may
+/// carry: `[api] max_upload_bytes`, and never more than the socket itself
+/// accepts. The same cap on both network transports — `POST /v1/transcribe`
+/// enforces it on the body, a WebSocket `transcribe_audio` on the decoded
+/// payload — so neither is a way around the other.
+#[must_use]
+pub fn network_upload_cap(api: &ApiConfig, local: &Capabilities) -> u64 {
+    api.max_upload_bytes
+        .min(u64::from(local.limits.max_message_bytes))
+}
+
 /// Opens [`NetworkConnection`]s for `dictate-server`.
 pub struct NetworkBackend {
     deps: Arc<ServerDeps>,
     grant: Capabilities,
+    max_upload_bytes: u64,
 }
 
 impl NetworkBackend {
@@ -48,7 +60,12 @@ impl NetworkBackend {
     #[must_use]
     pub fn new(deps: Arc<ServerDeps>, api: &ApiConfig) -> Self {
         let grant = network_grant(api, &deps.capabilities);
-        Self { deps, grant }
+        let max_upload_bytes = network_upload_cap(api, &deps.capabilities);
+        Self {
+            deps,
+            grant,
+            max_upload_bytes,
+        }
     }
 
     /// The capabilities each connection is offered.
@@ -63,13 +80,25 @@ impl Backend for NetworkBackend {
         Box::new(NetworkConnection::open(
             self.deps.clone(),
             self.grant.clone(),
+            self.max_upload_bytes,
         ))
+    }
+
+    fn max_message_bytes(&self) -> usize {
+        // Before its handshake a connection is held to the socket's
+        // pre-handshake ceiling; after it, to the grant. Never the API's
+        // own (larger) encoded upload size.
+        PRE_HANDSHAKE_MAX_BYTES.max(self.grant.limits.max_message_bytes as usize)
     }
 }
 
 impl Session for NetworkConnection {
     fn handle_text<'a>(&'a mut self, text: &'a str, hangup: Hangup) -> BoxFuture<'a, Message> {
         Box::pin(NetworkConnection::handle_line(self, text, hangup))
+    }
+
+    fn max_message_bytes(&self) -> usize {
+        NetworkConnection::max_message_bytes(self)
     }
 
     fn execute(
@@ -140,6 +169,22 @@ mod tests {
             assert!(!grant.features.config_write && !grant.features.config_read);
             assert!(!grant.features.text_injection && !grant.features.host_capture);
         }
+    }
+
+    #[test]
+    fn the_upload_cap_is_the_api_cap_never_more_than_the_socket_takes() {
+        let mut local = crate::server::local_capabilities(true);
+        local.limits.max_message_bytes = 4096;
+        let api = ApiConfig {
+            max_upload_bytes: 1000,
+            ..ApiConfig::default()
+        };
+        assert_eq!(network_upload_cap(&api, &local), 1000);
+        let api = ApiConfig {
+            max_upload_bytes: u64::MAX,
+            ..ApiConfig::default()
+        };
+        assert_eq!(network_upload_cap(&api, &local), 4096);
     }
 
     #[test]
