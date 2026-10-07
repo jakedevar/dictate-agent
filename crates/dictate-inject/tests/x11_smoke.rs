@@ -154,10 +154,12 @@ fn run_smoke(display: &str) {
         };
         let output = std::env::temp_dir().join(format!("{stamp}-{case}"));
         let _ = fs::remove_file(&output);
+        let ready = std::env::temp_dir().join(format!("{stamp}-{case}.ready"));
+        let _ = fs::remove_file(&ready);
         let script = if case == "late" {
-            "stty -echo; IFS= read -r -n \"$2\" line; extra=''; IFS= read -r -t 0.3 -n 1 extra || true; printf '%s%s' \"$line\" \"$extra\" > \"$1\""
+            "stty -echo; : > \"$1.ready\"; IFS= read -r -n \"$2\" line; extra=''; IFS= read -r -t 0.3 -n 1 extra || true; printf '%s%s' \"$line\" \"$extra\" > \"$1\""
         } else {
-            "stty -echo; IFS= read -r -n \"$2\" line; printf '%s' \"$line\" > \"$1\""
+            "stty -echo; : > \"$1.ready\"; IFS= read -r -n \"$2\" line; printf '%s' \"$line\" > \"$1\""
         };
         children.xterm = Command::new("xterm")
             .env("DISPLAY", display)
@@ -182,11 +184,14 @@ fn run_smoke(display: &str) {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let mut window = None;
-        for _ in 0..120 {
+        // Bounded condition waits, never fixed sleeps. `search` without
+        // `--onlyvisible` also matches the xterm window while it is still
+        // unmapped, and focusing that is a BadMatch under load.
+        let window_deadline = Instant::now() + Duration::from_secs(15);
+        let window = loop {
             let result = Command::new("xdotool")
                 .env("DISPLAY", display)
-                .args(["search", "--name", &stamp])
+                .args(["search", "--onlyvisible", "--name", &stamp])
                 .output()
                 .unwrap();
             if let Some(id) = String::from_utf8_lossy(&result.stdout)
@@ -194,19 +199,35 @@ fn run_smoke(display: &str) {
                 .next()
                 .filter(|id| !id.is_empty())
             {
-                window = Some(id.to_owned());
-                break;
+                break id.to_owned();
             }
-            thread::sleep(Duration::from_millis(25));
-        }
-        assert!(Command::new("xdotool")
+            assert!(
+                Instant::now() < window_deadline,
+                "{case}: xterm window never became viewable"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let focus = Command::new("xdotool")
             .env("DISPLAY", display)
-            .args(["windowfocus", "--sync", &window.expect("xterm window")])
-            .status()
-            .unwrap()
-            .success());
-        // Wait for bash's reader, not just the X11 window, to become ready.
-        thread::sleep(Duration::from_millis(100));
+            .args(["windowfocus", "--sync", &window])
+            .output()
+            .unwrap();
+        assert!(
+            focus.status.success(),
+            "{case}: windowfocus failed: {}",
+            String::from_utf8_lossy(&focus.stderr)
+        );
+        // Wait for bash's reader, not just the X11 window: the script touches
+        // the ready file as its last step before `read`. Keys sent earlier
+        // would still queue in the pty, but only this proves the shell runs.
+        let ready_deadline = Instant::now() + Duration::from_secs(15);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < ready_deadline,
+                "{case}: xterm shell never became ready"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         let resume = if matches!(case, "delayed" | "late") {
             let pid = children.xterm.id().to_string();
             assert!(Command::new("kill")
@@ -286,6 +307,7 @@ fn run_smoke(display: &str) {
             children.xterm.kill().unwrap();
             children.xterm.wait().unwrap();
             drop(changed_focus);
+            let _ = fs::remove_file(&ready);
             eprintln!("x11| {case}: {outcome:?}");
             continue;
         }
@@ -317,6 +339,7 @@ fn run_smoke(display: &str) {
         );
         children.xterm.wait().unwrap();
         fs::remove_file(output).unwrap();
+        let _ = fs::remove_file(&ready);
         match case {
             "empty" => {
                 assert!(matches!(
