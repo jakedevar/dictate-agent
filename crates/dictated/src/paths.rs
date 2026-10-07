@@ -96,33 +96,90 @@ impl RuntimePaths {
 
     /// Create the directories these paths live in.
     ///
+    /// The directories holding the socket and the daemon's own PID file are
+    /// private to this user (mode 0700): the socket carries `config_write`, and
+    /// a world-searchable directory is the first thing an attacker needs.
+    ///
     /// # Errors
     ///
-    /// If a parent directory cannot be created.
+    /// If a directory cannot be created, is a symlink, is owned by someone
+    /// else, or cannot be made private.
     pub fn ensure_dirs(&self) -> Result<()> {
-        for path in [&self.socket, &self.pid, &self.legacy_pid] {
+        for path in [&self.socket, &self.pid] {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
+                ensure_private_dir(parent)
+                    .with_context(|| format!("securing {}", parent.display()))?;
             }
+        }
+        if let Some(parent) = self.legacy_pid.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
         Ok(())
     }
 }
 
+/// Create `dir` (and any missing parents) so that only this user can enter it.
+///
+/// An existing directory is accepted only when it is a real directory (not a
+/// symlink) owned by the effective user; its mode is tightened to 0700. This is
+/// what makes the `/tmp` fallback safe: another account that pre-creates the
+/// path gets a refusal, not our socket.
+///
+/// # Errors
+///
+/// See above.
+pub fn ensure_private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.into()),
+    }
+    // `symlink_metadata`: a symlink planted at the path must not be followed.
+    let meta = std::fs::symlink_metadata(dir)?;
+    anyhow::ensure!(
+        meta.is_dir(),
+        "{} is not a plain directory (a symlink or file is in the way)",
+        dir.display()
+    );
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    anyhow::ensure!(
+        meta.uid() == me,
+        "{} is owned by uid {}, not by uid {me}; refusing to put the control socket there",
+        dir.display(),
+        meta.uid()
+    );
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// `$XDG_RUNTIME_DIR/dictate-agent`, falling back to a per-user `/tmp` path on
 /// systems that do not set it (a bare `ssh` session, most containers).
+///
+/// The fallback is keyed by the *effective uid* (`$UID` is a shell variable,
+/// not an exported one, so reading it collapsed every account onto one shared
+/// path). [`RuntimePaths::ensure_dirs`] creates it 0700 and refuses a
+/// directory another user got to first.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // Per-user rather than shared, so two accounts on one box do not
-            // fight over the same socket path.
-            let uid = std::env::var("UID").unwrap_or_else(|_| "user".into());
-            PathBuf::from(format!("/tmp/dictate-agent-{uid}"))
-        })
-        .join(RUNTIME_DIR)
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    runtime_dir_for(std::env::var_os("XDG_RUNTIME_DIR"), uid)
+}
+
+fn runtime_dir_for(xdg: Option<std::ffi::OsString>, euid: u32) -> PathBuf {
+    match xdg.filter(|v| !v.is_empty()) {
+        Some(base) => PathBuf::from(base).join(RUNTIME_DIR),
+        None => PathBuf::from(format!("/tmp/dictate-agent-{euid}")),
+    }
 }
 
 /// `$XDG_CONFIG_HOME/dictate-agent`, shared with the reference daemon.
@@ -443,5 +500,64 @@ mod tests {
         std::fs::write(&path, "0").unwrap();
         assert_eq!(live_pid_in(&path), None);
         assert!(PidFile::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn ensure_dirs_makes_the_socket_directory_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempdir("private-dir");
+        // A pre-existing, too-open directory (the XDG case) is tightened.
+        let run = base.join("run");
+        std::fs::create_dir(&run).unwrap();
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+        RuntimePaths::under(&run).ensure_dirs().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&run), 0o700);
+
+        // A fresh one is created private too.
+        let fresh = base.join("fresh/dictate-agent");
+        RuntimePaths::under(&fresh).ensure_dirs().unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+    }
+
+    #[test]
+    fn a_symlink_in_place_of_the_runtime_dir_is_refused() {
+        let base = tempdir("symlink-dir");
+        let real = base.join("elsewhere");
+        std::fs::create_dir(&real).unwrap();
+        let link = base.join("dictate-agent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = ensure_private_dir(&link).unwrap_err();
+        assert!(err.to_string().contains("not a plain directory"), "{err}");
+    }
+
+    #[test]
+    fn a_directory_owned_by_someone_else_is_refused() {
+        // Cannot chown in a test, but `/` is always root's: when the suite
+        // itself runs as root there is nothing to assert.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let err = ensure_private_dir(Path::new("/")).unwrap_err();
+        assert!(err.to_string().contains("owned by uid"), "{err}");
+    }
+
+    #[test]
+    fn the_tmp_fallback_is_keyed_by_the_effective_uid() {
+        // `$UID` is not exported by shells, so the old fallback was the same
+        // shared path for every account.
+        assert_eq!(
+            runtime_dir_for(None, 1234),
+            PathBuf::from("/tmp/dictate-agent-1234")
+        );
+        assert_eq!(
+            runtime_dir_for(Some("".into()), 1234),
+            PathBuf::from("/tmp/dictate-agent-1234")
+        );
+        assert_ne!(runtime_dir_for(None, 1), runtime_dir_for(None, 2));
+        assert_eq!(
+            runtime_dir_for(Some("/run/user/1000".into()), 1000),
+            PathBuf::from("/run/user/1000/dictate-agent")
+        );
     }
 }
