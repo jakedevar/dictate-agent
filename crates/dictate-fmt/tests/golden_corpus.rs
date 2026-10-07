@@ -695,6 +695,7 @@ fn protected_spans_survive_byte_for_byte_and_in_order() {
                 spoken_punctuation: false,
                 spoken_line_breaks: false,
             },
+            ..FormatConfig::default()
         })
         .run(input, &FormatContext::default());
         // Each is in the final output unchanged (paths only through the

@@ -286,6 +286,15 @@ impl Pipeline {
             session_id: handle.id().clone(),
             context: opts.context.clone(),
         });
+        // Load the formatting model while the user is still speaking.
+        self.formatter.warm_up(
+            &opts
+                .context
+                .as_ref()
+                .map(|c| c.category.clone())
+                .unwrap_or_default(),
+            &opts.profile.tone,
+        );
 
         if !upload {
             self.notifier.notify(Notice::Recording);
@@ -602,6 +611,9 @@ impl Pipeline {
             persist: !private,
             spoken_punctuation: opts.profile.spoken_punctuation,
             spoken_line_breaks: opts.profile.spoken_line_breaks,
+            format_llm: opts.format_llm,
+            // Filled below from the chain's output.
+            protected: Vec::new(),
         };
         let (doc, rules_text) = if self.text_chain.is_enabled() {
             let clock = StageClock::start();
@@ -622,6 +634,9 @@ impl Pipeline {
         }
         interaction.grammar_input = Some(rules_text.clone());
         interaction.corrected_transcription = Some(rules_text.clone());
+        // The LLM pass masks exactly the spans the chain protected, so a model
+        // never sees a slash command, path or dictionary term it could rewrite.
+        ctx.protected = doc.protected_byte_ranges();
 
         // --- Route ----------------------------------------------------------
         // On the rules output and before the LLM pass, so a trigger word
@@ -646,8 +661,11 @@ impl Pipeline {
         // --- LLM formatting pass (`type` prose only) ------------------------
         let plan = if resolved_route != Route::Type {
             FormatPlan::Skip(SkipReason::RouteNotEligible)
-        } else if opts.format_llm == Some(false) || opts.profile.llm_format == Some(false) {
-            // The caller or the app profile asked for rules-only text.
+        } else if opts.format_llm == Some(false)
+            || (opts.profile.llm_format == Some(false) && opts.format_llm != Some(true))
+        {
+            // The caller, or the app profile unless the caller insisted, asked
+            // for rules-only text.
             FormatPlan::Skip(SkipReason::Disabled)
         } else {
             self.formatter.plan(&rules_text, &ctx)

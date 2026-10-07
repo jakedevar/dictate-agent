@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use dictate_audio::{AudioCapture, CaptureDiagnostics, EarconCue, EarconPlayer};
 pub use dictate_fmt::FormatContext;
-use dictate_proto::{InjectMethod, InjectionOutcome};
+use dictate_proto::InjectionOutcome;
 pub use dictate_stt::{BoxFuture, ModelInfo, SttProvider, SttRequest, Transcription, WhisperStt};
 pub use dictate_vad::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
 
@@ -399,6 +399,11 @@ pub trait Formatter: Send + Sync + 'static {
     fn probe(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
+
+    /// A session toward an app of `category` just started recording: load
+    /// whatever the pass needs while the user is still speaking. Must never
+    /// block; the default does nothing.
+    fn warm_up(&self, _category: &dictate_proto::AppCategory, _tone: &dictate_proto::Tone) {}
 }
 
 /// Ollama-backed grammar correction behind the trait.
@@ -743,6 +748,7 @@ impl AudioFeedback for HostEarcons {
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock {
     use super::*;
+    use dictate_proto::InjectMethod;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
 

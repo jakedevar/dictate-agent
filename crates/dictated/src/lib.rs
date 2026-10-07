@@ -32,7 +32,7 @@ use anyhow::{Context, Result};
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    AudioSource, DesktopNotifier, DisabledAudioSource, GrammarFormatter, HostAudioSource,
+    AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource,
     HostEarcons, HostInjector, PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
@@ -223,10 +223,11 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
     );
     let notifier = Arc::new(DesktopNotifier::new(&config.notifications));
-    // The formatter announces its own failure (one desktop notification) through
-    // the same notifier the pipeline uses.
+    // S21's guarded LLM pass (`[format.llm]`, with the legacy `[grammar]` keys
+    // as an alias). It announces its own failure (one desktop notification)
+    // through the same notifier the pipeline uses.
     let formatter = Arc::new(
-        GrammarFormatter::new(&config.grammar)
+        dictate_core::llm_formatter::LlmFormatterPort::new(config.format.llm.clone())
             .with_notifier(notifier.clone() as Arc<dyn StatusNotifier>),
     );
     let injector = Arc::new(HostInjector::new(&config.output));
@@ -319,7 +320,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     // `get_status`, and with one desktop notification — before the first
     // dictation rather than never.
     {
-        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.grammar.host);
+        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.format.llm.host);
         let formatter = pipeline.formatter.clone();
         tokio::spawn(async move {
             dictate_core::local_executor::ensure_ollama_running(&host, port, 10).await;

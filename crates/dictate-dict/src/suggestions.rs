@@ -17,7 +17,9 @@ struct Evidence {
 impl Evidence {
     fn observe(&mut self, ts: &str) {
         self.count += 1;
-        self.days.insert(ts[..10].into());
+        // The UTC day; a malformed timestamp counts as its own "day" rather
+        // than panicking the miner.
+        self.days.insert(ts.get(..10).unwrap_or(ts).into());
         if self.first.is_empty() || ts < self.first.as_str() {
             self.first = ts.into();
         }

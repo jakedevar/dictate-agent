@@ -289,6 +289,24 @@ impl TextDoc {
         self.text.chars().filter_map(|c| self.span_for(c))
     }
 
+    /// Byte ranges of every protected span in [`restore`](Self::restore)'s
+    /// output, in text order. The LLM pass masks exactly these.
+    #[must_use]
+    pub fn protected_byte_ranges(&self) -> Vec<Range<usize>> {
+        let mut ranges = Vec::new();
+        let mut at = 0;
+        for c in self.text.chars() {
+            match self.span_for(c) {
+                Some(span) => {
+                    ranges.push(at..at + span.text.len());
+                    at += span.text.len();
+                }
+                None => at += c.len_utf8(),
+            }
+        }
+        ranges
+    }
+
     /// The finished text: every placeholder replaced by its original bytes.
     #[must_use]
     pub fn restore(&self) -> String {
@@ -592,6 +610,23 @@ fn count_whole(hay: &str, needle: &str, kind: SpanKind, plain_only: bool) -> usi
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protected_byte_ranges_index_the_restored_text() {
+        // Multi-byte text before, between and inside spans: offsets must be
+        // byte offsets of the restored string, not of the working text.
+        let doc = TextDoc::protected("café: run /create_plan then open ~/x/é.rs — ok");
+        let out = doc.restore();
+        let spans: Vec<&str> = doc
+            .protected_byte_ranges()
+            .into_iter()
+            .map(|r| &out[r])
+            .collect();
+        assert_eq!(spans, vec!["/create_plan", "~/x/é.rs"]);
+        assert!(TextDoc::protected("no spans here")
+            .protected_byte_ranges()
+            .is_empty());
+    }
+
     use super::*;
 
     fn doc_with(text: &str, spans: &[(&str, SpanKind)]) -> TextDoc {

@@ -32,6 +32,7 @@ pub mod dictionary_stage;
 pub mod engine;
 pub mod event_bus;
 pub mod formatter_health;
+pub mod llm_formatter;
 pub mod local_executor;
 pub mod notify;
 pub mod ollama;

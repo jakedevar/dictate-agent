@@ -256,7 +256,11 @@ fn host_of(s: &str) -> &str {
 }
 
 fn is_www(s: &str) -> bool {
-    s.len() > 4 && s[..4].eq_ignore_ascii_case("www.") && is_domain(host_of(s))
+    // `get` rather than `[..4]`: byte 4 can fall inside a multi-byte
+    // character ("café:"), and slicing there would panic the session.
+    s.len() > 4
+        && s.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("www."))
+        && is_domain(host_of(s))
 }
 
 /// Common top-level domains for scheme-less hosts. Bounded on purpose: a bare
@@ -426,6 +430,24 @@ fn is_code_identifier(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multibyte_tokens_never_panic_the_detectors() {
+        // Byte 4 of "café:" is inside 'é'; every detector must slice on
+        // character boundaries. Mixed scripts and emoji around real spans.
+        for input in [
+            "café: meet at the café",
+            "naïve résumé 日本語 ok",
+            "ship it 🚀🚀 then run /create_plan",
+            "wwwé.example.com and www.example.com",
+            "éééé.com",
+        ] {
+            for (range, _) in detect_spans(input) {
+                assert!(input.is_char_boundary(range.start), "{input:?}");
+                assert!(input.is_char_boundary(range.end), "{input:?}");
+            }
+        }
+    }
+
     use super::*;
 
     fn spans(text: &str) -> Vec<(&str, SpanKind)> {

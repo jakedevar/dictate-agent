@@ -126,7 +126,7 @@ impl HealthTracker {
         }
         let detail = format!(
             "model '{}' is not installed in Ollama (installed: {}); \
-             `ollama pull {}` or set grammar.model",
+             `ollama pull {}` or list an installed model in [format.llm] models",
             self.model,
             ollama::describe_installed(installed),
             self.model

@@ -136,6 +136,9 @@ async fn the_llm_pass_gets_the_rules_output_and_the_resolved_context() {
             persist: false,
             spoken_punctuation: None,
             spoken_line_breaks: None,
+            format_llm: None,
+            // Nothing in this sentence is protected.
+            protected: Vec::new(),
         }
     );
     h.stop().await;

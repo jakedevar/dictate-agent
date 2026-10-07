@@ -73,6 +73,14 @@ pub struct FormatContext {
     pub spoken_punctuation: Option<bool>,
     /// Per-session override of `[format.rules] spoken_line_breaks`.
     pub spoken_line_breaks: Option<bool>,
+    /// `SessionOptions.format_llm` as the caller sent it. `Some(true)` asks
+    /// the LLM pass to run below `min_words` and despite a profile that
+    /// turned it off; `Some(false)` never reaches a formatter (the pipeline
+    /// skips the pass as `disabled`).
+    pub format_llm: Option<bool>,
+    /// Byte ranges of the protected spans in the text handed to the LLM
+    /// pass. Set by the pipeline after the chain runs; empty inside it.
+    pub protected: Vec<std::ops::Range<usize>>,
 }
 
 impl Default for FormatContext {
@@ -87,6 +95,8 @@ impl Default for FormatContext {
             persist: false,
             spoken_punctuation: None,
             spoken_line_breaks: None,
+            format_llm: None,
+            protected: Vec::new(),
         }
     }
 }
@@ -362,6 +372,7 @@ mod tests {
                 spoken_punctuation: false,
                 spoken_line_breaks: false,
             },
+            ..FormatConfig::default()
         };
         assert_eq!(
             TextChain::standard(&all_off).stage_names(),
@@ -379,6 +390,7 @@ mod tests {
                 spoken_line_breaks: true,
                 ..RulesConfig::default()
             },
+            ..FormatConfig::default()
         };
         let names = TextChain::standard(&all_on).stage_names();
         assert_eq!(names.len(), 11);
@@ -406,6 +418,7 @@ mod tests {
                 spoken_line_breaks: true,
                 ..RulesConfig::default()
             },
+            ..FormatConfig::default()
         });
         let profile_off = FormatContext {
             spoken_line_breaks: Some(false),

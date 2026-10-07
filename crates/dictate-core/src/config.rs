@@ -85,7 +85,10 @@ impl UploadConfig {
 #[serde(default)]
 pub struct LocalConfig {
     pub host: String,
+    /// Preferred model; the first rung of the ladder.
     pub model: String,
+    /// Fallbacks tried in order when `model` is not installed (S21).
+    pub models: Vec<String>,
     pub timeout_s: f64,
 }
 
@@ -131,6 +134,9 @@ impl Default for LocalConfig {
         Self {
             host: "http://localhost:11434".into(),
             model: "qwen3:14b".into(),
+            // Installed and measured on this machine (S21); 12b fits in VRAM
+            // alongside Whisper, e4b is the small fallback.
+            models: vec!["gemma4:12b".into(), "gemma4:e4b".into()],
             timeout_s: 120.0,
         }
     }
@@ -332,6 +338,20 @@ pub fn parse_config(contents: &str) -> anyhow::Result<(Config, ConfigReport)> {
 
     for path in ignored {
         warnings.push(describe_ignored(&path, &value));
+    }
+
+    // S21: `[format.llm]`, with the deprecated `[grammar]` keys applied as an
+    // alias (Jake's live file still has `[grammar] enabled/model`). Unknown
+    // `[format.llm]` keys were already named by the serde_ignored pass above.
+    let mut config = config;
+    if let Some(table) = value.as_table() {
+        let load = dictate_fmt::llm::LlmConfig::from_document(table)?;
+        config.format.llm = load.config;
+        for warning in load.warnings {
+            if !warning.starts_with("unknown key [format.llm]") && !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
     }
 
     let config = finalize(config);
@@ -546,6 +566,7 @@ mod tests {
         assert!((config.grammar.timeout_s - 10.0).abs() < f64::EPSILON);
         assert_eq!(config.grammar.min_words, 3);
         assert_eq!(config.local.model, "qwen3:14b");
+        assert_eq!(config.local.models, ["gemma4:12b", "gemma4:e4b"]);
         assert!(config.output.auto_type);
         assert!(config.notifications.enabled);
         assert_eq!(config.notifications.timeout_ms, 1250);

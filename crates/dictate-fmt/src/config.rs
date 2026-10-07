@@ -40,6 +40,10 @@ pub struct FormatConfig {
     pub enabled: bool,
     /// One toggle per rule.
     pub rules: RulesConfig,
+    /// `[format.llm]` (S21). The daemon's loader re-derives this through
+    /// [`LlmConfig::from_document`](crate::llm::LlmConfig::from_document) so
+    /// the deprecated `[grammar]` keys still apply as an alias.
+    pub llm: crate::llm::LlmConfig,
 }
 
 impl Default for FormatConfig {
@@ -47,6 +51,7 @@ impl Default for FormatConfig {
         Self {
             enabled: true,
             rules: RulesConfig::default(),
+            llm: crate::llm::LlmConfig::default(),
         }
     }
 }

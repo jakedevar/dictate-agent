@@ -751,8 +751,13 @@ dependencies = [
  "anyhow",
  "dictate-proto",
  "ollama-rs",
+ "regex",
+ "reqwest",
+ "rusqlite",
  "serde",
+ "serde_json",
  "tokio",
+ "toml",
  "tracing",
 ]
 
