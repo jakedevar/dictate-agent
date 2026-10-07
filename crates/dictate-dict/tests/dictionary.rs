@@ -414,3 +414,52 @@ fn recasing_skips_ordinary_words_but_not_terms_or_explicit_aliases() {
     d.upsert(entry("Rust Belt", &[])).unwrap();
     assert_eq!(d.apply("the rust belt", None).text, "the Rust Belt");
 }
+
+/// Two threads open the same file at once (barrier-released); both must
+/// succeed at schema version 3 with every pre-existing row intact.
+#[test]
+fn concurrent_opens_do_not_race_the_migration() {
+    use std::sync::{Arc, Barrier};
+    let dir = std::env::temp_dir().join(format!("dict-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, v1) in [("fresh", false), ("v1", true)] {
+        for round in 0..20 {
+            let path = dir.join(format!("{name}-{round}.db"));
+            if v1 {
+                let c = Connection::open(&path).unwrap();
+                c.execute_batch(dictate_dict::store::MIGRATION_V1).unwrap();
+                c.execute_batch("PRAGMA user_version=1; INSERT INTO entries (phrase,phrase_key,sounds_like,case_sensitive,enabled,source,created_at,updated_at) VALUES ('Tauri','tauri','[]',0,1,'manual',10,20)").unwrap();
+            }
+            let barrier = Arc::new(Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let (p, b) = (path.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        DictionaryStore::open(&p)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join()
+                    .unwrap()
+                    .unwrap_or_else(|e| panic!("{name} round {round}: {e}"));
+            }
+            let store = DictionaryStore::open(&path).unwrap();
+            let version: u32 = Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, 3, "{name} round {round}");
+            let rows = store.entries().unwrap();
+            assert_eq!(rows.len(), usize::from(v1), "{name} round {round}");
+            if v1 {
+                assert_eq!(rows[0].entry.phrase, "Tauri");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

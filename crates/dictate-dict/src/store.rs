@@ -55,18 +55,35 @@ impl DictionaryStore {
     }
     pub fn from_connection(mut conn: Connection) -> anyhow::Result<Self> {
         conn.busy_timeout(Duration::from_secs(2))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        // Switching a fresh file to WAL can report SQLITE_BUSY without invoking
+        // the busy handler when another opener is doing the same; retry it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+                Ok(()) => break,
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::DatabaseBusy
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        // One IMMEDIATE transaction takes the write lock before the version is
+        // read, so a concurrent opener waits (busy_timeout) and then sees the
+        // already-migrated version instead of re-running a migration.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         anyhow::ensure!(
             version <= SCHEMA_VERSION,
             "dictionary database is newer than this daemon"
         );
         for (v, migration) in MIGRATIONS.iter().enumerate().skip(version as usize) {
-            let tx = conn.transaction()?;
             tx.execute_batch(migration)?;
             tx.pragma_update(None, "user_version", v + 1)?;
-            tx.commit()?;
         }
+        tx.commit()?;
         Ok(Self { conn })
     }
     pub fn entries(&self) -> anyhow::Result<Vec<StoredEntry>> {
