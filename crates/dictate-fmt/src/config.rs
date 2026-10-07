@@ -30,8 +30,8 @@ impl Default for GrammarConfig {
 
 /// `[format]`: the deterministic text chain that runs between STT and routing.
 ///
-/// `[grammar]` remains the LLM pass's section; S21 owns its evolution (and may
-/// add `[format.llm]` here through the integrator).
+/// The LLM pass lives under `[format.llm]` (S21); the old `[grammar]`
+/// section is only an alias for it.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct FormatConfig {

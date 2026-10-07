@@ -44,7 +44,8 @@ crates/
   dictate-vad      Silero VAD gate/trim + hands-free trailing-silence stop
   dictate-stt      SttProvider + whisper-rs impl, pinned model catalog/pull,
                     language/initial_prompt hooks + WhisperConfig
-  dictate-fmt      grammar correction + text cleanup (GrammarCorrector) + GrammarConfig
+  dictate-fmt      deterministic text chain (S20), LLM formatting pass under
+                    [format.llm] (S21, LlmFormatter) + FormatConfig
   dictate-history  SQLite WAL + FTS5 interaction log, analytics, retention,
                     privacy mode, Python-DB import (HistoryStore) + HistoryConfig
   dictate-inject   Injector boundary: X11 paste (clipboard save/restore) and
