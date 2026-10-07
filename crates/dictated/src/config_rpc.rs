@@ -640,7 +640,7 @@ fn json_to_value(value: &Value, template: Option<&Value>) -> Result<toml_edit::V
 /// Replace `path` with `text` atomically, keeping the previous contents as
 /// `<name>.bak`.
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
 
     // Write through a symlink to its target: renaming over the link itself
     // would silently detach a dotfile-managed config from its repository.
@@ -664,27 +664,44 @@ fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
     let tmp = dir.join(format!(".{name}.tmp-{}-{nonce}", std::process::id()));
+    let bak_tmp = dir.join(format!(".{name}.bak-tmp-{}-{nonce}", std::process::id()));
     let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&tmp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        // `mode` above is filtered by the umask; restore the original exactly.
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+        write_new_file(&tmp, text.as_bytes(), mode)?;
         if existing.is_some() {
-            std::fs::copy(&target, dir.join(format!("{name}.bak")))?;
+            // Never `fs::copy` onto `<name>.bak`: that opens the destination
+            // and writes through a symlink or hard link someone planted there
+            // (`config.toml.bak -> ~/.ssh/authorized_keys`). A fresh exclusive
+            // temp file renamed into place replaces the *directory entry*
+            // instead, so whatever the old `.bak` pointed at is untouched.
+            let previous = std::fs::read(&target)?;
+            write_new_file(&bak_tmp, &previous, mode)?;
+            std::fs::rename(&bak_tmp, dir.join(format!("{name}.bak")))?;
         }
         std::fs::rename(&tmp, &target)?;
         std::fs::File::open(&dir)?.sync_all()
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&bak_tmp);
     }
     result
+}
+
+/// Create `path` exclusively (`O_CREAT|O_EXCL`, which refuses an existing
+/// entry including a dangling symlink), write `bytes`, and set `mode` exactly.
+fn write_new_file(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    // `mode` above is filtered by the umask; restore the original exactly.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 #[cfg(test)]
@@ -775,5 +792,78 @@ mod tests {
             !text.contains("[audio]\n"),
             "no empty parent header: {text}"
         );
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dictated-cfgw-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_backup_does_not_write_through_a_symlink() {
+        let dir = scratch("bak-symlink");
+        let cfg = dir.join("config.toml");
+        let victim = dir.join("victim");
+        std::fs::write(&cfg, "old = 1\n").unwrap();
+        std::fs::write(&victim, "precious\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("config.toml.bak")).unwrap();
+
+        write_atomically(&cfg, "new = 2\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious\n");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "new = 2\n");
+        let bak = dir.join("config.toml.bak");
+        assert!(!std::fs::symlink_metadata(&bak).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old = 1\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_backup_does_not_write_through_a_hard_link() {
+        let dir = scratch("bak-hardlink");
+        let cfg = dir.join("config.toml");
+        let victim = dir.join("victim");
+        std::fs::write(&cfg, "old = 1\n").unwrap();
+        std::fs::write(&victim, "precious\n").unwrap();
+        std::fs::hard_link(&victim, dir.join("config.toml.bak")).unwrap();
+
+        write_atomically(&cfg, "new = 2\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.toml.bak")).unwrap(),
+            "old = 1\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dangling_backup_symlink_creates_nothing_outside_the_directory() {
+        let dir = scratch("bak-dangling");
+        let cfg = dir.join("config.toml");
+        let outside = dir.join("not-yet");
+        std::fs::write(&cfg, "old = 1\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("config.toml.bak")).unwrap();
+
+        write_atomically(&cfg, "new = 2\n").unwrap();
+
+        assert!(!outside.exists(), "the link target must not be created");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_backup_keeps_the_config_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("bak-mode");
+        let cfg = dir.join("config.toml");
+        std::fs::write(&cfg, "old = 1\n").unwrap();
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomically(&cfg, "new = 2\n").unwrap();
+        let mode = |n: &str| std::fs::metadata(dir.join(n)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("config.toml"), 0o600);
+        assert_eq!(mode("config.toml.bak"), 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
