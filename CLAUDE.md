@@ -63,6 +63,11 @@ crates/
   dictate-cli      the `dictate` control client. Depends on dictate-proto and
                     nothing else — a keybinding runs it on every dictation,
                     so it must not link whisper/CUDA (1.4MB vs the daemon's 45MB)
+  dictate-server   S33 network API transport (axum HTTP+WS): bind policy, bearer
+                    token, Host/Origin checks, limits, optional rustls, [api]
+                    config. Depends on dictate-proto only; commands run through
+                    its `Backend` trait, which dictated implements over the
+                    socket's own dispatch (dictated/src/network.rs)
 dictate/           Python reference daemon (retained until cutover)
 ```
 
@@ -82,9 +87,10 @@ CLI, history and injection crates consume it today, and S32 (UI) and S33
 (network API) will. It is pinned by golden-JSON tests; read the
 compatibility rule in its crate docs before changing any wire type.
 
-Crates NOT yet created (owned by later slices in the master plan, do not
-add empty shells for these): `dictate-dict` (S22), `dictate-context` (S23),
-`dictate-server` (S33). `dictate-vad` (S11) and `dictate-hotkey` (S31) exist.
+`dictate-dict` (S22), `dictate-context` (S23), `dictate-vad` (S11),
+`dictate-hotkey` (S31) and `dictate-server` (S33) exist. `dictate-server` is a
+leaf like the others: `dictate-core` depends on it only for `ApiConfig`, and
+`dictated` wires the listener.
 
 `dictate-core` gained a dependency on `dictate-proto` in S02 (the engine
 speaks the wire types directly). The direction is still one-way — nothing
@@ -190,6 +196,23 @@ still work: they signal whatever holds the legacy PID file at
 scripts drive Python; with only `dictated` running they drive `dictated`.
 Neither ever overwrites a PID file a living process owns — which is the
 whole reason the two can stay installed side by side.
+
+### Network API (S33) — off by default
+
+```bash
+dictated --api-token          # print the bearer token (create if absent)
+dictated --rotate-api-token   # replace it; a running daemon honors it at once
+```
+
+`[api] enabled = true` serves `POST /v1/transcribe`, `GET /v1/status` and
+`GET /v1/ws` on `127.0.0.1:7313`, token required on every request. A network
+peer may only transcribe its own audio (no injection, mic, context, config,
+history, dictionary or diagnostics) and sees only its own sessions' events.
+A LAN bind needs `allow_lan` plus TLS or `allow_plaintext_lan` (tunnel only);
+anything less is refused at startup. Token file:
+`$XDG_DATA_HOME/dictated/api-token` (0600). Design and threat model:
+`thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
+Tests bind ephemeral 127.0.0.1 ports only.
 
 ### Headless transcription, doctor, real-hardware checks (S03)
 

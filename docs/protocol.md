@@ -629,21 +629,54 @@ Two rules the daemon enforces that the wire format does not carry:
 ← {"kind":"event","v":1,"event":{"type":"state_changed","from":"injecting","to":"done",...}}
 ```
 
-### One-shot upload (S33)
+### Network API (S33)
+
+Served by `dictate-server` when `[api] enabled = true` (off by default), on
+`127.0.0.1:7313` unless the operator opts into a LAN bind (`allow_lan` plus TLS
+or `allow_plaintext_lan` for an encrypted tunnel). Security design:
+`thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
+
+Every request, loopback included:
+
+- `Authorization: Bearer <token>` — the token from `dictated --api-token`.
+  Missing or wrong → `401` + `WWW-Authenticate: Bearer`, error `unauthorized`.
+  No query-string or cookie credentials.
+- no `Origin` header (browsers) unless listed in `[api] allowed_origins` → `403`.
+- `Host` naming the bound address (or an `[api] allowed_hosts` entry) → `421`
+  otherwise (DNS rebinding).
+- per-IP rate limit and authentication-failure lockout → `429` + `Retry-After`.
 
 ```
-POST /v1/transcribe        Authorization: Bearer <token>
-body = WAV bytes; query/JSON params map to
-  {"type":"transcribe_audio","audio":{"source":"body","format":{"encoding":"wav"}},
-   "options":{"inject":false}}
+POST /v1/transcribe[?encoding=&sample_rate_hz=&channels=&language=&app=&format_llm=&use_dictionary=&privacy=&route=&inject=]
+  body = the audio: Content-Type audio/wav, or raw PCM with
+         ?encoding=pcm_s16le|pcm_f32le&sample_rate_hz=…&channels=…
+  ≡ {"type":"transcribe_audio","audio":{"source":"body","format":{…}},"options":{…}}
+    on a fresh network connection (the body is passed as inline audio)
 
 200 → {"type":"transcript","text":"...","route":"type","timings":{...},
        "injection":{"status":"delivered"}}
+     (raw_text only when the operator set [api] expose_raw_text)
+
+GET /v1/status → {"type":"status",…}   (no pid, audio or formatter detail;
+                                        capabilities = the network grant)
+
+GET /v1/ws     → WebSocket. One envelope per text frame, exactly as one line
+                 on the unix socket; handshake first.
 ```
 
-Errors return the error object with the HTTP status from §10.
+Errors return the error object with the HTTP status from §10. `inject=true`
+and any route but `type` are `403 forbidden`, the same answer the socket gives a
+connection without those capabilities.
 
-### Streamed audio (S33)
+A network connection is offered `remote_transcription_only` (route `type`,
+`transcribe_upload`; `streaming_audio` and `audio_level_events` off; `raw_text`
+only by operator opt-in), never `config_*`, `history_*`, `dictionary_*`,
+`diagnostics`, `context_read`, `host_capture` or `text_injection`, whatever the
+client calls itself. Its subscription receives events **only for sessions it
+started** — never a dictation made at the host — and `stop`/`cancel` reach only
+its own session. Dropping the connection cancels an upload it still owns.
+
+### Streamed audio (specified; not yet served)
 
 ```
 → {"type":"begin_audio_stream","format":{"encoding":"pcm_f32le","sample_rate_hz":16000,"channels":1}}
@@ -652,6 +685,11 @@ Errors return the error object with the HTTP status from §10.
 → <binary frame kind=2 stream=3 seq=N flags=LAST>     (or {"type":"end_audio_stream","stream_id":3})
 ← {"kind":"event",...,"event":{"type":"final","session_id":"s2","text":"...", "injection":{"status":"delivered"}}}
 ```
+
+Not implemented by S33: it needs an engine session fed by frames. Until then
+`begin_audio_stream` / `end_audio_stream` answer `unsupported_command` on every
+transport, and a binary WebSocket frame closes the session (`1003`). Send whole
+clips with `transcribe_audio`.
 
 ---
 

@@ -162,8 +162,9 @@ TCP accept (conn cap) ─► [TLS handshake, timeout] ─► hyper http1 (header
 Startup decision. It is a pure function, `ApiConfig::bind_plan()`, and it is
 unit-tested exhaustively.
 
-1. `enabled = false` → no listener. Every other key is ignored, but still
-   validated so `--check-config` can report mistakes.
+1. `enabled = false` → no listener. Every other key is ignored and nothing
+   is reported: a disabled API exposes nothing, so its keys must never block
+   the daemon from starting.
 2. `bind` does not parse as `IP:port` → **refuse**.
 3. Unspecified address (`0.0.0.0`, `::`) → **refuse**. Bind one interface. An
    all-interfaces bind on a laptop includes whatever café network it joins
@@ -199,7 +200,10 @@ Rule 7 is checked when the listener starts.
   `get_config` serves and which tends to get backed up or shared.
 - **Rotation.** `dictated --rotate-api-token` replaces the file atomically.
   The running daemon picks the new token up on the next request, because the
-  store re-reads the file when its (dev, inode, mtime, len) changes. The old
+  store re-reads the file when its (dev, inode, len, mtime, ctime, mode, uid)
+  changes. ctime, mode and uid are included because `chmod` and `chown` change
+  only those, and a file that becomes readable by others must stop working at
+  once. The old
   token stops working immediately. **Revocation** is deleting the file: every
   request then fails closed (401).
 - **Verification.** `Authorization: Bearer <token>` only. There are no query
@@ -333,14 +337,14 @@ local dictations. For network connections:
 | Concurrent TCP connections | 16 | accept loop (semaphore; excess closed immediately) |
 | Concurrent WS sessions | 4 | before upgrade → 503 `busy` |
 | TLS handshake | 10 s | per-connection task |
-| HTTP header read | 10 s | hyper `header_read_timeout` (slowloris) |
+| HTTP header read | 10 s | hyper `header_read_timeout` (slowloris). The timer also runs while a keep-alive connection is idle, so an idle connection holds a slot for at most 10 s |
 | Upload body read | 60 s total | handler timeout → 408 `timeout` |
 | Upload body size | `max_upload_bytes` = 32 MiB | streamed with a hard cap → 413 before buffering past the cap |
-| Decoded audio duration | `max_audio_seconds` = 300 | `decode_upload` (`limits.max_audio_ms`) → 413 |
+| Decoded audio duration | `max_audio_seconds` = 300, and never more than `[upload]` allows the socket | `decode_upload` (`limits.max_audio_ms`) → 413 |
 | WS message size | the encoded form of `max_upload_bytes` (base64 + 4 KiB) | `WebSocketUpgrade::max_message_size` |
 | WS pipelined requests | 4 queued; more closes the connection (1008) | per-connection reader |
 | WS idle | 300 s without a client message → close | session loop |
-| Requests per peer IP | token bucket, 120/min, burst 20 (WS messages count) | pre-auth middleware → 429 `rate_limited` |
+| Requests per peer IP | token bucket, 120/min, burst 20 (WS messages count) | pre-auth middleware → 429 `rate_limited`. On a WS an over-rate message is delayed (up to 5 s), never answered out of order |
 | Auth failures per peer IP | 5 per 60 s, then blocked 60 s | auth middleware → 429 |
 | Throttle table | 1024 IPs; idle entries pruned | bounded memory |
 | Engine | one session slot (existing) | a busy engine answers 409 `busy` |
@@ -431,3 +435,28 @@ brute-forced. It keeps a misconfigured client from turning into log spam.
 7. TLS: provider, protocol versions, handshake timeout, and that a plaintext
    LAN bind is impossible without `allow_plaintext_lan`.
 8. Logging: access-log fields, auth-failure lines, and the privacy test.
+
+## 14. As built (2026-10-07), notes for the reviewer
+
+- **Keep-alive is on.** With `keep_alive(false)`, hyper overwrote the 101's
+  `Connection: upgrade` with `close`, and it stopped watching the read side
+  after the body. That broke WebSocket upgrades and hid client hang-ups.
+  With keep-alive on, the header timer bounds idle connections (§9). hyper
+  also notices an EOF in the middle of a request and drops the request future,
+  which drops the `NetworkConnection`, and the engine cancels the upload.
+  `hanging_up_mid_upload_cancels_the_network_session` tests this.
+- **Files.** `crates/dictate-server/src/{config,token,guard,limit,http,ws,serve,tls,backend}.rs`.
+  `crates/dictated/src/network.rs` holds the grant and the `Backend` impl.
+  In `crates/dictated/src/server.rs`: `NetworkConnection`, the `Conn` fields
+  `network`/`offered`/`owned`, `visible`, `redact_transcript`,
+  `scrub_for_network`. `crates/dictated/src/lib.rs` has
+  `Daemon::start_network_api` and the fatal startup refusal.
+  `crates/dictated/src/main.rs` has `--api-token` and `--rotate-api-token`.
+- **A pre-existing bug was fixed along the way.** `Daemon::shutdown` used
+  `notify_waiters`, which loses the wakeup when the socket server task has
+  not been polled since it was spawned. A daemon stopped before its first
+  yield therefore hung. It now uses `notify_one`, which stores a permit.
+- **Tests.** `crates/dictate-server` has 39 unit tests and 19 transport tests
+  (against a fake backend, including TLS with an rcgen certificate).
+  `crates/dictated` has 6 new unit tests, 11 `network_api` tests and the
+  `network_logs` test. Every test binds `127.0.0.1:0`.
