@@ -84,7 +84,7 @@ poll_interval_ms = 32
 # Deterministic text cleanup between transcription and routing: pure Rust,
 # well under a millisecond, no network. Off = the raw Whisper text is routed
 # and typed as-is. URLs, paths, slash commands and code identifiers stay
-# protected from the [grammar] LLM pass even when this is off.
+# protected from the [format.llm] pass even when this is off.
 enabled = true
 
 [format.rules]
@@ -115,18 +115,12 @@ terminal_punctuation = true
 spoken_punctuation = false
 spoken_line_breaks = false
 
-[grammar]
-# DEPRECATED (S21): superseded by [format.llm] below. While [format.llm] is
-# absent, these keys are still read as an alias — enabled, host, min_words,
-# timeout_s (becomes [format.llm.timeout] max_ms) and model (tried first,
-# ahead of the [format.llm] default ladder) — with a one-time warning. When
-# [format.llm] is present, [grammar] is ignored (also warned).
-enabled = false
-host = "http://localhost:11434"
-model = "qwen3:0.6b"
-timeout_s = 10.0
-# Skip correction for short inputs (preserves trigger words like "timer")
-min_words = 3
+# [grammar] (the pre-S21 Ollama grammar pass) is gone. An old config's
+# [grammar] keys are still read as an alias for [format.llm] while
+# [format.llm] is absent — enabled, host, min_words, timeout_s (becomes
+# [format.llm.timeout] max_ms) and model (tried first, ahead of the default
+# ladder) — with a one-time warning. When [format.llm] is present, [grammar]
+# is ignored (also warned).
 
 [upload]
 # Limits on audio uploaded with `transcribe_audio` / `dictate transcribe`.

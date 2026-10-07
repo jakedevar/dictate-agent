@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+/// The deprecated `[grammar]` section, kept only as a parse target: S21's
+/// [`crate::llm::LlmConfig`] reads these keys as an alias.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct GrammarConfig {

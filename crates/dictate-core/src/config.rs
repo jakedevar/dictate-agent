@@ -24,6 +24,10 @@ pub struct Config {
     pub vad: VadConfig,
     /// `[format]`: the deterministic text chain (S20).
     pub format: FormatConfig,
+    /// `[grammar]`: the deprecated pre-S21 section. Nothing runs from it any
+    /// more; it is parsed so its keys are validated and not reported as
+    /// unknown, and `parse_config` applies them as an alias for
+    /// `format.llm` while `[format.llm]` is absent.
     pub grammar: GrammarConfig,
     pub local: LocalConfig,
     pub output: OutputConfig,
@@ -851,7 +855,7 @@ spoken_line_breaks = true
     #[test]
     fn a_clean_current_config_produces_no_warnings() {
         let (_, report) = parse_config(
-            "[whisper]\nmodel = \"large-v3-turbo\"\ndevice = \"cuda\"\n\n[grammar]\nmodel = \"m:1b\"\n",
+            "[whisper]\nmodel = \"large-v3-turbo\"\ndevice = \"cuda\"\n\n[format.llm]\nmodels = [\"m:1b\"]\n",
         )
         .unwrap();
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
