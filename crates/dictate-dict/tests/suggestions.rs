@@ -112,3 +112,46 @@ fn quoted_sentence_initial_words_are_not_recurring_terms() {
     }
     assert!(mine(&c, &[]).unwrap().is_empty());
 }
+
+/// `miner-joins-tokens-corrupts-targets`: the proposed phrase is the text the
+/// formatter actually wrote, punctuation and all — never its word tokens
+/// re-joined with spaces.
+#[test]
+fn a_rewrite_target_keeps_its_original_spelling() {
+    let c = history();
+    for day in [1, 1, 2] {
+        add(
+            &c,
+            day,
+            "install node jay ess first",
+            "install Node.js first",
+        );
+    }
+    let s = mine(&c, &[]).unwrap();
+    let rewrites: Vec<_> = s
+        .iter()
+        .filter(|s| s.reason == "consistent_rewrite")
+        .collect();
+    assert_eq!(rewrites.len(), 1, "{s:?}");
+    assert_eq!(rewrites[0].entry.phrase, "Node.js");
+    assert_eq!(rewrites[0].entry.sounds_like, vec!["node jay ess"]);
+}
+
+/// `miner-joins-tokens-corrupts-targets`: a grammar fix is not vocabulary. An
+/// entry `you're` ← `your` would rewrite every correct "your".
+#[test]
+fn grammatical_rewrites_are_never_proposed() {
+    let c = history();
+    for day in [1, 2, 3] {
+        add(&c, day, "I like your idea", "I like you're idea");
+        add(&c, day, "check its value", "check it's value");
+        add(&c, day, "we do not stop", "we don't stop");
+        add(&c, day, "buy a apple", "buy an apple");
+        add(&c, day, "she go home", "she goes home");
+    }
+    let s = mine(&c, &[]).unwrap();
+    assert!(
+        s.iter().all(|s| s.reason != "consistent_rewrite"),
+        "grammar must not become dictionary entries: {s:?}"
+    );
+}
