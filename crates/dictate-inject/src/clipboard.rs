@@ -23,7 +23,7 @@ pub(crate) struct Property {
     data: Vec<u8>,
 }
 
-type Contents = BTreeMap<Atom, Property>;
+pub(crate) type Contents = BTreeMap<Atom, Property>;
 
 pub(crate) struct PasteSelection {
     conn: RustConnection,
@@ -69,6 +69,10 @@ pub fn focused_window() -> Option<u32> {
 }
 
 impl PasteSelection {
+    pub(crate) fn window(&self) -> u32 {
+        self.window
+    }
+
     pub(crate) fn new(text: &str) -> Result<Self> {
         Self::connect(text, None)
     }
@@ -265,6 +269,14 @@ impl PasteSelection {
     /// Send Ctrl+V on the same connection under the server grab, so a
     /// queued focus change cannot land between validation and key delivery.
     pub(crate) fn send_paste(&self, destination: u32) -> Result<bool> {
+        self.send_chord(destination, 0x76)
+    }
+
+    pub(crate) fn send_copy(&self, destination: u32) -> Result<bool> {
+        self.send_chord(destination, 0x63)
+    }
+
+    fn send_chord(&self, destination: u32, symbol: u32) -> Result<bool> {
         use x11rb::protocol::xproto::{KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
         use x11rb::protocol::xtest::ConnectionExt as _;
         let setup = self.conn.setup();
@@ -281,7 +293,7 @@ impl PasteSelection {
                 .ok_or_else(|| anyhow!("paste key unavailable"))
         };
         let ctrl = keycode(0xffe3)?;
-        let v = keycode(0x76)?;
+        let v = keycode(symbol)?;
         self.conn.grab_server()?.check()?;
         let result = (|| {
             if self.focus()? != Some(destination) {
@@ -365,14 +377,56 @@ impl PasteSelection {
         Ok(accepted && request.target != self.targets)
     }
 
-    pub(crate) fn transfer(&self, destination: u32) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(2);
+    fn same_client(&self, requestor: u32, destination: u32) -> bool {
         let mask = !self.conn.setup().resource_id_mask;
+        requestor & mask == destination & mask
+    }
+
+    fn refuse(&self, request: SelectionRequestEvent) -> Result<()> {
+        self.conn
+            .send_event(
+                false,
+                request.requestor,
+                EventMask::NO_EVENT,
+                SelectionNotifyEvent {
+                    response_type: SELECTION_NOTIFY_EVENT,
+                    sequence: 0,
+                    time: request.time,
+                    requestor: request.requestor,
+                    selection: request.selection,
+                    target: request.target,
+                    property: NONE,
+                },
+            )?
+            .check()?;
+        Ok(())
+    }
+
+    /// One transfer path for dictation and EDIT. Only the destination's client
+    /// receives the payload. Validate focus and deliver under the same grab.
+    pub(crate) fn transfer_to(&self, destination: u32) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             match self.conn.poll_for_event()? {
                 Some(Event::SelectionRequest(request)) if request.selection == self.selection => {
-                    let delivered = self.serve(request)?;
-                    if delivered && request.requestor & mask == destination & mask {
+                    if !self.same_client(request.requestor, destination) {
+                        self.refuse(request)?;
+                        continue;
+                    }
+                    self.conn.grab_server()?.check()?;
+                    let delivered = (|| {
+                        if self.owner()? != self.window {
+                            self.refuse(request)?;
+                            bail!("paste selection ownership lost");
+                        }
+                        if self.focus()? != Some(destination) {
+                            self.refuse(request)?;
+                            bail!("destination changed before paste transfer");
+                        }
+                        self.serve(request)
+                    })();
+                    self.conn.ungrab_server()?.check()?;
+                    if delivered? {
                         return Ok(());
                     }
                 }
@@ -381,9 +435,37 @@ impl PasteSelection {
                 None => std::thread::sleep(Duration::from_millis(1)),
             }
         }
-        Err(anyhow!(
-            "paste unconfirmed; dictation remains on clipboard if still owned; no typing retry"
-        ))
+        Err(anyhow!("paste unconfirmed; no typing retry"))
+    }
+
+    /// Copy intentionally hands ownership to the destination. Reclaim only
+    /// the observed copy owner (or our marker), atomically; another copy wins.
+    pub(crate) fn restore_after_copy(
+        &mut self,
+        saved: Contents,
+        copied_owner: Option<u32>,
+    ) -> Result<()> {
+        self.conn.grab_server()?.check()?;
+        let result = (|| {
+            let owner = self.owner()?;
+            if owner == self.window || (owner != NONE && Some(owner) == copied_owner) {
+                self.contents = saved;
+                self.conn
+                    .set_selection_owner(
+                        if self.contents.is_empty() {
+                            NONE
+                        } else {
+                            self.window
+                        },
+                        self.selection,
+                        CURRENT_TIME,
+                    )?
+                    .check()?;
+            }
+            Ok(())
+        })();
+        self.conn.ungrab_server()?.check()?;
+        result
     }
 
     /// Restore by changing the served contents, not by claiming a new owner.
@@ -409,13 +491,32 @@ impl PasteSelection {
     /// Keep the current payload alive for delayed requests and future manual
     /// pastes. The server sends SelectionClear on the next copy/transaction.
     pub(crate) fn retain(self) {
+        self.retain_inner(None);
+    }
+
+    /// An unconfirmed EDIT restores the original clipboard for other clients,
+    /// but refuses the destination's queued paste so old content cannot replace
+    /// its selection. That conservative refusal lasts until the next copy.
+    pub(crate) fn retain_aborted_edit(self, destination: u32) {
+        self.retain_inner(Some(destination));
+    }
+
+    fn retain_inner(self, blocked_client: Option<u32>) {
         std::thread::spawn(move || {
             while let Ok(event) = self.conn.wait_for_event() {
                 match event {
                     Event::SelectionRequest(request) if request.selection == self.selection => {
-                        let _ = self.serve(request);
+                        if blocked_client
+                            .is_some_and(|window| self.same_client(request.requestor, window))
+                        {
+                            let _ = self.refuse(request);
+                        } else {
+                            let _ = self.serve(request);
+                        }
                     }
-                    Event::SelectionClear(_) => break,
+                    // Ctrl+C temporarily hands ownership to the app. A
+                    // SelectionClear queued before guarded restoration is stale.
+                    Event::SelectionClear(_) if self.owner().ok() != Some(self.window) => break,
                     _ => {}
                 }
             }
@@ -529,6 +630,25 @@ mod tests {
             }
         }
     }
+    fn refused_request(conn: &RustConnection, window: u32, target: Atom) {
+        conn.convert_selection(
+            window,
+            atom(conn, b"CLIPBOARD"),
+            target,
+            atom(conn, b"TEST_RESULT"),
+            CURRENT_TIME,
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        loop {
+            if let Event::SelectionNotify(event) = conn.wait_for_event().unwrap() {
+                assert_eq!(event.property, NONE, "request must receive no payload");
+                break;
+            }
+        }
+    }
+
     fn focus(conn: &RustConnection, window: u32) {
         use x11rb::protocol::xproto::InputFocus;
         conn.map_window(window).unwrap().check().unwrap();
@@ -544,18 +664,16 @@ mod tests {
         let (destination, dest_window) = server.client();
         let (manager, manager_window) = server.client();
         let paste = server.paste("synthetic dictation");
+        focus(&destination, dest_window);
         paste.claim(NONE).unwrap();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let transfer = std::thread::spawn(move || {
-            let result = paste.transfer(dest_window);
+            let result = paste.transfer_to(dest_window);
             done_tx.send(result.is_ok()).unwrap();
             (paste, result)
         });
         let utf8 = atom(&manager, b"UTF8_STRING");
-        assert_eq!(
-            request(&manager, manager_window, utf8, false).data,
-            b"synthetic dictation"
-        );
+        refused_request(&manager, manager_window, utf8);
         assert!(
             done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
             "manager must not finish paste"
@@ -570,6 +688,106 @@ mod tests {
     }
 
     #[test]
+    fn transfer_rechecks_focus_before_delivering_any_payload() {
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        let (other, other_window) = server.client();
+        focus(&destination, dest_window);
+        let paste = server.paste("private replacement");
+        paste.claim(NONE).unwrap();
+        focus(&other, other_window);
+        let transfer = std::thread::spawn(move || paste.transfer_to(dest_window));
+        refused_request(
+            &destination,
+            dest_window,
+            atom(&destination, b"UTF8_STRING"),
+        );
+        assert!(transfer.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn aborted_edit_refuses_late_paste_but_preserves_raw_clipboard_for_other_clients() {
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        let (manager, manager_window) = server.client();
+        let original = server.paste("original clipboard");
+        original.claim(NONE).unwrap();
+        original.retain();
+        let mut edit = server.paste("unconfirmed replacement");
+        let (owner, saved) = edit.snapshot().unwrap();
+        edit.claim(owner).unwrap();
+        edit.restore(saved).unwrap();
+        edit.retain_aborted_edit(dest_window);
+        refused_request(
+            &destination,
+            dest_window,
+            atom(&destination, b"UTF8_STRING"),
+        );
+        assert_eq!(
+            request(
+                &manager,
+                manager_window,
+                atom(&manager, b"UTF8_STRING"),
+                false
+            )
+            .data,
+            b"original clipboard"
+        );
+    }
+
+    #[test]
+    fn copy_restoration_does_not_overwrite_another_clients_copy() {
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        let (other, other_window) = server.client();
+        let mut marker = server.paste("");
+        marker.claim(NONE).unwrap();
+        other
+            .set_selection_owner(other_window, marker.selection, CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+        marker
+            .restore_after_copy(Contents::new(), Some(dest_window))
+            .unwrap();
+        assert_eq!(marker.owner().unwrap(), other_window);
+        drop(destination);
+    }
+
+    #[test]
+    fn copy_restoration_preserves_a_new_owner_on_the_same_app_client() {
+        let server = Server::start();
+        let (app, copied_owner) = server.client();
+        let new_owner = app.generate_id().unwrap();
+        app.create_window(
+            COPY_DEPTH_FROM_PARENT,
+            new_owner,
+            app.setup().roots[0].root,
+            0,
+            0,
+            20,
+            20,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        let mut marker = server.paste("");
+        marker.claim(NONE).unwrap();
+        app.set_selection_owner(new_owner, marker.selection, CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+        marker
+            .restore_after_copy(Contents::new(), Some(copied_owner))
+            .unwrap();
+        assert_eq!(marker.owner().unwrap(), new_owner);
+    }
+
+    #[test]
     fn concurrent_copy_wins_over_restore_and_snapshot_claim() {
         let server = Server::start();
         let (other, other_window) = server.client();
@@ -581,7 +799,7 @@ mod tests {
             .check()
             .unwrap();
         assert!(
-            paste.transfer(other_window).is_err(),
+            paste.transfer_to(other_window).is_err(),
             "SelectionClear ends an unconfirmed transfer"
         );
         paste.restore(Contents::new()).unwrap();
@@ -603,7 +821,7 @@ mod tests {
         let (destination, dest_window) = server.client();
         let paste = server.paste("late dictation");
         paste.claim(NONE).unwrap();
-        assert!(paste.transfer(dest_window).is_err());
+        assert!(paste.transfer_to(dest_window).is_err());
         // No restore and no key retry: the retained selection serves the same
         // dictation to a request arriving after the timeout.
         paste.retain();

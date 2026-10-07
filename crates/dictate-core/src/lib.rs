@@ -29,6 +29,7 @@
 pub mod cancel;
 pub mod config;
 pub mod dictionary_stage;
+pub mod edit_executor;
 pub mod engine;
 pub mod event_bus;
 pub mod formatter_health;
@@ -40,6 +41,7 @@ pub mod pipeline;
 pub mod ports;
 pub mod router;
 pub mod session;
+pub mod snippet_stage;
 pub mod timer;
 pub mod upload;
 

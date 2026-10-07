@@ -979,6 +979,11 @@ mod tests {
                 media: Arc::new(NullMedia),
                 earcons: Arc::new(NullEarcons),
                 history: history.clone(),
+                editor: Arc::new(crate::edit_executor::EditExecutor::new(
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                )),
                 local: Arc::new(crate::local_executor::LocalExecutor::new(
                     &Default::default(),
                 )),

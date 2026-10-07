@@ -98,8 +98,8 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     // Not implemented in this slice — see `unsupported_command` in `dispatch`.
     caps.features.dictionary_read = true;
     caps.features.dictionary_write = true;
-    caps.features.snippets_read = false;
-    caps.features.snippets_write = false;
+    caps.features.snippets_read = true;
+    caps.features.snippets_write = true;
     // S32. Local only: `remote_transcription_only` never grants these, and
     // `Daemon::start_with` withdraws them when no config service is wired.
     caps.features.config_read = true;
@@ -111,6 +111,31 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     // Upload limits: the defaults here match `[upload]` in the config; the
     // daemon overrides them from the file it actually loaded.
     caps.limits = dictate_core::config::UploadConfig::default().limits();
+    caps
+}
+
+/// Whether the process on the other end of `stream` runs as the same effective
+/// user as this daemon (`SO_PEERCRED`). Fails closed: an unreadable credential
+/// is "not the owner".
+fn peer_is_owner(stream: &UnixStream) -> bool {
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let own = unsafe { libc::geteuid() };
+    is_owner(stream.peer_cred().ok().map(|c| c.uid()), own)
+}
+
+fn is_owner(peer_uid: Option<u32>, own_uid: u32) -> bool {
+    peer_uid == Some(own_uid)
+}
+
+/// Withdraw what only the owning user may do. Config is the sensitive part:
+/// `set_config` rewrites a file the daemon trusts, so a connection that is not
+/// provably this user's (the socket mode and directory already keep others
+/// out; this is the second lock) neither reads nor writes it.
+fn restrict_to_owner(mut caps: Capabilities, owner: bool) -> Capabilities {
+    if !owner {
+        caps.features.config_read = false;
+        caps.features.config_write = false;
+    }
     caps
 }
 
@@ -145,6 +170,13 @@ impl Server {
         }
         let listener =
             UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
+        // Owner-only, whatever the umask said: a second layer under the
+        // private runtime directory (`RuntimePaths::ensure_dirs`).
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restricting {}", path.display()))?;
+        }
         info!("listening on {}", path.display());
         Ok(Self {
             listener,
@@ -197,6 +229,8 @@ struct Conn {
     /// with `handshake_required` until then — a client must learn what it is
     /// allowed to do before doing it.
     capabilities: Option<Capabilities>,
+    /// The peer's effective uid matches the daemon's (`SO_PEERCRED`).
+    owner: bool,
     /// `None` when not subscribed; `Some(filter)` when subscribed, where an
     /// empty filter means every event.
     subscription: Option<Vec<String>>,
@@ -236,6 +270,10 @@ impl Conn {
 }
 
 async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDeps>) -> Result<()> {
+    let owner = peer_is_owner(&stream);
+    if !owner {
+        warn!(%id, "control connection from a different user (or unreadable credentials)");
+    }
     info!(%id, "control connection opened");
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = ConnReader::new(read_half);
@@ -243,6 +281,7 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
     let mut conn = Conn {
         id,
         capabilities: None,
+        owner,
         subscription: None,
     };
 
@@ -727,6 +766,27 @@ async fn dispatch(
                 .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
             Ok(CommandResult::Deleted { id })
         }
+        // S24: snippets live in the dictionary's database and share its handle.
+        Command::ListSnippets { query, limit } => {
+            let dictionary = dictionary(deps)?;
+            Ok(CommandResult::Snippets {
+                snippets: dictionary.list_snippets(query.as_deref(), limit),
+            })
+        }
+        Command::UpsertSnippet { snippet } => {
+            let dictionary = dictionary(deps)?.clone();
+            let snippet = tokio::task::spawn_blocking(move || dictionary.upsert_snippet(snippet))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Snippet { snippet })
+        }
+        Command::DeleteSnippet { id } => {
+            let dictionary = dictionary(deps)?.clone();
+            tokio::task::spawn_blocking(move || dictionary.delete_snippet(id))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Deleted { id })
+        }
         Command::ListDictionarySuggestions { limit } => {
             let known = dictionary(deps)?.list(None, None);
             let history = deps.history.clone();
@@ -864,18 +924,14 @@ async fn transcribe_audio(
 /// Whether this build can actually perform a command, as distinct from whether
 /// this connection is allowed to ask for it.
 ///
-/// The unimplemented set is owned by later slices: S24 brings snippets and S33
-/// audio streaming (S32 implemented config). Until then the honest answer is
+/// The unimplemented set is owned by later slices: S33 audio streaming (S32
+/// implemented config, S24 snippets). Until then the honest answer is
 /// `unsupported_command` — never a stub that returns an empty list, which a
 /// client would reasonably read as "you have no dictionary entries".
 fn is_implemented(command: &Command) -> bool {
     !matches!(
         command,
-        Command::ListSnippets { .. }
-            | Command::UpsertSnippet { .. }
-            | Command::DeleteSnippet { .. }
-            | Command::BeginAudioStream { .. }
-            | Command::EndAudioStream { .. }
+        Command::BeginAudioStream { .. } | Command::EndAudioStream { .. }
     )
 }
 
@@ -926,12 +982,13 @@ fn handshake(
         "handshake"
     );
 
-    conn.capabilities = Some(deps.capabilities.clone());
+    let granted = restrict_to_owner(deps.capabilities.clone(), conn.owner);
+    conn.capabilities = Some(granted.clone());
     Ok(CommandResult::Handshake(Box::new(ServerHello {
         protocol_version: negotiated,
         supported_versions: dictate_proto::SUPPORTED_PROTOCOL_VERSIONS.to_vec(),
         server: ServerInfo::new("dictated", env!("CARGO_PKG_VERSION")),
-        capabilities: deps.capabilities.clone(),
+        capabilities: granted,
     })))
 }
 
@@ -959,7 +1016,9 @@ mod tests {
         let caps = local_capabilities(true);
         assert!(caps.features.dictionary_read);
         assert!(caps.features.dictionary_write);
-        assert!(!caps.features.snippets_read);
+        // S24 implements snippets over the socket.
+        assert!(caps.features.snippets_read);
+        assert!(caps.features.snippets_write);
         // S32 implements configuration over the socket, for local peers.
         assert!(caps.features.config_read);
         assert!(caps.features.config_write);
@@ -987,10 +1046,11 @@ mod tests {
             limit: None
         }));
         assert!(is_implemented(&Command::GetConfig { path: None }));
-        assert!(!is_implemented(&Command::ListSnippets {
+        assert!(is_implemented(&Command::ListSnippets {
             query: None,
             limit: None
         }));
+        assert!(!is_implemented(&Command::EndAudioStream { stream_id: 1 }));
         // Implemented by this slice.
         assert!(is_implemented(&Command::GetStatus));
         assert!(is_implemented(&Command::Toggle));
@@ -1007,6 +1067,7 @@ mod tests {
         let conn = Conn {
             id: ClientId(1),
             capabilities: None,
+            owner: true,
             subscription: None,
         };
         let event = Event::Error {
@@ -1021,6 +1082,7 @@ mod tests {
         let conn = Conn {
             id: ClientId(1),
             capabilities: None,
+            owner: true,
             subscription: Some(Vec::new()),
         };
         assert!(conn.wants(&Event::Error {
@@ -1034,6 +1096,7 @@ mod tests {
         let conn = Conn {
             id: ClientId(1),
             capabilities: None,
+            owner: true,
             subscription: Some(vec!["state_changed".into()]),
         };
         assert!(conn.wants(&Event::StateChanged {
@@ -1146,5 +1209,50 @@ mod tests {
             read_line_bounded(&mut reader, 64).await.unwrap(),
             Framed::Line(_)
         ));
+    }
+
+    #[test]
+    fn only_the_owning_uid_keeps_config_authority() {
+        let caps = local_capabilities(true);
+        let own = restrict_to_owner(caps.clone(), is_owner(Some(1000), 1000));
+        assert!(own.features.config_read && own.features.config_write);
+
+        for peer in [Some(1001), Some(0), None] {
+            let other = restrict_to_owner(caps.clone(), is_owner(peer, 1000));
+            assert!(!other.features.config_read, "peer {peer:?}");
+            assert!(!other.features.config_write, "peer {peer:?}");
+            // Everything else is untouched: only config is owner-gated here.
+            assert_eq!(
+                other.features.dictionary_read,
+                caps.features.dictionary_read
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_unix_peer_of_this_process_is_the_owner() {
+        let (a, b) = UnixStream::pair().unwrap();
+        assert!(peer_is_owner(&a));
+        assert!(peer_is_owner(&b));
+    }
+
+    #[tokio::test]
+    async fn the_bound_socket_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        // Short on purpose: a socket path is limited to ~100 bytes and the
+        // sandbox's TMPDIR is long.
+        let dir = std::path::PathBuf::from(format!("/tmp/ds-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("dictated.sock");
+        let server = Server::bind(&sock).await.unwrap();
+        let mode = std::fs::metadata(server.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

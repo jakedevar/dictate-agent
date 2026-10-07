@@ -132,6 +132,42 @@ describe("settings model", () => {
     expect(usesLegacyGrammar("[grammar]\n# [format.llm]\n")).toBe(true);
   });
 
+  test("every TOML spelling of [grammar] and [format.llm] is recognised", () => {
+    const legacy = [
+      '["grammar"]\nenabled = true\n',
+      "['grammar']\nenabled = true\n",
+      "[ grammar ]\nenabled = true\n",
+      "[[grammar]]\nenabled = true\n",
+      "grammar.enabled = true\n",
+      '"grammar".enabled = true\n',
+      'grammar = { enabled = true, model = "x" }\n',
+      '[format]\nenabled = true\n[ "grammar" ]\nenabled = true\n',
+      "# c\n  [grammar]  # trailing\nenabled = true\n",
+    ];
+    for (const doc of legacy) expect(usesLegacyGrammar(doc)).toBe(true);
+
+    const modern = [
+      '[grammar]\nenabled = true\n["format"."llm"]\nenabled = true\n',
+      "[grammar]\nenabled = true\n[format . llm]\nenabled = true\n",
+      "[grammar]\nenabled = true\n[format.'llm'.timeout]\nmax_ms = 1\n",
+      "format.llm.enabled = true\n[grammar]\nenabled = true\n",
+      '"format"."llm".enabled = true\n[grammar]\nenabled = true\n',
+      "[format]\n'llm'.enabled = true\n[grammar]\nenabled = true\n",
+      "[format]\nllm = { enabled = true }\n[grammar]\nenabled = true\n",
+      "format = { llm = { enabled = true } }\n[grammar]\nenabled = true\n",
+      "format = { enabled = true, llm.timeout.max_ms = 5 }\n[grammar]\nenabled = true\n",
+    ];
+    for (const doc of modern) expect(usesLegacyGrammar(doc)).toBe(false);
+  });
+
+  test("comments and string contents never decide the layout", () => {
+    expect(usesLegacyGrammar('[grammar]\nmodel = "[format.llm]"\n')).toBe(true);
+    expect(usesLegacyGrammar('[grammar]\nmodel = """\n[format.llm]\n"""\n')).toBe(true);
+    expect(usesLegacyGrammar("[grammar]\nmodel = '''\n[format.llm]\n'''\n")).toBe(true);
+    expect(usesLegacyGrammar("[grammar]\nlist = [\"[format.llm]\", 'a']\n")).toBe(true);
+    expect(usesLegacyGrammar('# [grammar]\nx = "[grammar]"\n')).toBe(false);
+  });
+
   test("list fields parse, display and diff as arrays", () => {
     const models = spec("format.llm.models");
     expect(parseInput(models, " a:1b, b:2b ,, a:1b")).toEqual({ ok: true, value: ["a:1b", "b:2b"] });

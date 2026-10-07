@@ -83,11 +83,11 @@ pub trait Injector: Send + Sync + 'static {
 /// contract required by Wayland portal backends.
 #[derive(Clone)]
 pub struct X11Injector {
-    enabled: bool,
+    pub(crate) enabled: bool,
     default_policy: InjectionPolicy,
     chunk_chars: usize,
     // Serialize clipboard transactions; selection service threads retain owners.
-    clipboard: Arc<Mutex<()>>,
+    pub(crate) clipboard: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for X11Injector {
@@ -209,7 +209,7 @@ impl X11Injector {
             if !sent {
                 return Err(anyhow!("Dictation copied: focus changed"));
             }
-            paste.transfer(expected.unwrap())
+            paste.transfer_to(expected.unwrap())
         });
         if result.is_ok() {
             if let Err(error) = paste.restore(saved) {

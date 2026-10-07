@@ -139,6 +139,8 @@ async fn the_llm_pass_gets_the_rules_output_and_the_resolved_context() {
             format_llm: None,
             // Nothing in this sentence is protected.
             protected: Vec::new(),
+            // A live session: snippet variables may read the clipboard.
+            host_variables: true,
         }
     );
     h.stop().await;
@@ -166,7 +168,10 @@ async fn a_non_type_route_skips_the_llm_as_route_not_eligible() {
     );
     assert_eq!(formatter.calls(), 0, "the LLM pass never ran");
     assert!(matches!(t.timings.fmt_rules, StageTiming::Ran { .. }));
-    assert!(matches!(t.injection, InjectionOutcome::Skipped { .. }));
+    // EDIT is implemented by S25, but this formatting fixture has no selection.
+    // It must fail closed without invoking the prose formatter or typing.
+    assert!(matches!(t.injection, InjectionOutcome::Failed { .. }));
+    assert!(h.injector.replacements().is_empty());
     assert!(h.injector.injected().is_empty());
     h.stop().await;
 }

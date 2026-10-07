@@ -84,10 +84,21 @@ pub fn assemble_text_chain(
 ) -> TextChain {
     let chain = TextChain::standard(format);
     match dictionary {
-        Some(dictionary) => chain.with_stage(
-            Slot::Dictionary,
-            Box::new(DictionaryStage::new(dictionary.clone())),
-        ),
+        // Snippets (S24) live in the same database and handle, and run right
+        // after the dictionary (contract §1): one assembly, so neither is ever
+        // present on the `Pipeline` yet missing from the chain.
+        Some(dictionary) => chain
+            .with_stage(
+                Slot::Dictionary,
+                Box::new(DictionaryStage::new(dictionary.clone())),
+            )
+            .with_stage(
+                Slot::Snippets,
+                Box::new(crate::snippet_stage::SnippetStage::new(
+                    dictionary.clone(),
+                    Arc::new(crate::snippet_stage::SystemVariables),
+                )),
+            ),
         None => chain,
     }
 }

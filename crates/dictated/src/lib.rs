@@ -115,6 +115,9 @@ impl Daemon {
         if dictionary.is_none() {
             capabilities.features.dictionary_read = false;
             capabilities.features.dictionary_write = false;
+            // Snippets share the dictionary's database and handle.
+            capabilities.features.snippets_read = false;
+            capabilities.features.snippets_write = false;
         }
         if extras.config.is_none() {
             capabilities.features.config_read = false;
@@ -279,6 +282,11 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
             &config.local,
         )),
         timer: Arc::new(dictate_core::timer::TimerExecutor::new(&config.timer)),
+        editor: Arc::new(dictate_core::edit_executor::EditExecutor::new(
+            &config.local,
+            &config.format.llm,
+            &config.edit,
+        )),
         local_model: config.local.model.clone(),
     });
 

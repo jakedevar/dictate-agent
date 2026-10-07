@@ -104,33 +104,200 @@ export const ALL_FIELDS: readonly FieldSpec[] = [...SECTIONS.flatMap((s) => s.fi
 
 /**
  * Whether the file configures the LLM pass only through the legacy
- * `[grammar]` section (no `[format.llm]` anywhere). A line-level check of the
- * TOML headers: enough to choose an editor layout, and the daemon validates
- * every write regardless.
+ * `[grammar]` section (no `[format.llm]` anywhere).
+ *
+ * Reads the document's *key paths* the way TOML defines them, so every spelling
+ * of the same table counts: `[grammar]`, `[ "grammar" ]`, `['grammar']`,
+ * `[[grammar]]`, a top-level `grammar.enabled = true`, an inline
+ * `grammar = { enabled = true }`, and likewise for `format.llm` (headers,
+ * dotted keys inside `[format]`, nested inline tables). Comments and string
+ * contents never match. It is a layout choice only: the daemon validates every
+ * write regardless.
  */
 export function usesLegacyGrammar(document: string): boolean {
-  const legacy = /^\s*\[\s*grammar\s*\]/m.test(document);
-  const modern =
-    /^\s*\[\s*format\s*\.\s*llm\s*[\].]/m.test(document) ||
-    /^\s*\[\[?\s*format\s*\.\s*llm\s*\./m.test(document) ||
-    /^\s*llm\s*[.=]/m.test(sectionBody(document, "format"));
-  return legacy && !modern;
+  const paths = tomlKeyPaths(document);
+  const has = (prefix: readonly string[]) =>
+    paths.some((p) => p.length >= prefix.length && prefix.every((seg, i) => p[i] === seg));
+  return has(["grammar"]) && !has(["format", "llm"]);
 }
 
-/** The lines of a top-level `[name]` table, up to the next header. */
-function sectionBody(document: string, name: string): string {
-  const lines = document.split("\n");
-  const out: string[] = [];
-  let inside = false;
-  for (const line of lines) {
-    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?/.exec(line);
-    if (header) {
-      inside = header[1] === name;
-      continue;
+/**
+ * Every key path a TOML document defines: table headers, dotted and nested
+ * keys, and the keys inside inline tables (values themselves are skipped). A
+ * document this scanner cannot follow yields the paths found before the
+ * problem, and the daemon is the judge of validity.
+ */
+export function tomlKeyPaths(document: string): string[][] {
+  const out: string[][] = [];
+  const src = document;
+  let i = 0;
+
+  const peek = (n = 0) => src[i + n];
+  const skipInline = () => {
+    while (i < src.length && (peek() === " " || peek() === "\t")) i++;
+  };
+  const skipBlank = () => {
+    for (;;) {
+      const c = peek();
+      if (c === " " || c === "\t" || c === "\n" || c === "\r") i++;
+      else if (c === "#") while (i < src.length && peek() !== "\n") i++;
+      else return;
     }
-    if (inside) out.push(line);
+  };
+  const fail = (): never => {
+    throw new Error("toml");
+  };
+
+  const quoted = (): string => {
+    const q = peek();
+    i++;
+    let text = "";
+    while (i < src.length && peek() !== q) {
+      if (peek() === "\n") fail();
+      if (q === '"' && peek() === "\\") {
+        const next = peek(1);
+        const map: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", '"': '"', "\\": "\\" };
+        if (next === "u" || next === "U") {
+          const len = next === "u" ? 4 : 8;
+          const code = Number.parseInt(src.slice(i + 2, i + 2 + len), 16);
+          text += Number.isNaN(code) ? "" : String.fromCodePoint(code);
+          i += 2 + len;
+          continue;
+        }
+        text += map[next ?? ""] ?? next ?? "";
+        i += 2;
+        continue;
+      }
+      text += peek();
+      i++;
+    }
+    if (peek() !== q) fail();
+    i++;
+    return text;
+  };
+
+  const keyPart = (): string => {
+    skipInline();
+    const c = peek();
+    if (c === '"' || c === "'") return quoted();
+    const m = /^[A-Za-z0-9_-]+/.exec(src.slice(i, i + 256));
+    if (!m) return fail();
+    i += m[0].length;
+    return m[0];
+  };
+
+  const dottedKey = (): string[] => {
+    const parts = [keyPart()];
+    for (;;) {
+      skipInline();
+      if (peek() !== ".") return parts;
+      i++;
+      parts.push(keyPart());
+    }
+  };
+
+  const multiline = (q: string) => {
+    i += 3;
+    for (;;) {
+      if (i >= src.length) fail();
+      if (q === '"' && peek() === "\\") {
+        i += 2;
+        continue;
+      }
+      if (src.startsWith(q.repeat(3), i)) {
+        i += 3;
+        // Up to two extra quote characters may close the string.
+        while (peek() === q && i < src.length) i++;
+        return;
+      }
+      i++;
+    }
+  };
+
+  const value = (prefix: string[]) => {
+    skipInline();
+    const c = peek();
+    if (c === '"' || c === "'") {
+      if (src.startsWith(c.repeat(3), i)) multiline(c);
+      else quoted();
+    } else if (c === "{") {
+      i++;
+      skipBlank();
+      if (peek() === "}") {
+        i++;
+        return;
+      }
+      for (;;) {
+        skipBlank();
+        const key = [...prefix, ...dottedKey()];
+        out.push(key);
+        skipInline();
+        if (peek() !== "=") fail();
+        i++;
+        value(key);
+        skipBlank();
+        if (peek() === ",") {
+          i++;
+          continue;
+        }
+        if (peek() === "}") {
+          i++;
+          return;
+        }
+        fail();
+      }
+    } else if (c === "[") {
+      i++;
+      for (;;) {
+        skipBlank();
+        if (peek() === "]") {
+          i++;
+          return;
+        }
+        value(prefix);
+        skipBlank();
+        if (peek() === ",") i++;
+        else if (peek() !== "]") fail();
+      }
+    } else {
+      while (i < src.length && !",]}\n#".includes(peek() as string)) i++;
+    }
+  };
+
+  try {
+    let table: string[] = [];
+    for (;;) {
+      skipBlank();
+      if (i >= src.length) break;
+      if (peek() === "[") {
+        const array = peek(1) === "[";
+        i += array ? 2 : 1;
+        table = dottedKey();
+        out.push(table);
+        skipInline();
+        if (peek() !== "]") fail();
+        i++;
+        if (array) {
+          skipInline();
+          if (peek() !== "]") fail();
+          i++;
+        }
+      } else {
+        const key = [...table, ...dottedKey()];
+        out.push(key);
+        skipInline();
+        if (peek() !== "=") fail();
+        i++;
+        value(key);
+      }
+      skipInline();
+      if (peek() === "#") while (i < src.length && peek() !== "\n") i++;
+      else if (i < src.length && peek() !== "\n" && peek() !== "\r") fail();
+    }
+  } catch {
+    // Stop at the first thing this scanner does not follow.
   }
-  return out.join("\n");
+  return out;
 }
 
 /** The sections to show for this daemon and this file. */

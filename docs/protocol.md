@@ -811,3 +811,43 @@ file path or `-` (default stdin/stdout). Import remaps ids by phrase and leaves 
 counts server-owned. Import validates JSON before sending requests; record-level
 validation/database failures are reported and earlier successful records remain
 installed. `--case-sensitive` on `add` preserves alias case.
+
+### Snippets (S24)
+
+`list_snippets`, `upsert_snippet`, and `delete_snippet` are implemented; a
+snippet maps a spoken `trigger` to stored `expansion` text. A `Snippet` carries
+`id` (server-assigned), `trigger`, `expansion`, `enabled`, optional `category`,
+optional `apps` (application identifiers, case-insensitive, empty = global; with
+no window context only global snippets apply) and server-owned `hit_count`
+(client values are ignored). `apps` and `hit_count` were added after the type
+shipped and are additive: older payloads parse and omit them.
+
+Triggers are compared on their words (Unicode default case-fold, whitespace and
+simple punctuation between words ignored), so `"My  Address"` and `"my address"`
+are the same trigger and a duplicate returns `conflict`. A trigger must be words
+and simple separators only — it is something you *say* — and an expansion may
+hold newlines and tabs but no other control characters (1..4000 characters).
+Invalid values return `invalid_params`, an absent id `not_found`.
+
+At dictation time the longest trigger wins, matches never overlap, a trigger that
+ends the utterance also swallows the sentence punctuation Whisper appended, and
+the expansion is inserted as a **protected span**: no later text stage and no LLM
+pass can alter it. A trigger inside a URL, path or code span never fires, and the
+expansion is typed verbatim, even when it begins with a route word such as
+`timer` or `edit:`. `SessionOptions.use_dictionary=false` and
+`[dictionary] enabled = false` disable expansion; privacy sessions never count
+hits.
+
+An expansion may use `{date}` (`YYYY-MM-DD`), `{time}` (`HH:MM`), `{clipboard}`
+and `{selection}` (the X11 primary selection). Variables are read only when a
+matched snippet uses them, in a single pass (a clipboard that contains
+`{date}` is inserted as written). `{{date}}` writes a literal `{date}`; an
+unknown `{name}` is left as written. Reading the host clipboard or selection is
+allowed only for a live dictation session — an uploaded recording
+(`transcribe_audio`) keeps `{clipboard}`/`{selection}` as literal text — and an
+unavailable clipboard expands to an empty string.
+
+Snippets live in `dictionary.db` (schema version 3) next to the dictionary.
+The CLI supports `dictate snippet list|add|rm|enable|disable`, e.g.
+`dictate snippet add "work email" "me@example.com" --app slack`; `add` also
+takes `--file PATH` or `-` (stdin) for a multi-line expansion and `--category`.

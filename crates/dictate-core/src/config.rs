@@ -31,6 +31,7 @@ pub struct Config {
     /// `format.llm` while `[format.llm]` is absent.
     pub grammar: GrammarConfig,
     pub local: LocalConfig,
+    pub edit: crate::edit_executor::EditConfig,
     pub output: OutputConfig,
     pub notifications: NotificationConfig,
     pub history: HistoryConfig,

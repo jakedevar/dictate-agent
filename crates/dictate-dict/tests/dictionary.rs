@@ -287,7 +287,7 @@ fn persistent_wal_store_reopens_without_losing_metadata() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        2
+        3 // S24 added migration 3 (snippets)
     );
     drop(conn);
     {

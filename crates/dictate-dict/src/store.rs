@@ -3,8 +3,8 @@ use dictate_proto::{DictionaryEntry, EntrySource, ErrorCode, ProtoError};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{collections::HashMap, path::Path, time::Duration};
 
-/// S24 appends migration 3 here for snippets. Never change an applied migration.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Never change an applied migration; append the next one to `MIGRATIONS`.
+pub const SCHEMA_VERSION: u32 = 3;
 pub const MIGRATION_V1: &str = "CREATE TABLE entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     phrase TEXT NOT NULL, phrase_key TEXT NOT NULL UNIQUE,
@@ -12,9 +12,24 @@ pub const MIGRATION_V1: &str = "CREATE TABLE entries (
     enabled INTEGER NOT NULL, source TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );";
+/// S24 snippets. Forward-only and purely additive: it creates one table and
+/// touches nothing in `entries`. `IF NOT EXISTS` keeps a re-run harmless.
+pub const MIGRATION_V3: &str = "CREATE TABLE IF NOT EXISTS snippets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_text TEXT NOT NULL,
+    trigger_key TEXT NOT NULL UNIQUE,
+    expansion TEXT NOT NULL,
+    category TEXT,
+    apps TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);";
 const MIGRATIONS: &[&str] = &[
     MIGRATION_V1,
     "ALTER TABLE entries ADD COLUMN apps TEXT NOT NULL DEFAULT '[]';",
+    MIGRATION_V3,
 ];
 
 #[derive(Debug, Clone)]
@@ -25,7 +40,7 @@ pub struct StoredEntry {
 }
 
 pub struct DictionaryStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 impl DictionaryStore {
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
