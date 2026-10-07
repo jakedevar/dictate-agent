@@ -573,10 +573,6 @@ async fn run_segments(
     jobs: Vec<SegmentJob>,
     concurrency: usize,
 ) -> Vec<SegmentResult> {
-    if jobs.len() == 1 {
-        let job = jobs.into_iter().next().expect("one job");
-        return vec![format_segment(&ctx, job).await];
-    }
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut set = tokio::task::JoinSet::new();
     let n = jobs.len();
@@ -592,7 +588,7 @@ async fn run_segments(
     while let Some(joined) = set.join_next().await {
         match joined {
             Ok((i, r)) => out[i] = Some(r),
-            Err(e) => warn!("LLM chunk task failed: {e}"),
+            Err(_) => warn!("LLM chunk task failed"),
         }
     }
     out.into_iter()
@@ -779,6 +775,30 @@ fn clean_output(raw: &str, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PanickingBackend;
+
+    impl ChatBackend for PanickingBackend {
+        fn chat<'a>(&'a self, _: &'a ChatRequest) -> client::BoxFuture<'a, Result<ChatResponse, BackendError>> {
+            Box::pin(async { panic!("synthetic backend panic") })
+        }
+        fn list_models(&self) -> client::BoxFuture<'_, Result<Vec<client::InstalledModel>, BackendError>> {
+            Box::pin(async { Ok(vec![client::InstalledModel { name: "gemma4:e4b".into(), family: String::new(), size: 0 }]) })
+        }
+        fn load<'a>(&'a self, _: &'a str, _: &'a str) -> client::BoxFuture<'a, Result<Duration, BackendError>> {
+            Box::pin(async { Ok(Duration::ZERO) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_segment_panic_fails_open() {
+        let f = LlmFormatter::with_backend(LlmConfig { enabled: true, ..Default::default() }, Arc::new(PanickingBackend));
+        let req = LlmRequest::new("please check the synthetic example");
+        let out = f.format(&req).await;
+        assert_eq!(out.text, req.text);
+        assert!(!out.changed);
+        assert_eq!(out.error.as_deref(), Some("chunk task failed"));
+    }
 
     #[test]
     fn clean_output_repairs_only_whole_wrapping() {
