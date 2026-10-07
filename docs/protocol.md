@@ -672,7 +672,7 @@ Stable check `id`s (order is the order to read them):
 | `stt_backend` | the loaded backend is what the config asked for (CUDA verified against the GPU's process list when `nvidia-smi` is available) |
 | `formatter` | the formatting pass's observed health (see `status.formatter`) |
 | `ollama` | the Ollama server answers |
-| `grammar_model` | the configured formatter model is installed; lists installed alternatives when it is not |
+| `grammar_model` | the `[format.llm]` model ladder: Ok when the preferred (first) model is installed, Warn when a fallback rung will be used, Fail when none is installed (lists the installed alternatives). The id predates S21 and is kept stable |
 | `local_model` | the `local` route's model is installed |
 | `injection` | a display is present and an injection backend is available |
 | `hotkeys` | every configured input device is readable, when hotkeys are enabled |
@@ -686,7 +686,7 @@ Stable check `id`s (order is the order to read them):
 ## 12a. Application context
 
 `AppContext` names where a session's text is going. The context engine (S23)
-resolves it from the focused window at session start; a network client names
+resolves it from the focused window at session start and stop; a network client names
 its target through `options.app` instead.
 
 ```json
@@ -696,7 +696,7 @@ its target through `options.app` instead.
 | Field | Meaning |
 |---|---|
 | `app` | Stable identifier: lowercased X11 `WM_CLASS` class, or the client-supplied name |
-| `title` | Window title at session start. Optional; privacy-sensitive, never persisted in privacy mode |
+| `title` | Window title at context resolution (start or stop). Optional; privacy-sensitive, never persisted in privacy mode |
 | `category` | Open enum: `terminal`, `editor`, `browser`, `chat`, `email`, `document`, `other` (default) |
 | `profile` | Name of the configured profile that matched, if any |
 
@@ -737,13 +737,16 @@ focus is unavailable/disabled, or includes an `AppContext` and the resolved
 profile overrides, for example:
 
 ```json
-{"type":"context","context":{"app":"com.mitchellh.ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"claude-code"},"tone":"neutral","llm_format":false,"inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}
+{"type":"context","context":{"app":"com.mitchellh.ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"claude-code"},"tone":"neutral","inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}
 ```
 
 Overrides are optional: omitted means inherit category/global configuration.
 `inject` accepts `paste`, `type`, or `off`. All category tones are neutral;
-terminal defaults disable LLM formatting and spoken punctuation/line breaks,
-while inheriting the configured paste policy. A profile may override these.
+terminal defaults disable spoken punctuation/line breaks while inheriting the
+configured paste policy. They do not disable LLM formatting: the pass applies
+its verbatim terminal policy (fillers, false starts, self-corrections and
+punctuation only). A profile may override any of these, including
+`llm_format: false` to skip the pass.
 The thin `dictate context [--json]` CLI sends only this protocol command.
 
 Sessions publish an additive `context_resolved` event before `transcribing`:
@@ -753,8 +756,12 @@ Sessions publish an additive `context_resolved` event before `transcribing`:
 ```
 
 `context` is explicitly `null` when absent. Focus/profile resolution happens
-once at local session acceptance, before opening audio, and is immutable for
-that session. Caller-supplied `SessionOptions.app` resolves without a host
+at local session acceptance before opening audio, and again when a live
+session stops (explicit Stop, hold release, or VAD auto-stop). The user's
+stop-time app selects formatting and injection policy. If that app differs,
+a second `ContextResolved` is published before transcription. An unchanged
+app retains its initial profile. Injection still goes to current focus at
+delivery; the daemon never re-focuses or refuses a changed window. Caller-supplied `SessionOptions.app` resolves without a host
 window title; uploads and remote clients must never query host focus.
 `ContextResolved` events are withheld entirely from connections lacking
 `context_read`, including subscribers to all events. Context titles are

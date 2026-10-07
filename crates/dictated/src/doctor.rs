@@ -272,8 +272,8 @@ impl Doctor {
             );
         }
 
-        // "cuda" is what was *requested* of whisper.cpp. Whether it actually
-        // ran on the GPU is a question for the driver.
+        // ModelInfo observes whisper.cpp initialization. Independently verify
+        // residency through the driver as a second diagnostic signal.
         match gpu_memory_of(std::process::id()).await {
             GpuProbe::Held(mib) => DiagnosticCheck::ok(
                 ID,
@@ -310,7 +310,7 @@ impl Doctor {
             FormatterHealth::Disabled => DiagnosticCheck::skipped(
                 ID,
                 TITLE,
-                "disabled in config ([grammar] enabled = false)",
+                "disabled in config ([format.llm] enabled = false)",
             ),
             FormatterHealth::Ok => {
                 DiagnosticCheck::ok(ID, TITLE, format!("'{model}' is answering"))
@@ -325,19 +325,19 @@ impl Doctor {
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                format!("`ollama pull {model}`, or set grammar.model to an installed model"),
+                format!("`ollama pull {model}`, or put an installed model in format.llm.models"),
             ),
             FormatterHealth::Unreachable => DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                "start Ollama (`ollama serve`) or set grammar.enabled = false",
+                "start Ollama (`ollama serve`) or set format.llm.enabled = false",
             ),
             FormatterHealth::Failing | FormatterHealth::Unknown(_) => DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!("the last run failed: {detail}"),
-                "check the daemon log; set grammar.enabled = false to stop the failures",
+                "check the daemon log; set format.llm.enabled = false to stop the failures",
             ),
         }
     }
@@ -345,73 +345,41 @@ impl Doctor {
     /// Probe Ollama once (per distinct host) and derive the three checks that
     /// depend on it.
     async fn check_ollama(&self) -> Vec<DiagnosticCheck> {
-        let grammar = &self.config.grammar;
+        let llm = &self.config.format.llm;
         let local = &self.config.local;
-        let (grammar_probe, local_probe) = if grammar.host == local.host {
-            let p = ollama::probe(&grammar.host, PROBE_TIMEOUT).await;
+        let (llm_probe, local_probe) = if llm.host == local.host {
+            let p = ollama::probe(&llm.host, PROBE_TIMEOUT).await;
             (p.clone(), p)
         } else {
             tokio::join!(
-                ollama::probe(&grammar.host, PROBE_TIMEOUT),
+                ollama::probe(&llm.host, PROBE_TIMEOUT),
                 ollama::probe(&local.host, PROBE_TIMEOUT)
             )
         };
 
         let mut checks = Vec::new();
-        checks.push(if grammar_probe.reachable {
+        checks.push(if llm_probe.reachable {
             DiagnosticCheck::ok(
                 "ollama",
                 "Ollama server",
                 format!(
                     "reachable at {}; {} model(s) installed",
-                    grammar.host,
-                    grammar_probe.models.len()
+                    llm.host,
+                    llm_probe.models.len()
                 ),
             )
         } else {
-            let why = grammar_probe.error.clone().unwrap_or_default();
-            let detail = format!("no answer from {}: {why}", grammar.host);
+            let why = llm_probe.error.clone().unwrap_or_default();
+            let detail = format!("no answer from {}: {why}", llm.host);
             let fix = "start it with `ollama serve` (or `systemctl --user start ollama`)";
-            if grammar.enabled {
+            if llm.enabled {
                 DiagnosticCheck::fail("ollama", "Ollama server", detail, fix)
             } else {
                 DiagnosticCheck::warn("ollama", "Ollama server", detail, fix)
             }
         });
 
-        checks.push(if !grammar.enabled {
-            DiagnosticCheck::skipped(
-                "grammar_model",
-                "Formatter model",
-                "the formatting pass is disabled",
-            )
-        } else if !grammar_probe.reachable {
-            DiagnosticCheck::skipped(
-                "grammar_model",
-                "Formatter model",
-                "Ollama is unreachable, so installed models are unknown",
-            )
-        } else if grammar_probe.has_model(&grammar.model) {
-            DiagnosticCheck::ok(
-                "grammar_model",
-                "Formatter model",
-                format!("'{}' is installed", grammar.model),
-            )
-        } else {
-            let installed = ollama::describe_installed(&grammar_probe.models);
-            DiagnosticCheck::fail(
-                "grammar_model",
-                "Formatter model",
-                format!(
-                    "model '{}' is not installed (installed: {installed}) — the formatting pass fails open on every dictation",
-                    grammar.model
-                ),
-                format!(
-                    "`ollama pull {}`, or set grammar.model to one of: {installed}",
-                    grammar.model
-                ),
-            )
-        });
+        checks.push(check_formatter_ladder(llm, &llm_probe));
 
         checks.push(if !local_probe.reachable {
             DiagnosticCheck::skipped(
@@ -473,7 +441,7 @@ impl Doctor {
                 )
             };
         };
-        if let Some(problem) = x11_unreachable(&display) {
+        if let Some(problem) = x11_unreachable(&display).await {
             return DiagnosticCheck::fail(
                 ID,
                 TITLE,
@@ -482,9 +450,14 @@ impl Doctor {
             );
         }
         let injector = self.pipeline.injector.clone();
-        let available = tokio::task::spawn_blocking(move || injector.is_available())
-            .await
-            .unwrap_or(false);
+        // Bounded like the socket probe: a wedged X server must not wedge the
+        // doctor (the blocking thread is abandoned, not the report).
+        let available = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            tokio::task::spawn_blocking(move || injector.is_available()),
+        )
+        .await
+        .is_ok_and(|joined| joined.unwrap_or(false));
         if available {
             DiagnosticCheck::ok(
                 ID,
@@ -762,9 +735,12 @@ fn parse_compute_apps(output: &str, pid: u32) -> GpuProbe {
     GpuProbe::NotHeld
 }
 
+/// How long the X server probe may wait for its socket to accept.
+const X11_CONNECT_DEADLINE: Duration = Duration::from_secs(2);
+
 /// `None` when the X server at `display` accepts a connection (or cannot be
 /// checked, e.g. a TCP display); otherwise why not.
-fn x11_unreachable(display: &str) -> Option<String> {
+async fn x11_unreachable(display: &str) -> Option<String> {
     // `:N` or `:N.S` names a local unix socket; `host:N` is TCP, which this
     // cheap probe does not attempt.
     let local = display.strip_prefix(':')?;
@@ -772,10 +748,29 @@ fn x11_unreachable(display: &str) -> Option<String> {
     if number.is_empty() {
         return None;
     }
-    let socket = format!("/tmp/.X11-unix/X{number}");
-    match std::os::unix::net::UnixStream::connect(&socket) {
-        Ok(_) => None,
-        Err(e) => Some(format!("{socket}: {}", short_io_error(&e))),
+    socket_unreachable(
+        Path::new(&format!("/tmp/.X11-unix/X{number}")),
+        X11_CONNECT_DEADLINE,
+    )
+    .await
+}
+
+/// `None` when the unix socket at `path` accepts a connection within
+/// `deadline`; otherwise why not.
+///
+/// The connect is tokio's non-blocking one under a deadline. A blocking
+/// `connect` to a server that has stopped accepting (a hung X server with a
+/// full backlog) waits indefinitely — and on an async worker it would stall
+/// every other connection that worker serves.
+async fn socket_unreachable(path: &Path, deadline: Duration) -> Option<String> {
+    let shown = path.display();
+    match tokio::time::timeout(deadline, tokio::net::UnixStream::connect(path)).await {
+        Ok(Ok(_)) => None,
+        Ok(Err(e)) => Some(format!("{shown}: {}", short_io_error(&e))),
+        Err(_) => Some(format!(
+            "{shown}: no answer within {}s",
+            deadline.as_secs_f64()
+        )),
     }
 }
 
@@ -794,6 +789,62 @@ fn process_name(pid: u32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The `grammar_model` check (the id predates S21 and is kept for `doctor
+/// --json` consumers): walk the `[format.llm]` ladder the way the formatter
+/// resolves it. Ok when the preferred (head) model is installed, Warn when a
+/// fallback rung will be used, Fail when no rung is installed.
+fn check_formatter_ladder(
+    llm: &dictate_fmt::llm::LlmConfig,
+    probe: &ollama::OllamaProbe,
+) -> DiagnosticCheck {
+    const ID: &str = "grammar_model";
+    const TITLE: &str = "Formatter model";
+    if !llm.enabled {
+        return DiagnosticCheck::skipped(ID, TITLE, "the formatting pass is disabled");
+    }
+    if !probe.reachable {
+        return DiagnosticCheck::skipped(
+            ID,
+            TITLE,
+            "Ollama is unreachable, so installed models are unknown",
+        );
+    }
+    let ladder = llm.models.join(" → ");
+    let Some(head) = llm.models.first() else {
+        return DiagnosticCheck::fail(
+            ID,
+            TITLE,
+            "format.llm.models is empty — the formatting pass has no model to run",
+            "list at least one installed model in format.llm.models",
+        );
+    };
+    match llm.models.iter().position(|m| probe.has_model(m)) {
+        Some(0) => DiagnosticCheck::ok(ID, TITLE, format!("'{head}' is installed")),
+        Some(i) => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!(
+                "preferred '{head}' is not installed; falling back to '{}' (ladder: {ladder})",
+                llm.models[i]
+            ),
+            format!("`ollama pull {head}` to use the preferred model"),
+        ),
+        None => {
+            let installed = ollama::describe_installed(&probe.models);
+            DiagnosticCheck::fail(
+                ID,
+                TITLE,
+                format!(
+                    "no model in the ladder ({ladder}) is installed (installed: {installed}) — the formatting pass fails open on every dictation"
+                ),
+                format!(
+                    "`ollama pull {head}`, or put one of these in format.llm.models: {installed}"
+                ),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,13 +858,81 @@ mod tests {
         assert_eq!(parse_compute_apps("garbage\n", 1), GpuProbe::NotHeld);
     }
 
+    /// A unix socket that is listening but will never accept: backlog 0, and
+    /// already holding the one queued connection Linux allows it.
+    fn wedged_socket(path: &Path) -> (std::os::fd::OwnedFd, std::os::unix::net::UnixStream) {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: plain socket(2)/bind(2)/listen(2) on a fresh descriptor that
+        // is immediately owned; `addr` is zeroed and the path fits sun_path.
+        let fd = unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            assert!(fd >= 0, "socket");
+            let owned = std::os::fd::OwnedFd::from_raw_fd(fd);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            let bytes = path.as_os_str().as_bytes();
+            assert!(bytes.len() < addr.sun_path.len());
+            for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+                *dst = *src as libc::c_char;
+            }
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            assert_eq!(
+                libc::bind(fd, std::ptr::addr_of!(addr).cast(), len),
+                0,
+                "bind"
+            );
+            assert_eq!(libc::listen(fd, 0), 0, "listen");
+            owned
+        };
+        let queued = std::os::unix::net::UnixStream::connect(path).expect("first connect queues");
+        (fd, queued)
+    }
+
+    /// `doctor_unbounded_connect`: a blocking connect to a server that never
+    /// accepts waited forever; the probe must answer within its deadline.
+    #[test]
+    fn a_socket_that_never_accepts_is_reported_within_the_deadline() {
+        // Under /tmp: the harness TMPDIR can be too long for sun_path.
+        let dir = std::path::PathBuf::from("/tmp").join(format!("dd-x11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("X0");
+        let _ = std::fs::remove_file(&path);
+        let _wedged = wedged_socket(&path);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_path = path.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let found = rt.block_on(socket_unreachable(&probe_path, Duration::from_millis(300)));
+            let _ = tx.send(found);
+        });
+        let found = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the X11 probe must not block past its deadline");
+        assert!(
+            found.as_deref().is_some_and(|m| m.contains("X0")),
+            "a server that never accepts is unreachable: {found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_local_display_maps_to_its_socket_and_a_tcp_display_is_not_probed() {
         // Display 9999 has no server.
-        assert!(x11_unreachable(":9999").unwrap().contains("X9999"));
-        assert!(x11_unreachable(":9999.0").unwrap().contains("X9999"));
-        assert_eq!(x11_unreachable("remote.host:0"), None);
-        assert_eq!(x11_unreachable(":"), None);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert!(x11_unreachable(":9999").await.unwrap().contains("X9999"));
+            assert!(x11_unreachable(":9999.0").await.unwrap().contains("X9999"));
+            assert_eq!(x11_unreachable("remote.host:0").await, None);
+            assert_eq!(x11_unreachable(":").await, None);
+        });
     }
 
     #[test]

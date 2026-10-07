@@ -238,7 +238,7 @@ impl Conn {
 async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDeps>) -> Result<()> {
     info!(%id, "control connection opened");
     let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
+    let mut reader = ConnReader::new(read_half);
     let mut events = deps.engine.subscribe();
     let mut conn = Conn {
         id,
@@ -260,7 +260,7 @@ async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDep
 }
 
 async fn connection_loop(
-    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    reader: &mut ConnReader,
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     events: &mut tokio::sync::broadcast::Receiver<Event>,
     conn: &mut Conn,
@@ -294,7 +294,8 @@ async fn connection_loop(
                         // While a request is being answered, watch for the
                         // peer hanging up: a long request (an upload) whose
                         // caller has gone away must be cancelled, not finished.
-                        let mut hangup: Hangup<'_> = Box::pin(watch_for_hangup(reader));
+                        let limit = conn.max_message_bytes();
+                        let mut hangup: Hangup<'_> = Box::pin(watch_for_hangup(reader, limit));
                         let reply = process(&line, conn, deps, &mut hangup).await;
                         drop(hangup);
                         write(write_half, &reply).await?;
@@ -320,16 +321,136 @@ async fn connection_loop(
     Ok(())
 }
 
-/// Resolves when the peer closes its end of the connection. Pending forever
-/// while it is merely idle — or has pipelined more data, which is left in the
-/// buffer for the next read.
+/// Resolves when the peer closes its end of the connection; pending forever
+/// while it is merely idle.
 type Hangup<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
-async fn watch_for_hangup(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) {
-    match reader.fill_buf().await {
-        Ok(buffered) if !buffered.is_empty() => std::future::pending::<()>().await,
-        // EOF or a socket error: either way, nobody is waiting for an answer.
-        _ => {}
+/// How often a connection whose read-ahead is full is checked for a hang-up.
+const HANGUP_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Watch for the peer hanging up while a request is being answered.
+///
+/// A client may pipeline more requests behind a long one. Those bytes cannot
+/// simply be left unread — the end of the stream sits behind them, so a
+/// hang-up would go unnoticed and an abandoned upload would still be typed
+/// into a window. So they are read ahead into the connection's carry buffer
+/// (kept, in order, for the next frame) until either the stream ends — a
+/// hang-up — or `limit` bytes are held. Past that bound nothing more is read;
+/// the socket's read-closed readiness (`EPOLLRDHUP`) still reports the close.
+async fn watch_for_hangup(reader: &mut ConnReader, limit: usize) {
+    use tokio::io::AsyncReadExt;
+    reader.absorb_buffered();
+    let mut chunk = [0u8; 8 * 1024];
+    while reader.carried() < limit {
+        let room = (limit - reader.carried()).min(chunk.len());
+        // `read` is cancel-safe: if the request finishes first and this future
+        // is dropped, no byte has been taken from the socket and lost.
+        match reader.inner.get_mut().read(&mut chunk[..room]).await {
+            // EOF or a socket error: either way, nobody is waiting for an answer.
+            Ok(0) | Err(_) => return,
+            Ok(n) => reader.carry(&chunk[..n]),
+        }
+    }
+    loop {
+        match reader
+            .inner
+            .get_ref()
+            .ready(tokio::io::Interest::READABLE)
+            .await
+        {
+            Ok(ready) if ready.is_read_closed() => return,
+            Ok(_) => tokio::time::sleep(HANGUP_POLL).await,
+            Err(_) => return,
+        }
+    }
+}
+
+/// A connection's read side: the socket's buffered reader, preceded by any
+/// bytes [`watch_for_hangup`] read ahead while a request was in flight.
+///
+/// Invariant: while `carry` holds unread bytes, `inner`'s own buffer is empty
+/// — the read-ahead absorbs it first — so bytes are always delivered in the
+/// order they arrived.
+struct ConnReader {
+    inner: BufReader<tokio::net::unix::OwnedReadHalf>,
+    carry: Vec<u8>,
+    pos: usize,
+}
+
+impl ConnReader {
+    fn new(read_half: tokio::net::unix::OwnedReadHalf) -> Self {
+        Self {
+            inner: BufReader::new(read_half),
+            carry: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    /// Unread bytes held in the carry buffer.
+    fn carried(&self) -> usize {
+        self.carry.len() - self.pos
+    }
+
+    /// Append read-ahead bytes, compacting what was already consumed.
+    fn carry(&mut self, bytes: &[u8]) {
+        if self.pos > 0 {
+            self.carry.drain(..self.pos);
+            self.pos = 0;
+        }
+        self.carry.extend_from_slice(bytes);
+    }
+
+    /// Move the buffered reader's unread bytes to the carry buffer, so bytes
+    /// read from the socket afterwards land behind them.
+    fn absorb_buffered(&mut self) {
+        let buffered = self.inner.buffer().to_vec();
+        if !buffered.is_empty() {
+            self.inner.consume(buffered.len());
+            self.carry(&buffered);
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for ConnReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.carried() > 0 {
+            let n = this.carried().min(buf.remaining());
+            buf.put_slice(&this.carry[this.pos..this.pos + n]);
+            tokio::io::AsyncBufRead::consume(std::pin::Pin::new(this), n);
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncBufRead for ConnReader {
+    fn poll_fill_buf(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<&[u8]>> {
+        let this = self.get_mut();
+        if this.pos < this.carry.len() {
+            return std::task::Poll::Ready(Ok(&this.carry[this.pos..]));
+        }
+        std::pin::Pin::new(&mut this.inner).poll_fill_buf(cx)
+    }
+
+    fn consume(self: std::pin::Pin<&mut Self>, amt: usize) {
+        let this = self.get_mut();
+        if this.pos < this.carry.len() {
+            this.pos = (this.pos + amt).min(this.carry.len());
+            if this.pos == this.carry.len() {
+                this.carry.clear();
+                this.pos = 0;
+            }
+        } else {
+            std::pin::Pin::new(&mut this.inner).consume(amt);
+        }
     }
 }
 

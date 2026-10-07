@@ -1,4 +1,4 @@
-//! Bounded focus capture and immutable, per-session profile resolution.
+//! Bounded focus capture and per-session profile resolution at start and stop.
 //! X11 I/O lives on a dedicated thread; absent context is an ordinary value.
 mod profiles;
 mod x11;

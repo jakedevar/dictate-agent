@@ -12,6 +12,9 @@ name = "dictated"
 path = "src/main.rs"
 
 [features]
+# Build the daemon with the whisper.cpp CUDA backend (what `just install` and
+# `just release` ship). Off by default: see crates/dictate-stt/Cargo.toml.
+cuda = ["dictate-core/cuda"]
 # Real-hardware end-to-end tests (`tests/e2e_real.rs`): real Whisper on CUDA with
 # the installed model, real Silero VAD, a real in-process daemon. Off by default
 # so no ordinary `cargo test` needs a GPU or a model; run with `just e2e`.

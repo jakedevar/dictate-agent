@@ -23,6 +23,8 @@
 //! - `E2E_RUNS` — measured runs per fixture (default 8, after one warm-up).
 //! - `E2E_MODEL` — path to the GGUF (default: the standard install location).
 //! - `E2E_WER_MAX` — word-error-rate ceiling (default 0.10).
+//! - `E2E_LLM_MODEL` — turn the LLM formatting pass on with this one Ollama
+//!   model (default: off, so the run does not depend on installed models).
 
 mod harness;
 
@@ -31,14 +33,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dictate_core::config::{Config, ConfigReport};
+use dictate_core::llm_formatter::LlmFormatterPort;
 use dictate_core::ports::mock::{MockInjector, NullEarcons, NullMedia, RecordingNotifier};
-use dictate_core::ports::{AudioSource, DisabledAudioSource, GrammarFormatter, WhisperStt};
+use dictate_core::ports::{AudioSource, DisabledAudioSource, WhisperStt};
 use dictate_core::Pipeline;
 use dictate_history::{HistoryConfig, HistoryStore};
 use dictate_proto::{
     AudioFormat, AudioSource as Upload, Command, CommandResult, SessionOptions, StageTiming,
     Transcript,
 };
+use dictate_stt::SttProvider;
 use dictated::paths::RuntimePaths;
 use dictated::{Daemon, DaemonExtras};
 use harness::Client;
@@ -227,9 +231,10 @@ impl Real {
         config.notifications.enabled = false;
         // The LLM pass is off unless a run asks for it: this test is about the
         // speech path, and must not depend on which Ollama models are installed.
-        config.grammar.enabled = std::env::var_os("E2E_GRAMMAR_MODEL").is_some();
-        if let Ok(m) = std::env::var("E2E_GRAMMAR_MODEL") {
-            config.grammar.model = m;
+        config.format.llm.enabled = false;
+        if let Ok(m) = std::env::var("E2E_LLM_MODEL") {
+            config.format.llm.enabled = true;
+            config.format.llm.models = vec![m];
         }
 
         let started = Instant::now();
@@ -252,7 +257,7 @@ impl Real {
             audio: Arc::new(DisabledAudioSource::new(&config.audio)) as Arc<dyn AudioSource>,
             stt: stt.clone(),
             vad: Arc::new(dictate_vad::SileroVad::new(config.vad.clone()).unwrap()),
-            formatter: Arc::new(GrammarFormatter::new(&config.grammar)),
+            formatter: Arc::new(LlmFormatterPort::new(config.format.llm.clone())),
             injector: injector.clone(),
             notifier: Arc::new(RecordingNotifier::default()),
             media: Arc::new(NullMedia),
@@ -645,4 +650,78 @@ async fn silence_is_gated_by_the_real_vad_and_never_transcribed() {
         t.timings.stt
     );
     real.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_cpu_model_reports_cpu_from_initialization() {
+    let _exclusive = ONE_MODEL_AT_A_TIME.lock().await;
+    let config = dictate_stt::WhisperConfig {
+        model: "large-v3-turbo".into(),
+        model_path: model_path().to_string_lossy().into_owned(),
+        device: "cpu".into(),
+        ..Default::default()
+    };
+    let stt = WhisperStt::new(&config);
+    tokio::time::timeout(Duration::from_secs(120), async {
+        while !stt.model().loaded {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("CPU context loads the existing model without downloading");
+    assert_eq!(stt.model().backend.as_deref(), Some("cpu"));
+    say!("CPU context: observed backend cpu (same whisper.cpp logging probe as CUDA)");
+}
+
+/// CUDA discovery is process-global. A fresh child with no visible devices
+/// exercises the actual fallback while leaving the parent's GPU tests intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cuda_request_without_a_visible_gpu_reports_cpu_and_warns() {
+    const CHILD: &str = "DICTATE_E2E_BACKEND_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok("1") {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::stderr)
+            .init();
+        let real = Real::start().await;
+        assert_eq!(real.pipeline.stt.model().backend.as_deref(), Some("cpu"));
+        let mut client = real.client().await;
+        let CommandResult::Diagnostics(report) = client
+            .request(Command::Diagnose { quick: true })
+            .await
+            .unwrap()
+        else {
+            panic!("expected diagnostics");
+        };
+        let backend = report.check("stt_backend").unwrap();
+        assert_eq!(backend.status, dictate_proto::CheckStatus::Fail);
+        assert!(backend
+            .detail
+            .contains("configured for cuda but running on cpu"));
+        real.stop().await;
+        return;
+    }
+    let _exclusive = ONE_MODEL_AT_A_TIME.lock().await;
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "cuda_request_without_a_visible_gpu_reports_cpu_and_warns",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("CUDA_VISIBLE_DEVICES", "-1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "fallback child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Whisper backend differs from request"),
+        "CPU fallback must issue a WARN: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    say!("CUDA request with no visible GPU: observed cpu, WARN emitted, doctor reports cuda/cpu mismatch");
 }

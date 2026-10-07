@@ -32,7 +32,7 @@ pub struct LocalExecutor {
 
 impl LocalExecutor {
     pub fn new(config: &crate::config::LocalConfig) -> Self {
-        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.host);
+        let (host, port) = dictate_fmt::llm::parse_host_port(&config.host);
         let mut ladder = vec![config.model.clone()];
         for m in &config.models {
             if !ladder.contains(m) && !m.trim().is_empty() {
@@ -43,7 +43,10 @@ impl LocalExecutor {
         Self {
             host,
             port,
-            timeout: Duration::from_secs_f64(config.timeout_s),
+            // Config loading refuses a timeout that does not convert; a
+            // hand-built config that skipped it gets the default, not a panic.
+            timeout: Duration::try_from_secs_f64(config.timeout_s)
+                .unwrap_or(Duration::from_secs(120)),
             probe: HttpBackend::new(&config.host),
             resolver: ModelResolver::new("local", ladder),
         }
@@ -117,22 +120,30 @@ impl LocalExecutor {
     async fn call_ollama(&self, prompt: &str, model: &str) -> Result<String> {
         use ollama_rs::generation::completion::request::GenerationRequest;
         use ollama_rs::models::ModelOptions;
-        use ollama_rs::Ollama;
 
-        let ollama = Ollama::builder().host(&self.host).port(self.port).build();
+        let ollama = crate::ollama::client_at(&self.host, self.port)
+            .map_err(|why| anyhow::anyhow!("Ollama host {why}"))?;
         let request = GenerationRequest::new(model.to_string(), prompt.to_string())
             .options(ModelOptions::default().num_predict(2048));
 
         let response = tokio::time::timeout(self.timeout, ollama.generate(request)).await??;
 
-        Ok(scrub_returned_text(&response.response))
+        Ok(clean_answer(&response.response))
     }
+}
+
+/// What the user sees of a LOCAL answer: the model's text minus model
+/// artifacts. Never strips a "thank you." (#1069, #1072).
+fn clean_answer(raw: &str) -> String {
+    scrub_returned_text(raw)
 }
 
 /// Check if Ollama is running by hitting /api/tags.
 /// Port of local_executor.py:114-122
 pub async fn is_ollama_running(host: &str, port: u16) -> bool {
-    let ollama = ollama_rs::Ollama::builder().host(host).port(port).build();
+    let Ok(ollama) = crate::ollama::client_at(host, port) else {
+        return false;
+    };
     matches!(
         tokio::time::timeout(Duration::from_secs(2), ollama.list_local_models()).await,
         Ok(Ok(_))
@@ -142,6 +153,11 @@ pub async fn is_ollama_running(host: &str, port: u16) -> bool {
 /// Start Ollama if not running. Poll until ready or timeout.
 /// Port of local_executor.py:124-168
 pub async fn ensure_ollama_running(host: &str, port: u16, max_wait_s: u64) -> bool {
+    if let Err(why) = crate::ollama::client_at(host, port) {
+        // Starting a server would not make a malformed host reachable.
+        warn!("not starting Ollama: host {why}");
+        return false;
+    }
     if is_ollama_running(host, port).await {
         return true;
     }
@@ -188,6 +204,20 @@ fn classify_error(e: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_keeps_its_thank_you() {
+        for text in [
+            "I just wanted to thank you.",
+            "Thanks for the report. Thank you.",
+        ] {
+            assert_eq!(clean_answer(text), text);
+        }
+        assert_eq!(
+            clean_answer("Done. Thank you. /no_think"),
+            "Done. Thank you."
+        );
+    }
 
     #[test]
     fn test_classify_error_connection() {

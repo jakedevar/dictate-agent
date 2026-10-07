@@ -367,8 +367,9 @@ pub struct Formatted {
 ///
 /// # Why this is separate from `format`
 ///
-/// `GrammarCorrector::correct` applies its own skip rules internally and
-/// returns the input unchanged when it declines — which is byte-for-byte
+/// A formatter applies its own skip rules (disabled, too short, too long,
+/// model unavailable) and returns the input unchanged when it declines —
+/// which is byte-for-byte
 /// indistinguishable from having run and found nothing to fix. Reporting that
 /// as `Ran{0.3}` would put a fabricated number in the latency table S12 and
 /// the ≤1.0s budget are measured from, and would hide the fact that the LLM
@@ -417,106 +418,6 @@ pub trait Formatter: Send + Sync + 'static {
     /// whatever the pass needs while the user is still speaking. Must never
     /// block; the default does nothing.
     fn warm_up(&self, _category: &dictate_proto::AppCategory, _tone: &dictate_proto::Tone) {}
-}
-
-/// Ollama-backed grammar correction behind the trait.
-pub struct GrammarFormatter {
-    inner: dictate_fmt::GrammarCorrector,
-    enabled: bool,
-    min_words: usize,
-    host: String,
-    model: String,
-    health: Arc<crate::formatter_health::HealthTracker>,
-}
-
-impl GrammarFormatter {
-    /// Build from grammar config.
-    #[must_use]
-    pub fn new(config: &dictate_fmt::GrammarConfig) -> Self {
-        Self {
-            inner: dictate_fmt::GrammarCorrector::new(config),
-            enabled: config.enabled,
-            min_words: config.min_words,
-            host: config.host.clone(),
-            model: config.model.clone(),
-            health: Arc::new(crate::formatter_health::HealthTracker::new(
-                config.enabled,
-                config.model.clone(),
-            )),
-        }
-    }
-
-    /// Announce a failing formatter through `notifier` (one desktop
-    /// notification per journey into failure). Call before sharing the value.
-    #[must_use]
-    pub fn with_notifier(mut self, notifier: Arc<dyn StatusNotifier>) -> Self {
-        let health = crate::formatter_health::HealthTracker::new(self.enabled, self.model.clone())
-            .with_notifier(notifier);
-        self.health = Arc::new(health);
-        self
-    }
-
-    /// Ask Ollama whether it has the configured model, and record the answer.
-    ///
-    /// Run once at startup so a missing model is reported *before* the first
-    /// dictation rather than being discovered by nobody. Never fails: an
-    /// unreachable server is itself a health state.
-    pub async fn probe_ollama(&self) {
-        if !self.enabled {
-            return;
-        }
-        let found = crate::ollama::probe(&self.host, std::time::Duration::from_secs(5)).await;
-        if !found.reachable {
-            self.health
-                .observe_unreachable(found.error.as_deref().unwrap_or("no answer"));
-        } else if found.has_model(&self.model) {
-            self.health.observe_ok();
-        } else {
-            self.health.observe_model_missing(&found.models);
-        }
-    }
-}
-
-impl Formatter for GrammarFormatter {
-    fn status(&self) -> Option<dictate_proto::FormatterStatus> {
-        Some(self.health.status())
-    }
-
-    fn probe(&self) -> BoxFuture<'_, ()> {
-        Box::pin(self.probe_ollama())
-    }
-
-    // The Ollama grammar prompt is context-free; S21 replaces it with the
-    // context-aware layer that reads `ctx` (tone, app, language, vocabulary).
-    fn format<'a>(&'a self, text: &'a str, _ctx: &'a FormatContext) -> BoxFuture<'a, Formatted> {
-        Box::pin(async move {
-            let r = self.inner.correct(text).await;
-            // A *real* attempt is the strongest evidence there is: the probe
-            // can say a model is installed, only a run can say it works.
-            match &r.error {
-                Some(error) => self.health.observe_error(error),
-                None => self.health.observe_ok(),
-            }
-            Formatted {
-                changed: r.corrected != r.original,
-                text: r.corrected,
-                error: r.error,
-                duration_s: r.duration_s,
-            }
-        })
-    }
-
-    /// Mirrors `GrammarCorrector::correct`'s own fast paths so the two cannot
-    /// disagree about whether the pass ran.
-    fn plan(&self, text: &str, _ctx: &FormatContext) -> FormatPlan {
-        if !self.enabled {
-            return FormatPlan::Skip(dictate_proto::SkipReason::Disabled);
-        }
-        if text.trim().is_empty() || text.split_whitespace().count() < self.min_words {
-            return FormatPlan::Skip(dictate_proto::SkipReason::BelowMinWords);
-        }
-        FormatPlan::Run
-    }
 }
 
 // ---------------------------------------------------------------------------

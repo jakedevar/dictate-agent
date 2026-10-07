@@ -2,8 +2,8 @@
 //!
 //! # Why not `ollama-rs`
 //!
-//! `ollama-rs` is already a dependency (the legacy grammar pass and the LOCAL
-//! route use it), but this layer needs three things it hides:
+//! `ollama-rs` is already in the workspace (the LOCAL route in `dictate-core`
+//! uses it), but this layer needs three things it hides:
 //!
 //! - **the HTTP status and Ollama's error body**, to tell "model not found"
 //!   (re-resolve the ladder) from "server down" (back off) from anything else —
@@ -435,9 +435,46 @@ fn parse_tags(bytes: &[u8]) -> Result<Vec<InstalledModel>, BackendError> {
         .collect())
 }
 
+/// Split an Ollama base URL into the `(host, port)` pair `ollama-rs` wants:
+/// `"http://localhost:11434"` → `("http://localhost", 11434)`. A URL without
+/// a port gets Ollama's default, 11434.
+#[must_use]
+pub fn parse_host_port(url: &str) -> (String, u16) {
+    if let Some(last_colon) = url.rfind(':') {
+        if let Ok(port) = url[last_colon + 1..].parse::<u16>() {
+            let host = &url[..last_colon];
+            // Never split the scheme's own colon ("http:" / "https:").
+            if !host.is_empty() && !host.ends_with('/') {
+                return (host.to_string(), port);
+            }
+        }
+    }
+    (url.to_string(), 11434)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_host_port_splits_an_explicit_port() {
+        assert_eq!(
+            parse_host_port("http://localhost:11434"),
+            ("http://localhost".into(), 11434)
+        );
+        assert_eq!(
+            parse_host_port("http://192.168.1.100:8080"),
+            ("http://192.168.1.100".into(), 8080)
+        );
+    }
+
+    #[test]
+    fn parse_host_port_defaults_a_missing_port() {
+        assert_eq!(
+            parse_host_port("http://localhost"),
+            ("http://localhost".into(), 11434)
+        );
+    }
 
     #[test]
     fn request_serializes_to_the_ollama_chat_shape() {

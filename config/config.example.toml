@@ -84,15 +84,19 @@ poll_interval_ms = 32
 # Deterministic text cleanup between transcription and routing: pure Rust,
 # well under a millisecond, no network. Off = the raw Whisper text is routed
 # and typed as-is. URLs, paths, slash commands and code identifiers stay
-# protected from the [grammar] LLM pass even when this is off.
+# protected from the [format.llm] pass even when this is off.
 enabled = true
 
 [format.rules]
-# Historical Whisper fixes: cloud/clod/clawed -> Claude, .cloud/ -> .claude/,
-# and "create plan", "implement plan", "validate plan", "create handoff",
-# "research code base" -> /create_plan, /implement_plan, /validate_plan,
-# /create_handoff, /research_codebase. Whole words only ("cloudy" is safe).
+# Historical spoken slash commands: "create plan", "implement plan",
+# "validate plan", "create handoff", "research code base" -> /create_plan,
+# /implement_plan, /validate_plan, /create_handoff, /research_codebase.
 builtin_corrections = true
+# Historical Whisper fixes cloud/clod/clawed -> Claude and .cloud/ -> .claude/.
+# Off by default: they are real words ("the cloud is dark") and a real
+# directory name. For a narrower fix, add a dictionary entry instead:
+# Claude, sounds like "cloud", optionally scoped to one app.
+claude_corrections = false
 # Drop whisper.cpp's [BLANK_AUDIO], a trailing /no_think, and a trailing
 # stand-alone "Thank you." (Whisper's silence hallucination); normalize spaces.
 hallucination_scrub = true
@@ -100,11 +104,14 @@ hallucination_scrub = true
 fillers = true
 # "the the" -> "the", "wh- what" -> "what". Keeps "that that", "very very".
 stutters = true
-# "twenty five" -> 25, "three point five percent" -> 3.5%, "ten dollars" -> $10,
+# "twenty five" -> 25, "twenty five thousand" -> 25000 (never comma-grouped,
+# so ports and timer arguments stay one token), "three point five percent"
+# -> 3.5%, "ten dollars" -> $10,
 # "five thirty pm" -> 5:30 PM. A lone number below ten stays a word
 # ("two people") unless a unit, percent or currency follows.
 numbers = true
-# Capitalize sentence starts and the pronoun I (a loop variable i stays).
+# Capitalize sentence starts and the pronoun I (a loop variable i stays, and
+# so does an identifier starting an expression: "x = y").
 casing = true
 # Collapse spaces; no space before , ; ! ? and sentence-ending . :
 spacing = true
@@ -115,18 +122,12 @@ terminal_punctuation = true
 spoken_punctuation = false
 spoken_line_breaks = false
 
-[grammar]
-# DEPRECATED (S21): superseded by [format.llm] below. While [format.llm] is
-# absent, these keys are still read as an alias — enabled, host, min_words,
-# timeout_s (becomes [format.llm.timeout] max_ms) and model (tried first,
-# ahead of the [format.llm] default ladder) — with a one-time warning. When
-# [format.llm] is present, [grammar] is ignored (also warned).
-enabled = false
-host = "http://localhost:11434"
-model = "qwen3:0.6b"
-timeout_s = 10.0
-# Skip correction for short inputs (preserves trigger words like "timer")
-min_words = 3
+# [grammar] (the pre-S21 Ollama grammar pass) is gone. An old config's
+# [grammar] keys are still read as an alias for [format.llm] while
+# [format.llm] is absent — enabled, host, min_words, timeout_s (becomes
+# [format.llm.timeout] max_ms) and model (tried first, ahead of the default
+# ladder) — with a one-time warning. When [format.llm] is present, [grammar]
+# is ignored (also warned).
 
 [upload]
 # Limits on audio uploaded with `transcribe_audio` / `dictate transcribe`.
@@ -289,8 +290,11 @@ double_tap_ms = 320
 
 # App context (S23). X11 focus is captured once, before audio starts. Headless
 # and Wayland (without a compositor adapter) use global defaults, with no title.
-# Every category uses neutral tone. Terminals disable LLM formatting and spoken
-# punctuation/line breaks by default, but keep the global Ctrl+V paste policy.
+# Every category uses neutral tone. Terminals turn spoken punctuation/line
+# breaks off by default and keep the global Ctrl+V paste policy. The LLM pass
+# still runs there, but verbatim ([format.llm.categories.terminal]): fillers,
+# false starts, self-corrections and punctuation only. `llm_format = false` in
+# a profile skips it entirely.
 [context]
 enabled = true
 # Profiles match in file order: first matching user profile wins, then browser
@@ -324,7 +328,6 @@ enabled = true
 # match = { class = "com.mitchellh.ghostty", title = "(?i)claude" }
 # category = "terminal"
 # tone = "neutral"
-# llm_format = false
 # inject = "paste"
 # spoken_punctuation = false
 # spoken_line_breaks = false

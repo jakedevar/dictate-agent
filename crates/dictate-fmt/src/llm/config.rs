@@ -677,12 +677,9 @@ max_ms = 0
         .unwrap();
         let root: toml::Table = toml::from_str(&text).unwrap();
         let l = LlmConfig::from_document(&root).unwrap();
-        // The example still carries the deprecated [grammar] section for the
-        // pre-S21 grammar pass; everything else must be a known key.
-        assert_eq!(
-            l.warnings,
-            ["[grammar] is ignored because [format.llm] is present; remove [grammar]"]
-        );
+        // The legacy pass is gone and the example no longer carries a
+        // [grammar] section: every key is known, nothing is deprecated.
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
         let documented = LlmConfig {
             enabled: true,
             ..LlmConfig::default()

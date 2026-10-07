@@ -21,7 +21,7 @@ impl TextStage for Protect {
     }
 
     fn apply(&self, doc: &mut TextDoc, _ctx: &FormatContext) {
-        let found = detect_spans(doc.working_text());
+        let found = detect_spans_in(doc);
         doc.protect_ranges(&found);
     }
 }
@@ -32,7 +32,22 @@ impl TextStage for Protect {
 /// already has spans.
 #[must_use]
 pub fn detect_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
-    let mut out = backtick_spans(text);
+    detect(text, &is_placeholder)
+}
+
+/// [`detect_spans`] over a document's working text, reading *through* the
+/// placeholders of escaped private-use characters: a literal inside a URL,
+/// path or code span is part of that span (which then absorbs it), never a
+/// hole that leaves the rest of the token unprotected.
+pub(crate) fn detect_spans_in(doc: &TextDoc) -> Vec<(Range<usize>, SpanKind)> {
+    detect(doc.working_text(), &|c| {
+        is_placeholder(c) && !doc.is_literal_placeholder(c)
+    })
+}
+
+/// Detection, with `opaque` naming the characters no span may contain.
+fn detect(text: &str, opaque: &dyn Fn(char) -> bool) -> Vec<(Range<usize>, SpanKind)> {
+    let mut out = backtick_spans(text, opaque);
     let ticks = out.clone();
     // Chunks and tick spans both arrive in order, so one cursor suffices.
     let mut tick = 0;
@@ -48,7 +63,7 @@ pub fn detect_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
                 }
                 let overlaps_tick = ticks.get(tick).is_some_and(|(r, _)| r.start < i);
                 if !overlaps_tick {
-                    if let Some(found) = classify_chunk(text, s, i) {
+                    if let Some(found) = classify_chunk(text, s, i, opaque) {
                         out.push(found);
                     }
                 }
@@ -61,39 +76,74 @@ pub fn detect_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
     out
 }
 
+/// One run of backticks, with what precedes its two ends.
+struct TickRun {
+    start: usize,
+    end: usize,
+    /// Line breaks, non-whitespace characters and opaque characters before
+    /// `start` and before `end`: an inner text's counts are differences.
+    at_start: [usize; 3],
+    at_end: [usize; 3],
+}
+
 /// Pair runs of backticks of equal length on one line: `` `x` ``, ``` ``a b`` ```.
-fn backtick_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
+///
+/// Linear: each run's closer (the next run of the same length) is found by
+/// one backward pass, and an inner text's emptiness, line breaks and opaque
+/// characters are prefix-count differences — so unmatched runs never rescan
+/// the rest of the text.
+fn backtick_spans(text: &str, opaque: &dyn Fn(char) -> bool) -> Vec<(Range<usize>, SpanKind)> {
     if !text.contains('`') {
         return Vec::new();
     }
-    let mut runs: Vec<(usize, usize)> = Vec::new(); // (start, end) byte offsets
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            let s = i;
-            while i < bytes.len() && bytes[i] == b'`' {
-                i += 1;
+    let mut runs: Vec<TickRun> = Vec::new();
+    let mut counts = [0usize; 3]; // newlines, non-whitespace, opaque
+    let mut open: Option<(usize, [usize; 3])> = None;
+    for (i, c) in text.char_indices() {
+        if c == '`' {
+            if open.is_none() {
+                open = Some((i, counts));
             }
-            runs.push((s, i));
-        } else {
-            i += 1;
+        } else if let Some((start, at_start)) = open.take() {
+            runs.push(TickRun {
+                start,
+                end: i,
+                at_start,
+                at_end: counts,
+            });
         }
+        counts[0] += usize::from(c == '\n');
+        counts[1] += usize::from(!c.is_whitespace());
+        counts[2] += usize::from(opaque(c));
+    }
+    if let Some((start, at_start)) = open {
+        runs.push(TickRun {
+            start,
+            end: text.len(),
+            at_start,
+            at_end: counts,
+        });
+    }
+    // The next run of the same length, for every run.
+    let mut closer = vec![None; runs.len()];
+    let mut latest: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for k in (0..runs.len()).rev() {
+        let len = runs[k].end - runs[k].start;
+        closer[k] = latest.insert(len, k);
     }
     let mut out = Vec::new();
     let mut k = 0;
     while k < runs.len() {
-        let (s, e) = runs[k];
-        let len = e - s;
-        let close = (k + 1..runs.len()).find(|&j| runs[j].1 - runs[j].0 == len);
-        match close {
+        match closer[k] {
             Some(j) => {
-                let inner = &text[e..runs[j].0];
-                if !inner.trim().is_empty()
-                    && !inner.contains('\n')
-                    && !inner.chars().any(is_placeholder)
-                {
-                    out.push((s..runs[j].1, SpanKind::Code));
+                let (a, b) = (runs[k].at_end, runs[j].at_start);
+                // The inner text runs from the opener's end to the closer's
+                // start; the opener's own backticks are not in it.
+                let one_line = a[0] == b[0];
+                let not_blank = b[1] > a[1];
+                let clear = a[2] == b[2];
+                if one_line && not_blank && clear {
+                    out.push((runs[k].start..runs[j].end, SpanKind::Code));
                     k = j + 1;
                 } else {
                     k += 1;
@@ -105,14 +155,29 @@ fn backtick_spans(text: &str) -> Vec<(Range<usize>, SpanKind)> {
     out
 }
 
-const OPENERS: &[char] = &['(', '[', '{', '<', '"', '\'', '\u{201C}', '\u{2018}'];
+/// Whisper's non-speech markers. Never protected (outside backticks), so the
+/// hallucination scrub can remove them; it re-runs detection afterwards.
+pub(crate) const ARTIFACT_MARKERS: &[&str] = &["[BLANK_AUDIO]"];
+
+pub(crate) const OPENERS: &[char] = &['(', '[', '{', '<', '"', '\'', '\u{201C}', '\u{2018}'];
 const TRAILERS: &[char] = &[
     '.', ',', ';', ':', '!', '?', '"', '\'', '\u{201D}', '\u{2019}', '>', '\u{2026}',
 ];
 
-fn classify_chunk(text: &str, start: usize, end: usize) -> Option<(Range<usize>, SpanKind)> {
+/// Punctuation that may follow a span without extending it: sentence
+/// punctuation, closing quotes and closing brackets.
+pub(crate) fn is_closer(c: char) -> bool {
+    TRAILERS.contains(&c) || matches!(c, ')' | ']' | '}')
+}
+
+fn classify_chunk(
+    text: &str,
+    start: usize,
+    end: usize,
+    opaque: &dyn Fn(char) -> bool,
+) -> Option<(Range<usize>, SpanKind)> {
     let chunk = &text[start..end];
-    if chunk.chars().any(is_placeholder) {
+    if chunk.chars().any(opaque) || ARTIFACT_MARKERS.iter().any(|m| chunk.contains(m)) {
         return None;
     }
     let mut s = start;
@@ -161,6 +226,15 @@ fn classify_chunk(text: &str, start: usize, end: usize) -> Option<(Range<usize>,
             if let Some(kind) = classify(stem) {
                 return Some((s..s + stem.len(), kind));
             }
+        }
+    }
+    // A private-use literal glued to either end of a token (only literals
+    // can be placeholders here; `opaque` refused the rest) must not hide
+    // the token from its detector: protect the token and the literals.
+    let inner = core.trim_matches(is_placeholder);
+    if !inner.is_empty() && inner.len() < core.len() {
+        if let Some(kind) = classify(inner) {
+            return Some((s..e, kind));
         }
     }
     None

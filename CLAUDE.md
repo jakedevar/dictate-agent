@@ -44,7 +44,8 @@ crates/
   dictate-vad      Silero VAD gate/trim + hands-free trailing-silence stop
   dictate-stt      SttProvider + whisper-rs impl, pinned model catalog/pull,
                     language/initial_prompt hooks + WhisperConfig
-  dictate-fmt      grammar correction + text cleanup (GrammarCorrector) + GrammarConfig
+  dictate-fmt      deterministic text chain (S20), LLM formatting pass under
+                    [format.llm] (S21, LlmFormatter) + FormatConfig
   dictate-history  SQLite WAL + FTS5 interaction log, analytics, retention,
                     privacy mode, Python-DB import (HistoryStore) + HistoryConfig
   dictate-inject   Injector boundary: X11 paste (clipboard save/restore) and
@@ -102,14 +103,47 @@ machine (Arch Linux, CUDA at `/opt/cuda`, RTX 5080):
   that has to come from the invoking shell/tool, since Cargo can't inject
   into its own subprocess's PATH search from `.cargo/config.toml`.
 
+### CUDA is opt-in (build-cost rule)
+
+whisper.cpp's CUDA backend (cicc/ptxas) is about 1000 CPU-seconds / 2.5 minutes
+wall per cold target dir, and every sandbox has its own. So **default builds are
+CPU-only**: `dictate-stt`'s default is `transcribe` (not `cuda`), and the CUDA
+backend is enabled only through `dictated/cuda` → `dictate-core/cuda` →
+`dictate-stt/cuda`. `cargo build|test|clippy --workspace` never compiles it;
+`just release`, `just install`, `make release|install` and `just e2e` pass
+`dictated/cuda`, so Jake's installed `dictated` still has CUDA. A plain
+`cargo build --release` yields a CPU-only `dictated` (`dictate status` reports
+`backend: cpu`) — use `just release`.
+
+- `.cargo/config.toml` pins `CMAKE_CUDA_ARCHITECTURES = "120a-real"` (RTX 5080,
+  sm_120): one arch instead of ggml's 75..121 list. Verified: the CMake cache
+  holds `120a-real` and the only `--generate-code` is `compute_120a/sm_120a`.
+  (On this host with a GPU visible ggml's default is `native`, which resolves to
+  the same arch; the pin matters when no GPU is visible.) For a multi-arch
+  release export the variable — a shell value wins over `[env]`:
+  `CMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;120a-real" just release`.
+- **Workers** gate with `just check-cpu` (tests, clippy incl. the `e2e-real` and
+  `x11-tests` feature lines, fmt, dictate-cli tree check). Only a diff touching
+  `dictate-stt`, the transcription path, a `cuda` feature or the CUDA config also
+  runs `just check-cuda`.
+- **The integrator** runs `just check-cuda` (CUDA clippy variants) and the
+  real-GPU `just e2e` once per integration.
+- sccache was measured and is **not** enabled: a second target dir at a different
+  path reused ~0% of the CUDA compiles (see
+  `thoughts/shared/handoffs/general/2026-10-06_build-cuda-opt-in.md`).
+- Host etiquette: `-j 8`, one cargo build at a time, check `uptime` before a cold
+  build.
+
 Preferred: use `just` or `make`, both of which set `PATH` for you.
 
 ```bash
-just build      # cargo build --workspace
-just test       # cargo test --workspace   (>= 419 tests must pass)
-just clippy     # cargo clippy --all-targets --workspace  (must be clean)
+just build      # cargo build --workspace            (CPU-only)
+just test       # cargo test --workspace             (CPU-only)
+just clippy     # cargo clippy --all-targets --workspace  (CPU-only, must be clean)
+just check-cpu  # WORKER gate: test + clippy (+ feature lines) + fmt + cli tree
+just check-cuda # INTEGRATOR gate: clippy with the CUDA backend
 just check      # test + clippy
-just release    # cargo build --release --workspace
+just release    # cargo build --release --workspace --features dictated/cuda
 just install    # release + install `dictated` and `dictate` to ~/.local/bin
 just install-unit  # install systemd/dictated.service
 
@@ -168,7 +202,7 @@ dictate doctor [--quick] [--json]
                         # fix; exits 1 on a failure. Works with no daemon.
 dictated --check-config [--config PATH]
                         # effective config + every warning; exit 1 if invalid
-just e2e                # real CUDA Whisper + Silero VAD, in-process daemon,
+just e2e                # (integrator, once per integration) real CUDA Whisper + Silero VAD, in-process daemon,
                         # synthetic fixtures, WER + per-stage p50/p95 (GPU + model)
 just smoke              # release binaries, isolated dictated, doctor + transcribe
 ```

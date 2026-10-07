@@ -9,7 +9,8 @@
 
 export PATH := "/opt/cuda/bin:" + env_var('PATH')
 
-# Build the whole workspace (debug)
+# Build the whole workspace (debug). CPU-only: whisper.cpp's CUDA backend is
+# opt-in (`dictated/cuda`), see `release`, `check-cuda` and `e2e`.
 build:
     cargo build --workspace
 
@@ -22,13 +23,33 @@ test:
 test-cpu:
     cargo test -p dictate-stt --no-default-features --features cpu-tiny-ci
 
-# Clippy, all targets, all crates
+# Clippy, all targets, all crates (CPU-only)
 clippy:
     cargo clippy --all-targets --workspace
 
+# The WORKER gate: everything a slice must pass, without ever compiling
+# whisper.cpp's CUDA backend. Run it instead of the old 3-variant clippy list.
+# Workers whose diff touches dictate-stt, the transcription path or the CUDA
+# config also run `just check-cuda`.
+check-cpu:
+    cargo test --workspace --all-targets
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
+    cargo clippy -p dictate-context --features x11-tests --all-targets -- -D warnings
+    cargo fmt --all -- --check
+    @! cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'
+
+# The INTEGRATOR gate (once per integration, with `just e2e`): the CUDA
+# variants of clippy. First run compiles whisper.cpp CUDA for sm_120 only.
+check-cuda:
+    cargo clippy --workspace --all-targets --features dictated/cuda -- -D warnings
+    cargo clippy -p dictated --features e2e-real,cuda --all-targets -- -D warnings
+
 # Release build (optimized, LTO, stripped) — produces target/release/dictated
+# WITH the CUDA backend (`dictated/cuda`). For a multi-arch build export
+# CMAKE_CUDA_ARCHITECTURES first (see .cargo/config.toml).
 release:
-    cargo build --release --workspace
+    cargo build --release --workspace --features dictated/cuda
 
 # Install `dictated` and `dictate` into ~/.local/bin (see Makefile)
 install: release
@@ -52,7 +73,7 @@ e2e:
     set -uo pipefail
     log="$(mktemp)"
     trap 'rm -f "$log"' EXIT
-    cargo test --release -p dictated --features e2e-real --test e2e_real -- --nocapture --test-threads=1 >"$log" 2>&1
+    cargo test --release -p dictated --features e2e-real,cuda --test e2e_real -- --nocapture --test-threads=1 >"$log" 2>&1
     rc=$?
     grep -E '^(e2e\||running |test |test result)' "$log" || true
     if [ "$rc" -ne 0 ]; then

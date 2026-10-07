@@ -1,3 +1,5 @@
+#[cfg(feature = "transcribe")]
+mod backend;
 pub mod config;
 pub mod model;
 #[cfg(feature = "transcribe")]

@@ -33,8 +33,8 @@ use anyhow::{Context, Result};
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::engine::DaemonIdentity;
 use dictate_core::ports::{
-    AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource,
-    HostEarcons, HostInjector, PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
+    AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource, HostEarcons, HostInjector,
+    PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
 };
 use dictate_core::session::ClientIdGen;
 use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
@@ -329,7 +329,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     // `get_status`, and with one desktop notification — before the first
     // dictation rather than never.
     {
-        let (host, port) = dictate_fmt::grammar::parse_host_port(&config.format.llm.host);
+        let (host, port) = dictate_fmt::llm::parse_host_port(&config.format.llm.host);
         let formatter = pipeline.formatter.clone();
         tokio::spawn(async move {
             dictate_core::local_executor::ensure_ollama_running(&host, port, 10).await;

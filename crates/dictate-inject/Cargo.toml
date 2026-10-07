@@ -10,6 +10,7 @@ dictate-proto = { workspace = true }
 enigo = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+x11rb = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

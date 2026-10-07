@@ -748,9 +748,8 @@ dependencies = [
 name = "dictate-fmt"
 version = "0.2.0"
 dependencies = [
- "anyhow",
+ "aho-corasick",
  "dictate-proto",
- "ollama-rs",
  "regex",
  "reqwest",
  "rusqlite",
@@ -797,6 +796,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "x11rb",
 ]
 
 [[package]]

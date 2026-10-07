@@ -6,6 +6,9 @@
 //! or an ellipsis, and never inside or right after a protected span
 //! (`/research_codebase for the auth flow` keeps its lowercase `for`).
 //!
+//! A word that is the left operand of an operator (`x = y`, `x + y = z`) is
+//! an identifier and keeps its case even at a sentence start.
+//!
 //! The pronoun: `i'm`/`i've`/`i'll`/`i'd` always become `I…`. A bare `i`
 //! becomes `I` only on evidence that it is the pronoun — it starts a
 //! sentence, follows a conjunction ("you and i", "so i"), or precedes a
@@ -205,6 +208,20 @@ fn is_variable_i(ed: &Editor<'_>, i: usize) -> bool {
     before || after
 }
 
+/// Whether word `i` is the left operand of an operator — `x = y`,
+/// `x + y = z`, `count += 1`, `a < b` — and so an identifier whose case is
+/// part of its name (`CASING_CHANGES_CODE_IDENTIFIERS`). `!` counts only as
+/// `!=`; a lone `!` ends a sentence.
+fn starts_expression(ed: &Editor<'_>, i: usize) -> bool {
+    ed.next_solid(i)
+        .filter(|&n| ed.kind(n) == Kind::Punct)
+        .is_some_and(|n| match ed.text(n) {
+            "=" | "+" | "-" | "*" | "/" | "<" | ">" | "%" | "&" | "|" | "^" => true,
+            "!" => ed.touching_next(n).is_some_and(|m| ed.text(m) == "="),
+            _ => false,
+        })
+}
+
 fn case(ed: &mut Editor<'_>) {
     for i in 0..ed.len() {
         if !ed.is_word(i) {
@@ -222,7 +239,7 @@ fn case(ed: &mut Editor<'_>) {
             ed.replace(i, up);
             continue;
         }
-        if ed.at_sentence_start(i) {
+        if ed.at_sentence_start(i) && !starts_expression(ed, i) {
             if let Some(up) = capitalized(word) {
                 ed.replace(i, up);
             }
@@ -300,5 +317,35 @@ mod tests {
             stage_after_protect(&Casing, "see ~/.claude/x. then go"),
             "See ~/.claude/x. Then go"
         );
+    }
+
+    /// `CASING_CHANGES_CODE_IDENTIFIERS`: a word that starts an operator
+    /// expression is an identifier; capitalizing it renames a variable.
+    #[test]
+    fn identifiers_starting_an_expression_keep_their_case() {
+        let chain = crate::text::TextChain::default();
+        let ctx = crate::text::FormatContext::default();
+        for input in [
+            "x = y",
+            "x + y = z",
+            "count += 1",
+            "n * 2",
+            "a < b",
+            "total - tax",
+            "x == y",
+            "done. x = y",
+            "j % 2",
+            "flag && ready",
+        ] {
+            let want = if let Some(rest) = input.strip_prefix("done.") {
+                format!("Done.{rest}")
+            } else {
+                input.to_string()
+            };
+            assert_eq!(chain.format(input, &ctx), want, "input: {input:?}");
+        }
+        // Must still change: prose that merely contains punctuation.
+        assert_eq!(stage(&Casing, "wow! great"), "Wow! Great");
+        assert_eq!(stage(&Casing, "note: this"), "Note: this");
     }
 }

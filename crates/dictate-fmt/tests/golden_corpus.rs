@@ -8,12 +8,11 @@
 //!
 //! Properties checked over the whole corpus:
 //! - idempotence: `rules(rules(x)) == rules(x)`;
-//! - protected spans survive byte-for-byte (paths only through the built-in
-//!   `.cloud/` → `.claude/` fix) and in order;
+//! - protected spans survive byte-for-byte and in order;
 //! - the output verifies against its own document (what the LLM guard runs).
 
-use dictate_fmt::text::rules::corrected_path;
-use dictate_fmt::{FormatConfig, FormatContext, RulesConfig, SpanKind, TextChain};
+use dictate_fmt::text::TextDoc;
+use dictate_fmt::{FormatConfig, FormatContext, RulesConfig, TextChain};
 
 /// Prompts for coding agents (Claude Code / Codex in a terminal).
 const CODING: &[(&str, &str)] = &[
@@ -47,12 +46,15 @@ const CODING: &[(&str, &str)] = &[
         "Bump the version to 2.1.3 in Cargo.toml",
     ),
     (
+        // `AMBIGUOUS_ACOUSTIC_DEFAULTS`: `.cloud` is a real directory name and
+        // "cloud" a real word, so by default neither is rewritten. The
+        // historical `→ Claude` fixes are opt-in (see `CLAUDE_OPT_IN`).
         "check ~/.cloud/settings.json and make sure the hooks are registered",
-        "Check ~/.claude/settings.json and make sure the hooks are registered.",
+        "Check ~/.cloud/settings.json and make sure the hooks are registered.",
     ),
     (
         "ask cloud to review the diff before we merge",
-        "Ask Claude to review the diff before we merge.",
+        "Ask cloud to review the diff before we merge.",
     ),
     (
         "uh the tests in crates/dictate-fmt/tests are flaky can you look",
@@ -153,7 +155,8 @@ const CODING: &[(&str, &str)] = &[
     ),
     (
         "the vector should hold twenty five thousand entries max",
-        "The vector should hold 25,000 entries max.",
+        // Never comma-grouped (`NUMBER_GROUPING_BREAKS_COMMANDS`).
+        "The vector should hold 25000 entries max.",
     ),
     (
         "Um so basically the cache is never invalidated",
@@ -228,7 +231,7 @@ const CODING: &[(&str, &str)] = &[
     ),
     (
         "edit ./.clod/commands/review.md so it asks for tests",
-        "Edit ./.claude/commands/review.md so it asks for tests.",
+        "Edit ./.clod/commands/review.md so it asks for tests.",
     ),
     (
         "i tested it and i think the fix is right",
@@ -679,34 +682,19 @@ fn protected_spans_survive_byte_for_byte_and_in_order() {
     for (input, _) in all() {
         let run = TextChain::default().run(input, &FormatContext::default());
         let output = run.doc.restore();
-        // What `protect` marked (after the scrub, which deliberately removes
-        // `/no_think`), independently of every later stage.
-        let protected_only = TextChain::standard(&FormatConfig {
-            enabled: true,
-            rules: RulesConfig {
-                hallucination_scrub: true,
-                builtin_corrections: false,
-                fillers: false,
-                stutters: false,
-                numbers: false,
-                casing: false,
-                spacing: false,
-                terminal_punctuation: false,
-                spoken_punctuation: false,
-                spoken_line_breaks: false,
-            },
-            ..FormatConfig::default()
-        })
-        .run(input, &FormatContext::default());
-        // Each is in the final output unchanged (paths only through the
-        // built-in `.cloud/` → `.claude/` fix), in order.
+        // What `protect` marks in the *raw* input — independently of every
+        // stage, the scrub included (`SCRUB_CORRUPTS_PROTECTED_BYTES`: an
+        // oracle that ran the scrub first hid the bytes it lost). The one
+        // exception is the artifact the scrub exists to remove, a trailing
+        // `/no_think`.
+        let protected_only = TextDoc::protected(input);
+        // Each is in the final output unchanged, in order.
         let mut pos = 0;
-        for span in protected_only.doc.spans_in_text_order() {
-            let expected = if span.kind == SpanKind::Path {
-                corrected_path(&span.text)
-            } else {
-                span.text.clone()
-            };
+        for span in protected_only.spans_in_text_order() {
+            if span.text.eq_ignore_ascii_case("/no_think") {
+                continue;
+            }
+            let expected = span.text.clone();
             let at = output[pos..]
                 .find(&expected)
                 .unwrap_or_else(|| panic!("{expected:?} lost from {input:?} → {output:?}"));
@@ -737,5 +725,43 @@ fn slash_commands_survive_every_stage() {
             "{input:?} → {out:?} lost the slash command"
         );
         assert!(!out.contains("/Research"), "{out:?}");
+    }
+}
+
+/// The historical Whisper → `Claude` fixes, with `claude_corrections = true`.
+const CLAUDE_OPT_IN: &[(&str, &str)] = &[
+    (
+        "check ~/.cloud/settings.json and make sure the hooks are registered",
+        "Check ~/.claude/settings.json and make sure the hooks are registered.",
+    ),
+    (
+        "ask cloud to review the diff before we merge",
+        "Ask Claude to review the diff before we merge.",
+    ),
+    (
+        "edit ./.clod/commands/review.md so it asks for tests",
+        "Edit ./.claude/commands/review.md so it asks for tests.",
+    ),
+    (
+        "clawed, can you refactor this",
+        "Claude, can you refactor this.",
+    ),
+];
+
+#[test]
+fn the_opt_in_claude_corrections_keep_their_historical_intent() {
+    let chain = TextChain::standard(&FormatConfig {
+        enabled: true,
+        rules: RulesConfig {
+            claude_corrections: true,
+            ..RulesConfig::default()
+        },
+        ..FormatConfig::default()
+    });
+    for (input, want) in CLAUDE_OPT_IN {
+        let run = chain.run(input, &FormatContext::default());
+        let out = run.doc.restore();
+        assert_eq!(out, *want, "input: {input:?}");
+        assert_eq!(run.doc.verify_output(&out), Ok(()), "input: {input:?}");
     }
 }

@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, Once};
 
 use anyhow::{anyhow, Context, Result};
 use arboard::Clipboard;
@@ -82,11 +82,23 @@ pub trait Injector: Send + Sync + 'static {
 
 /// X11 implementation. It has no user-consent flow, but shares the async
 /// contract required by Wayland portal backends.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct X11Injector {
     enabled: bool,
     default_policy: InjectionPolicy,
     chunk_chars: usize,
+    // Serialize transactions and keep restored X11 selection ownership alive.
+    clipboard: Arc<Mutex<Option<Clipboard>>>,
+}
+
+impl std::fmt::Debug for X11Injector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("X11Injector")
+            .field("enabled", &self.enabled)
+            .field("default_policy", &self.default_policy)
+            .field("chunk_chars", &self.chunk_chars)
+            .finish_non_exhaustive()
+    }
 }
 
 impl X11Injector {
@@ -96,6 +108,7 @@ impl X11Injector {
             enabled: config.auto_type,
             default_policy: config.policy,
             chunk_chars: config.type_chunk_chars.max(1),
+            clipboard: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -172,36 +185,28 @@ impl X11Injector {
         }
     }
 
-    /// Save text before changing it and restore it after both a successful and
-    /// a failed paste. A clipboard without textual content is not safe to
-    /// replace: it may contain an image or another format that arboard cannot
-    /// round-trip, so the caller falls back to direct typing instead.
+    /// Snapshot before taking ownership; serve the text until the application
+    /// requests it, then restore. A successful transfer must never be retried
+    /// through typing, even if restoration fails.
     fn paste_transaction(&self, text: &str) -> Result<()> {
-        let mut clipboard = Clipboard::new().context("opening clipboard")?;
-        let saved = clipboard
-            .get_text()
-            .context("saving textual clipboard before injection")?;
-        clipboard
-            .set_text(text.to_owned())
-            .context("setting dictation text on clipboard")?;
-        let paste_result = self.send_paste();
-        std::thread::sleep(Duration::from_millis(50));
-        let restore_result = clipboard
-            .set_text(saved)
-            .context("restoring clipboard text");
-        match (paste_result, restore_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Ok(()), Err(restore_error)) => {
-                // Delivery already happened. Retrying through direct typing
-                // would duplicate the transcript in the focused application.
-                warn!("text was pasted, but clipboard restoration failed: {restore_error}");
-                Ok(())
-            }
-            (Err(paste_error), Ok(())) => Err(paste_error),
-            (Err(paste_error), Err(restore_error)) => Err(anyhow!(
-                "paste failed: {paste_error}; clipboard restoration also failed: {restore_error}"
-            )),
+        static FORMAT_WARNING: Once = Once::new();
+        FORMAT_WARNING.call_once(|| warn!(
+            "clipboard backup preserves text, HTML with text, or image pixels; arbitrary X11 targets (including file lists and mixed image/text) are not preserved"
+        ));
+        let mut guard = self
+            .clipboard
+            .lock()
+            .map_err(|_| anyhow!("clipboard lock poisoned"))?;
+        if guard.is_none() {
+            *guard = Some(Clipboard::new().context("opening clipboard")?);
         }
+        let clipboard = guard.as_mut().expect("initialized above");
+        let saved = crate::clipboard::Snapshot::capture(clipboard)?;
+        let paste = crate::clipboard::PasteSelection::new(text)?;
+        paste.claim()?;
+        let paste_result = self.send_paste().and_then(|()| paste.transfer(text));
+        let restore_result = saved.restore(clipboard);
+        settle_paste(paste_result, restore_result)
     }
 
     fn send_paste(&self) -> Result<()> {
@@ -211,7 +216,11 @@ impl X11Injector {
         // Always release Ctrl, including a failed click, to avoid a stuck modifier.
         let release = enigo.key(Key::Control, Direction::Release);
         result?;
-        release?;
+        if let Err(error) = release {
+            // The click may already have reached the application. Continue the
+            // selection handshake rather than risking duplicate delivery.
+            warn!("Ctrl+V was sent, but releasing Ctrl failed: {error}");
+        }
         Ok(())
     }
 
@@ -221,6 +230,22 @@ impl X11Injector {
             enigo.text(chunk)?;
         }
         Ok(())
+    }
+}
+
+// An error here enables the typing fallback. Once delivery succeeded, only
+// warn about restore errors: returning an error would duplicate the text.
+fn settle_paste(paste_result: Result<()>, restore_result: Result<()>) -> Result<()> {
+    match (paste_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(restore_error)) => {
+            warn!("text was pasted, but clipboard restoration failed: {restore_error}");
+            Ok(())
+        }
+        (Err(paste_error), Ok(())) => Err(paste_error),
+        (Err(paste_error), Err(restore_error)) => Err(anyhow!(
+            "paste failed: {paste_error}; clipboard restoration also failed: {restore_error}"
+        )),
     }
 }
 
@@ -306,6 +331,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_paste_restore_failure_never_enables_duplicate_typing() {
+        assert!(settle_paste(Ok(()), Err(anyhow!("restore unavailable"))).is_ok());
+    }
+
+    #[test]
+    fn failed_paste_enables_fallback_and_preserves_restore_failure_details() {
+        assert_eq!(
+            settle_paste(Err(anyhow!("no paste")), Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "no paste"
+        );
+        let error = settle_paste(Err(anyhow!("no paste")), Err(anyhow!("no restore")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no paste") && error.contains("no restore"));
+    }
 
     #[test]
     fn paste_policy_falls_back_to_type_without_clipboard_restore() {

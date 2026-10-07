@@ -314,6 +314,8 @@ struct ActiveSession {
     /// Whether a `Stop` has already been issued, so a second one is
     /// `invalid_state` rather than a silent no-op.
     stop_issued: bool,
+    /// Live context options; uploads never have a host focus decision.
+    context_options: Option<ResolvedOptions>,
 }
 
 /// Daemon identity reported by `get_status`.
@@ -498,6 +500,7 @@ impl Engine {
             owner: actor.as_owner(),
             stop: stop.clone(),
             stop_issued: false,
+            context_options: Some(options.clone()),
         });
 
         let pipeline = self.pipeline.clone();
@@ -557,6 +560,7 @@ impl Engine {
             owner: actor.as_upload_owner(),
             stop: stop.clone(),
             stop_issued: true,
+            context_options: None,
         });
 
         let (outcome_tx, outcome_rx) = oneshot::channel();
@@ -585,12 +589,20 @@ impl Engine {
     }
 
     fn handle_stop(&mut self, actor: &Actor) -> Result<SessionId, ProtoError> {
+        let context = self.pipeline.context.clone();
         let session = self.authorize(actor)?;
         if session.stop_issued {
             return Err(ProtoError::new(
                 ErrorCode::InvalidState,
                 "this session has already left the recording phase",
             ));
+        }
+        if let Some(options) = &session.context_options {
+            // This bounded capture runs at the user's stop action, before the
+            // pipeline wakes. Named apps and untrusted callers do not capture.
+            session
+                .handle
+                .set_stop_profile(context.resolve(options.app.as_deref(), options.capture_context));
         }
         session.stop_issued = true;
         // `notify_one`, not `notify_waiters`: the session task may not have

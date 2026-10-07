@@ -23,8 +23,8 @@ graph TD
     
     H -->|Prefix Matching| K[Router]
     
-    K -->|Default Route| I[GrammarCorrector]
-    I -->|Ollama, fail-open, protected spans verified| L[Type Agent]
+    K -->|Default Route| I[LlmFormatter]
+    I -->|Ollama model ladder, fail-open, protected spans verified| L[Type Agent]
     K -->|'timer' prefix| M[Timer Agent]
     K -->|'easy/simple...' prefix| N[Local LLM Agent]
     K -->|'edit/fix...' prefix| O[Edit Agent - Planned]
@@ -67,11 +67,12 @@ Pure-Rust rules between STT and the router, timed as `fmt_rules` and configured 
 * **Rules**: hallucination scrub, the historical acoustic corrections ("cloud" → "Claude", "create plan" → `/create_plan`), fillers, stutters, numbers, spacing, casing, terminal punctuation; spoken punctuation and line breaks are opt-in.
 * **Plug-in slots**: the dictionary (S22) and snippets (S24) run inside the chain as `TextStage`s.
 
-### 4. Grammar Correction Agent: [GrammarCorrector](file:///home/jakedevar/dictate_agent/crates/dictate-fmt/src/grammar.rs#L23)
-An optional, inline agent that runs after routing, for `type` utterances only, on the text chain's output.
-* Sends raw text to Ollama running a fast model (e.g., `qwen3:0.6b`).
-* Uses a specialized prompt instructing the LLM to only fix punctuation, spelling, and grammar without rephrasing or altering the core semantic meaning.
-* **Fail-Open Strategy**: If Ollama is not running, times out, or returns a response outside validation length parameters (0.5x to 1.5x of original length), the corrector rejects the changes and yields the raw Whisper text.
+### 4. LLM Formatting Pass: [LlmFormatter](file:///home/jakedevar/dictate_agent/crates/dictate-fmt/src/llm/mod.rs)
+An optional pass (S21) that runs after routing, for `type` utterances only, on the text chain's output. Configured under `[format.llm]`; the deprecated `[grammar]` keys are read as an alias. The daemon wraps it as `LlmFormatterPort` (`crates/dictate-core/src/llm_formatter.rs`).
+* Resolves a model ladder (default `gemma4:e4b` → `gemma4:12b`) against the installed Ollama models, and warms the model when recording starts.
+* The prompt follows the destination app's category and tone: terminals and editors stay verbatim (fillers, false starts, self-corrections and punctuation only); chat, email and documents get light grammar and, where allowed, structure.
+* Protected spans are masked before the model sees the text and restored afterwards; a validator rejects answers, drift, dropped content and broken spans.
+* **Fail-Open Strategy**: if Ollama is down, the model is missing, the call times out, or the validator rejects the output, the rules output is typed unchanged and `status.formatter` reports the health.
 
 ### 5. Routing & Dispatch: [router](file:///home/jakedevar/dictate_agent/crates/dictate-core/src/router.rs#L2)
 Inspects the transcribed and corrected text to decide how to respond. The system matches prefixes and dispatches to the corresponding execution agents:

@@ -8,5 +8,13 @@ target-dir = "target"
 CUDACXX = "/opt/cuda/bin/nvcc"
 CUDAHOSTCXX = "/usr/bin/g++-15"
 WHISPER_DONT_GENERATE_BINDINGS = "1"
+# Build the CUDA backend for the RTX 5080 only (Blackwell sm_120, arch-specific
+# `120a` as whisper.cpp itself selects it). Without a pin, ggml picks "native"
+# when a GPU is visible at build time and the full 75..121 arch list when not —
+# several times the cicc/ptxas work. A shell-exported CMAKE_CUDA_ARCHITECTURES
+# wins over this default, which is how a multi-arch release is built:
+#   CMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;120a-real" \
+#     just release
+CMAKE_CUDA_ARCHITECTURES = "120a-real"
 # Disable compiler caching (ccache/sccache) which conflicts with nvcc compiling cubins
 GGML_CCACHE = "OFF"

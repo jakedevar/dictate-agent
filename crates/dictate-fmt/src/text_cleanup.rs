@@ -1,6 +1,16 @@
-const TRAILING_ARTIFACTS: &[&str] = &["thank you.", "/no_think"];
+//! Model-artifact scrub for free-form LLM answers (the LOCAL route).
+//!
+//! Only strings that are artifacts of the *model* are removed. A trailing
+//! "Thank you." is deliberately not one of them: it is ordinary English that
+//! a user may dictate or a model may legitimately write (#1069, #1072).
+//! Whisper's habit of hallucinating "Thank you." on trailing silence is a
+//! property of the *transcript*, and the S20 scrub rule
+//! (`text::rules::scrub`) handles it there, only when it is its own sentence.
 
-/// Remove known spurious trailer strings from user-visible model output.
+/// Trailing strings a model can leak into its answer.
+const TRAILING_ARTIFACTS: &[&str] = &["/no_think"];
+
+/// Remove known model artifacts from the end of user-visible model output.
 pub fn scrub_returned_text(text: &str) -> String {
     let mut cleaned = text.trim().to_string();
 
@@ -34,11 +44,6 @@ mod tests {
     use super::scrub_returned_text;
 
     #[test]
-    fn strips_trailing_thank_you_case_insensitively() {
-        assert_eq!(scrub_returned_text("Hello world THANK YOU."), "Hello world");
-    }
-
-    #[test]
     fn strips_trailing_no_think_case_insensitively() {
         assert_eq!(scrub_returned_text("Hello world /NO_THINK"), "Hello world");
     }
@@ -46,7 +51,7 @@ mod tests {
     #[test]
     fn strips_repeated_trailing_artifacts() {
         assert_eq!(
-            scrub_returned_text("Hello world Thank You. /NO_THINK thank you."),
+            scrub_returned_text("Hello world /no_think /NO_THINK"),
             "Hello world"
         );
     }
@@ -54,8 +59,26 @@ mod tests {
     #[test]
     fn keeps_non_trailing_artifacts() {
         assert_eq!(
-            scrub_returned_text("Thank you. for listening"),
-            "Thank you. for listening"
+            scrub_returned_text("/no_think is a flag"),
+            "/no_think is a flag"
+        );
+    }
+
+    /// #1069 / #1072: a dictated or written "thank you." is text, not an
+    /// artifact, and survives the scrub.
+    #[test]
+    fn never_strips_a_thank_you() {
+        for text in [
+            "I just wanted to thank you.",
+            "Thanks for the report. Thank you.",
+            "Thank you.",
+            "Hello world THANK YOU.",
+        ] {
+            assert_eq!(scrub_returned_text(text), text);
+        }
+        assert_eq!(
+            scrub_returned_text("Thanks for the report. Thank you. /no_think"),
+            "Thanks for the report. Thank you."
         );
     }
 }

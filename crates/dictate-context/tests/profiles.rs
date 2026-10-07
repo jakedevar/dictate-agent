@@ -37,10 +37,14 @@ fn builtins_cover_all_required_classes_and_instances_with_neutral_tone() {
                 assert_eq!(p.context.as_ref().unwrap().category, category, "{class}");
                 assert_eq!(p.tone, Tone::Neutral);
                 assert_eq!(p.inject, None, "even terminals inherit Ctrl+V");
+                // No category forces the LLM pass off: terminals get the
+                // verbatim category policy inside the pass instead (S21).
+                assert_eq!(p.llm_format, None, "{class}");
                 if category == Cat::Terminal {
-                    assert_eq!(p.llm_format, Some(false));
+                    assert_eq!(p.spoken_punctuation, Some(false), "{class}");
+                    assert_eq!(p.spoken_line_breaks, Some(false), "{class}");
                 } else {
-                    assert_eq!(p.llm_format, None);
+                    assert_eq!(p.spoken_punctuation, None, "{class}");
                 }
             }
         }
