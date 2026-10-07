@@ -115,6 +115,9 @@ impl Daemon {
         if dictionary.is_none() {
             capabilities.features.dictionary_read = false;
             capabilities.features.dictionary_write = false;
+            // Snippets share the dictionary's database and handle.
+            capabilities.features.snippets_read = false;
+            capabilities.features.snippets_write = false;
         }
         if extras.config.is_none() {
             capabilities.features.config_read = false;

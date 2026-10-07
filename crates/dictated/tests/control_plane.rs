@@ -1096,11 +1096,11 @@ async fn commands_whose_backing_feature_does_not_exist_answer_unsupported_comman
     let mut client = h.client().await;
 
     for command in [
-        Command::ListSnippets {
-            query: None,
-            limit: None,
+        Command::EndAudioStream { stream_id: 1 },
+        Command::BeginAudioStream {
+            format: dictate_proto::AudioFormat::default(),
+            options: None,
         },
-        Command::DeleteSnippet { id: 1 },
     ] {
         let name = command.name();
         let err = client.request(command).await.unwrap_err();

@@ -31,7 +31,7 @@ use std::time::Instant;
 
 /// Re-exported: the type of [`Pipeline::text_chain`].
 pub use dictate_fmt::TextChain;
-use dictate_fmt::{FormatContext, TextDoc};
+use dictate_fmt::{FormatContext, SpanKind, TextDoc};
 use dictate_history::history::Interaction;
 use dictate_history::HistoryStore;
 use dictate_proto::{
@@ -632,6 +632,9 @@ impl Pipeline {
             format_llm: opts.format_llm,
             // Filled below from the chain's output.
             protected: Vec::new(),
+            // Snippet variables may read the clipboard only for a session with
+            // a user at this desktop, never for an uploaded recording.
+            host_variables: !upload,
         };
         let (doc, rules_text) = if self.text_chain.is_enabled() {
             let clock = StageClock::start();
@@ -660,7 +663,27 @@ impl Pipeline {
         // On the rules output and before the LLM pass, so a trigger word
         // ("timer", "easy", "edit:") is never at the mercy of a model, and a
         // non-`type` route never pays for one.
-        let routed = router::route(&rules_text);
+        // A snippet expansion is stored text, not something the user said, so
+        // one that opens the utterance must not be read as a route trigger: an
+        // expansion starting "timer …" or "edit: …" would otherwise run a
+        // timer or rewrite the selection instead of being typed.
+        let opens_with_snippet = doc
+            .working_text()
+            .trim_start()
+            .chars()
+            .next()
+            .and_then(|c| doc.span_for(c))
+            .is_some_and(|s| s.kind == SpanKind::Snippet);
+        let routed = if opens_with_snippet {
+            router::RouteResult {
+                route: RouteType::Type,
+                model: String::new(),
+                text: rules_text.clone(),
+                confidence: 1.0,
+            }
+        } else {
+            router::route(&rules_text)
+        };
         let resolved_route = opts
             .forced_route
             .clone()

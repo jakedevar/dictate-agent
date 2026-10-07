@@ -84,6 +84,11 @@ pub struct FormatContext {
     /// Byte ranges of the protected spans in the text handed to the LLM
     /// pass. Set by the pipeline after the chain runs; empty inside it.
     pub protected: Vec<std::ops::Range<usize>>,
+    /// Whether the session may read host state — the clipboard and the
+    /// selection — to fill snippet variables (S24). `false` by default and
+    /// for an upload, which has no user at this desktop: it must not be able
+    /// to read what that user copied by saying a trigger phrase.
+    pub host_variables: bool,
 }
 
 impl Default for FormatContext {
@@ -100,6 +105,7 @@ impl Default for FormatContext {
             spoken_line_breaks: None,
             format_llm: None,
             protected: Vec::new(),
+            host_variables: false,
         }
     }
 }
