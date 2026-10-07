@@ -1,0 +1,33 @@
+[package]
+name = "dictate-server"
+version.workspace = true
+edition.workspace = true
+description = "S33: dictate-proto over HTTP + WebSocket, loopback by default, token-authenticated"
+
+# Depends on dictate-proto and nothing else in the workspace: the engine is
+# reached through the `Backend` trait, which `dictated` implements over its own
+# unix-socket dispatch, so the network path cannot grow a second dispatcher.
+[dependencies]
+dictate-proto = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+futures-util = { workspace = true }
+getrandom = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The same tokio-tungstenite axum's `ws` feature links, as the test client.
+tokio-tungstenite = "0.29"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
