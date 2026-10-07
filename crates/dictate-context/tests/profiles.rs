@@ -240,37 +240,43 @@ fn caller_app_and_remote_sessions_never_capture_host_titles() {
 
 #[test]
 fn unknown_context_keys_warn_once_at_load_with_the_profile_name() {
+    // Callsite interest is cached process-wide: a scoped `with_default`
+    // subscriber loses to parallel tests that hit the same callsites under no
+    // subscriber (cached "never"). Install one global subscriber whose writer
+    // appends to a thread-local buffer, so each test captures only its own.
+    use std::cell::RefCell;
     use std::io::Write;
-    use std::sync::Mutex;
-    #[derive(Clone)]
-    struct Sink(Arc<Mutex<Vec<u8>>>);
+    use std::sync::Once;
+    thread_local!(static LOG: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) });
+    struct Sink;
     impl Write for Sink {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
+            LOG.with(|l| l.borrow_mut().extend_from_slice(bytes));
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
-    let bytes = Arc::new(Mutex::new(Vec::new()));
-    let sink = Sink(bytes.clone());
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        let c = config("enabled=true\nunknown_option=true\n[[profiles]]\nname='named-profile'\nmatch={class='slack'}\nunknown_override=true\ninject='off'");
-        for _ in 0..3 {
-            assert_eq!(
-                c.resolve(Some(&window("slack", "slack", "synthetic")))
-                    .inject,
-                Some(ContextInjection::Off)
-            );
-        }
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(|| Sink)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
     });
-    let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    LOG.with(|l| l.borrow_mut().clear());
+    let c = config("enabled=true\nunknown_option=true\n[[profiles]]\nname='named-profile'\nmatch={class='slack'}\nunknown_override=true\ninject='off'");
+    for _ in 0..3 {
+        assert_eq!(
+            c.resolve(Some(&window("slack", "slack", "synthetic")))
+                .inject,
+            Some(ContextInjection::Off)
+        );
+    }
+    let log = String::from_utf8(LOG.with(|l| l.borrow().clone())).unwrap();
     assert_eq!(log.matches("unknown_option").count(), 1, "{log}");
     assert_eq!(log.matches("unknown_override").count(), 1, "{log}");
     assert!(log.contains("named-profile"), "{log}");
