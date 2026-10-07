@@ -167,6 +167,10 @@ impl EventSink for AppSink {
     }
 }
 
+/// Where the bar should sit, shared with the X11 map handler.
+#[derive(Default)]
+struct HudPin(crate::hud::Pin);
+
 /// Position the bar bottom-center on the monitor under the pointer, and map it.
 fn show_hud(app: &AppHandle) {
     let Some(window) = app.get_webview_window("hud") else {
@@ -191,6 +195,15 @@ fn show_hud(app: &AppHandle) {
             (f64::from(HUD_SIZE.0), f64::from(HUD_SIZE.1)),
             HUD_BOTTOM_MARGIN,
         );
+        if let Some(pin) = app.try_state::<HudPin>() {
+            if let Ok(mut slot) = pin.0.lock() {
+                // GDK coordinates are logical pixels.
+                *slot = Some((
+                    (f64::from(x) / monitor.scale).round() as i32,
+                    (f64::from(y) / monitor.scale).round() as i32,
+                ));
+            }
+        }
         let _ = window.set_position(PhysicalPosition::new(x, y));
     }
     let _ = window.show();
@@ -213,10 +226,12 @@ fn create_hud(app: &tauri::App) -> tauri::Result<()> {
         .focusable(false)
         .visible(false)
         .build()?;
+    let pin = HudPin::default();
     #[cfg(target_os = "linux")]
-    if let Err(e) = crate::x11::harden_overlay(&window, HUD_SIZE) {
+    if let Err(e) = crate::x11::harden_overlay(&window, HUD_SIZE, pin.0.clone()) {
         eprintln!("dictate-ui: could not apply X11 overlay hints: {e}");
     }
+    app.manage(pin);
     Ok(())
 }
 
@@ -271,7 +286,13 @@ fn build_tray(app: &tauri::App, sink: &AppSink) -> tauri::Result<()> {
     let cancel = MenuItem::with_id(app, "cancel", "Cancel", false, None::<&str>)?;
     let hub = MenuItem::with_id(app, "hub", "Open hub", true, None::<&str>)?;
     let doctor = MenuItem::with_id(app, "doctor", "Run doctor", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit UI (daemon keeps running)", true, None::<&str>)?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        "Quit UI (daemon keeps running)",
+        true,
+        None::<&str>,
+    )?;
     let menu = Menu::with_items(
         app,
         &[
@@ -330,13 +351,55 @@ fn build_tray(app: &tauri::App, sink: &AppSink) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Hub pages `--hub <page>` accepts. Mirrors `PAGES` in `ui/src/hub/App.tsx`.
+pub const HUB_PAGES: &[&str] = &["home", "history", "dictionary", "settings", "doctor"];
+
+/// What the command line asks for at start: `None` to start in the tray,
+/// `Some(page)` to open the hub (`--hub`, optionally followed by a page).
+///
+/// # Errors
+///
+/// An unknown page or argument, with a usage line.
+pub fn start_page<I: IntoIterator<Item = String>>(args: I) -> Result<Option<String>, String> {
+    let mut args = args.into_iter().peekable();
+    let mut page = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--hub" => {
+                let next = args.next_if(|a| !a.starts_with("--"));
+                let p = next.unwrap_or_else(|| "home".to_string());
+                if !HUB_PAGES.contains(&p.as_str()) {
+                    return Err(format!(
+                        "unknown hub page '{p}'; expected one of {}",
+                        HUB_PAGES.join(", ")
+                    ));
+                }
+                page = Some(p);
+            }
+            other => {
+                return Err(format!(
+                    "unknown argument '{other}'\nusage: dictate-ui [--hub [{}]]",
+                    HUB_PAGES.join("|")
+                ))
+            }
+        }
+    }
+    Ok(page)
+}
+
 /// Run the desktop UI.
 ///
 /// # Panics
 ///
 /// If Tauri cannot start (no display).
 pub fn run() {
-    let open_hub_at_start = std::env::args().any(|a| a == "--hub");
+    let start = match start_page(std::env::args().skip(1)) {
+        Ok(page) => page,
+        Err(message) => {
+            eprintln!("dictate-ui: {message}");
+            std::process::exit(2);
+        }
+    };
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             crate::commands::connection_state,
@@ -375,8 +438,8 @@ pub fn run() {
             app.manage(bridge);
             tauri::async_runtime::spawn(task);
             tauri::async_runtime::spawn(sink.hud_timer());
-            if open_hub_at_start || !tray_ok {
-                open_hub(app.handle(), None)?;
+            if start.is_some() || !tray_ok {
+                open_hub(app.handle(), start.as_deref())?;
             }
             Ok(())
         })
@@ -391,4 +454,33 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_page;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn no_arguments_start_in_the_tray() {
+        assert_eq!(start_page(args(&[])), Ok(None));
+    }
+
+    #[test]
+    fn hub_opens_home_or_the_named_page() {
+        assert_eq!(start_page(args(&["--hub"])), Ok(Some("home".into())));
+        assert_eq!(
+            start_page(args(&["--hub", "settings"])),
+            Ok(Some("settings".into()))
+        );
+    }
+
+    #[test]
+    fn unknown_pages_and_arguments_are_refused() {
+        assert!(start_page(args(&["--hub", "snippets"])).is_err());
+        assert!(start_page(args(&["--tray"])).is_err());
+    }
 }

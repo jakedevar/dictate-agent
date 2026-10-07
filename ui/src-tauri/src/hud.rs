@@ -5,6 +5,7 @@
 //! unit-tested; `app.rs` applies their decisions to the real window, and
 //! `x11.rs` owns the layering mechanism (never taking focus, click-through).
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dictate_proto::State;
@@ -21,6 +22,11 @@ pub fn linger(state: &State) -> Duration {
         _ => Duration::from_millis(1100),
     }
 }
+
+/// Where the bar should be, in GDK (logical) pixels, shared between the show
+/// path and the X11 map handler, which re-applies it after every map. `None`
+/// until the first show computes it.
+pub type Pin = Arc<Mutex<Option<(i32, i32)>>>;
 
 /// What the window should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +158,10 @@ pub mod placement {
         let y = f64::from(monitor.y) + f64::from(monitor.height) - h - margin;
         // Clamp so a tiny or oddly scaled monitor never places it off-screen.
         let max_y = f64::from(monitor.y) + (f64::from(monitor.height) - h).max(0.0);
-        (x.round() as i32, y.clamp(f64::from(monitor.y), max_y).round() as i32)
+        (
+            x.round() as i32,
+            y.clamp(f64::from(monitor.y), max_y).round() as i32,
+        )
     }
 }
 
@@ -182,10 +191,20 @@ mod tests {
         let now = t0();
         v.on_state(&State::Recording, now);
         assert_eq!(v.on_state(&State::Done, now), HudAction::Keep);
-        assert_eq!(v.on_tick(now + Duration::from_millis(1000)), HudAction::Keep);
-        assert_eq!(v.on_tick(now + Duration::from_millis(1100)), HudAction::Hide);
+        assert_eq!(
+            v.on_tick(now + Duration::from_millis(1000)),
+            HudAction::Keep
+        );
+        assert_eq!(
+            v.on_tick(now + Duration::from_millis(1100)),
+            HudAction::Hide
+        );
         assert!(!v.is_shown());
-        assert_eq!(v.on_tick(now + Duration::from_secs(5)), HudAction::Keep, "hides once");
+        assert_eq!(
+            v.on_tick(now + Duration::from_secs(5)),
+            HudAction::Keep,
+            "hides once"
+        );
     }
 
     #[test]
@@ -201,7 +220,10 @@ mod tests {
         let now = t0();
         v.on_state(&State::Recording, now);
         v.on_state(&State::Done, now);
-        assert_eq!(v.on_state(&State::Recording, now + Duration::from_millis(300)), HudAction::Keep);
+        assert_eq!(
+            v.on_state(&State::Recording, now + Duration::from_millis(300)),
+            HudAction::Keep
+        );
         assert_eq!(v.on_tick(now + Duration::from_secs(10)), HudAction::Keep);
         assert!(v.is_shown());
     }
@@ -227,12 +249,27 @@ mod tests {
     #[test]
     fn unknown_states_change_nothing() {
         let mut v = HudVisibility::default();
-        assert_eq!(v.on_state(&State::from("teleporting".to_string()), t0()), HudAction::Keep);
+        assert_eq!(
+            v.on_state(&State::from("teleporting".to_string()), t0()),
+            HudAction::Keep
+        );
         assert!(!v.is_shown());
     }
 
-    const ONE_X: Monitor = Monitor { x: 0, y: 0, width: 1920, height: 1080, scale: 1.0 };
-    const TWO_X: Monitor = Monitor { x: 1920, y: 0, width: 3840, height: 2160, scale: 2.0 };
+    const ONE_X: Monitor = Monitor {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+        scale: 1.0,
+    };
+    const TWO_X: Monitor = Monitor {
+        x: 1920,
+        y: 0,
+        width: 3840,
+        height: 2160,
+        scale: 2.0,
+    };
 
     #[test]
     fn bottom_center_at_1x() {
@@ -242,12 +279,21 @@ mod tests {
     #[test]
     fn bottom_center_scales_size_and_margin_on_hidpi() {
         // 480x128 physical, 112 physical margin, on a monitor offset by 1920.
-        assert_eq!(bottom_center(&TWO_X, (240.0, 64.0), 56.0), (1920 + 1680, 1920));
+        assert_eq!(
+            bottom_center(&TWO_X, (240.0, 64.0), 56.0),
+            (1920 + 1680, 1920)
+        );
     }
 
     #[test]
     fn negative_origins_and_tiny_monitors_stay_on_screen() {
-        let left = Monitor { x: -1280, y: -200, width: 1280, height: 100, scale: 1.0 };
+        let left = Monitor {
+            x: -1280,
+            y: -200,
+            width: 1280,
+            height: 100,
+            scale: 1.0,
+        };
         let (x, y) = bottom_center(&left, (240.0, 64.0), 56.0);
         assert_eq!(x, -1280 + 520);
         assert!(y >= -200 && y + 64 <= -100, "{y}");

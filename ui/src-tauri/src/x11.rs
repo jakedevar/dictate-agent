@@ -11,7 +11,8 @@
 //! | not focused on map | `_NET_WM_USER_TIME = 0` (`set_focus_on_map(false)`) | EWMH focus-stealing prevention; i3 skips focusing a window mapped with user time 0 |
 //! | floats in i3 | `_NET_WM_WINDOW_TYPE_NOTIFICATION` | i3 floats notification windows automatically, no user rule needed |
 //! | above, on every workspace, off taskbars | `_NET_WM_STATE_ABOVE`, `_STICKY`, `_SKIP_TASKBAR`, `_SKIP_PAGER` | |
-//! | click-through | an **empty** XShape input region on the toplevel | pointer events (and focus-follows-mouse `EnterNotify`) go to the window underneath |
+//! | click-through | an **empty** XShape input region on the toplevel, re-applied on every map | pointer events (and focus-follows-mouse `EnterNotify`) go to the window underneath |
+//! | exact position | the move re-issued on every map | see "Reparenting window managers" below |
 //! | no black box without a compositor | a rounded XShape *bounding* region matching the pill | only when the screen is not composited |
 //!
 //! ## Why not Tauri's own switches
@@ -23,6 +24,23 @@
 //!   (a clickable pixel at the corner) on the `GdkWindow` directly, which GTK
 //!   drops if the widget is re-realized. The region here is truly empty and is
 //!   set on the widget, which GTK re-applies on every realize.
+//!
+//! ## Reparenting window managers (i3)
+//!
+//! i3 puts every managed window, floating ones included, inside a frame
+//! window of its own. Two consequences, both found by the Xvfb test:
+//!
+//! - **The input shape must reach the frame.** i3 copies a client's input
+//!   shape to the frame only when it sees a `ShapeNotify` for the client
+//!   *after* managing it (at manage time it can query the bounding shape but
+//!   not the input shape), and it builds a fresh frame on every map. A region
+//!   set once before the first map therefore leaves i3's frame catching
+//!   every click. So the empty region is re-applied to the realized
+//!   `GdkWindow` on every `map-event`, which i3 answers by shaping the frame.
+//! - **Map-time placement drifts.** i3 places a newly mapped floating window
+//!   as if it had a title bar, shifting it by the decoration size on each
+//!   show. Re-issuing the move after the map (a `ConfigureRequest` i3 honors
+//!   exactly for a borderless floating window) puts it where it belongs.
 //!
 //! ## If a window manager ignores the hints
 //!
@@ -37,6 +55,8 @@
 
 use gtk::prelude::*;
 
+use crate::hud::Pin;
+
 /// The pill's geometry inside the bar window, in logical pixels. Mirrored by
 /// `ui/src/hud/hud.css` (`--pill-*`); keep them in step.
 pub const PILL_INSET: i32 = 8;
@@ -45,10 +65,17 @@ pub const PILL_RADIUS: i32 = 20;
 
 /// Apply every X11 property above to the bar. Call before its first show.
 ///
+/// `pin` is read on every map to put the bar exactly where the last show
+/// asked for it.
+///
 /// # Errors
 ///
 /// If the window has no GTK backing (not running on GTK).
-pub fn harden_overlay(window: &tauri::WebviewWindow, size: (u32, u32)) -> Result<(), String> {
+pub fn harden_overlay(
+    window: &tauri::WebviewWindow,
+    size: (u32, u32),
+    pin: Pin,
+) -> Result<(), String> {
     let gtk_window = window.gtk_window().map_err(|e| e.to_string())?;
     gtk_window.set_type_hint(gtk::gdk::WindowTypeHint::Notification);
     gtk_window.set_accept_focus(false);
@@ -60,13 +87,26 @@ pub fn harden_overlay(window: &tauri::WebviewWindow, size: (u32, u32)) -> Result
     gtk_window.set_resizable(false);
     gtk_window.stick();
 
-    // Click-through: an empty input region.
+    // Click-through: an empty input region. Kept on the widget so GTK
+    // re-applies it if the window is re-realized...
     gtk_window.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+    // ...and re-sent to the X window after every map, when a reparenting
+    // window manager is listening for it (see the module docs).
+    gtk_window.connect_map_event(move |w, _| {
+        if let Some(gdk_window) = w.window() {
+            gdk_window.input_shape_combine_region(&gtk::cairo::Region::create(), 0, 0);
+            w.set_accept_focus(false);
+            if let Some((x, y)) = pin.lock().ok().and_then(|p| *p) {
+                gdk_window.move_(x, y);
+            }
+        }
+        gtk::glib::Propagation::Proceed
+    });
 
     // Without a compositor the transparent corners would paint as an opaque
     // box; cut the window itself to the pill instead.
-    let composited = gtk::prelude::WidgetExt::screen(&gtk_window)
-        .is_some_and(|s| s.is_composited());
+    let composited =
+        gtk::prelude::WidgetExt::screen(&gtk_window).is_some_and(|s| s.is_composited());
     if !composited {
         let (w, h) = (size.0 as i32, size.1 as i32);
         gtk_window.shape_combine_region(Some(&rounded_region(
@@ -127,12 +167,17 @@ mod tests {
         for i in 0..20 {
             assert_eq!(spans[i].0, spans[39 - i].0, "row {i} mirrors");
         }
-        assert!(spans.windows(2).take(19).all(|p| p[1].0 <= p[0].0), "monotone");
+        assert!(
+            spans.windows(2).take(19).all(|p| p[1].0 <= p[0].0),
+            "monotone"
+        );
     }
 
     #[test]
     fn a_radius_larger_than_the_box_is_clamped() {
         let spans = rounded_spans(10, 4, 50);
-        assert!(spans.iter().all(|&(x, _, w)| x >= 0 && w >= 0 && x + w <= 10));
+        assert!(spans
+            .iter()
+            .all(|&(x, _, w)| x >= 0 && w >= 0 && x + w <= 10));
     }
 }
