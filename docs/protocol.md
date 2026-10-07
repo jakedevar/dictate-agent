@@ -121,6 +121,7 @@ unrecognized flag means "not permitted", which is the fail-safe direction.
 | `headless` | no desktop session attached; injection can never become available |
 | `privacy_mode` | transcripts are not being persisted |
 | `diagnostics` | may run `diagnose` (names host paths, installed models, permission problems) |
+| `raw_text` | may see `raw_text` (recognizer output before formatting) in `transcript` results and `final` events; stripped otherwise (S33) |
 
 `routes` restricts which routes the connection may invoke — a subset decision
 rather than an on/off one. A remote client may be allowed `type` (returned as
@@ -145,6 +146,7 @@ Two reference capability sets:
 | `host_capture` | ✅ | ❌ |
 | `transcribe_upload` / `streaming_audio` | ✅ | ✅ |
 | config / dictionary / snippets / history | ✅ | ❌ |
+| `raw_text` | ✅ | ❌ |
 | `routes` | all five | `["type"]` |
 
 ---

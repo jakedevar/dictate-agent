@@ -301,6 +301,17 @@ pub struct Features {
     /// so a remote client does not get them.
     #[serde(default)]
     pub diagnostics: bool,
+
+    /// The connection may see [`Transcript::raw_text`](crate::Transcript::raw_text):
+    /// the recognizer's output before corrections, dictionary and formatting.
+    ///
+    /// The most privacy-sensitive field a transcript carries, and the ground
+    /// truth formatting is evaluated against. Without this flag the server
+    /// strips it from every `transcript` result and `final` event on the
+    /// connection. Local connections hold it; remote ones do not unless the
+    /// operator opts in (S33, `[api] expose_raw_text`).
+    #[serde(default)]
+    pub raw_text: bool,
 }
 
 impl Features {
@@ -327,6 +338,7 @@ impl Features {
             headless: false,
             privacy_mode: false,
             diagnostics: true,
+            raw_text: true,
         }
     }
 
@@ -402,6 +414,17 @@ mod tests {
         let local = Capabilities::local_trusted();
         assert!(local.features.text_injection);
         assert!(local.features.host_capture);
+    }
+
+    /// S01 item 4, resolved in S33: `raw_text` is a capability, not a
+    /// convention. Local connections see it, remote ones do not, and a peer
+    /// that has never heard of the flag reads it as absent.
+    #[test]
+    fn raw_text_is_local_only_and_absent_by_default() {
+        assert!(Capabilities::local_trusted().features.raw_text);
+        assert!(!Capabilities::remote_transcription_only().features.raw_text);
+        let older: Features = serde_json::from_str(r#"{"transcribe_upload":true}"#).unwrap();
+        assert!(!older.raw_text);
     }
 
     #[test]

@@ -629,7 +629,8 @@ fn golden_result_handshake_capabilities() {
                     "wake_word": false,
                     "headless": false,
                     "privacy_mode": false,
-                    "diagnostics": false
+                    "diagnostics": false,
+                    "raw_text": false
                 },
                 "audio_formats": ["pcm_f32le", "pcm_s16le", "wav"],
                 "routes": ["type"],
