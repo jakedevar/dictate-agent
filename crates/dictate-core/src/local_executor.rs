@@ -43,7 +43,10 @@ impl LocalExecutor {
         Self {
             host,
             port,
-            timeout: Duration::from_secs_f64(config.timeout_s),
+            // Config loading refuses a timeout that does not convert; a
+            // hand-built config that skipped it gets the default, not a panic.
+            timeout: Duration::try_from_secs_f64(config.timeout_s)
+                .unwrap_or(Duration::from_secs(120)),
             probe: HttpBackend::new(&config.host),
             resolver: ModelResolver::new("local", ladder),
         }
@@ -117,9 +120,9 @@ impl LocalExecutor {
     async fn call_ollama(&self, prompt: &str, model: &str) -> Result<String> {
         use ollama_rs::generation::completion::request::GenerationRequest;
         use ollama_rs::models::ModelOptions;
-        use ollama_rs::Ollama;
 
-        let ollama = Ollama::builder().host(&self.host).port(self.port).build();
+        let ollama = crate::ollama::client_at(&self.host, self.port)
+            .map_err(|why| anyhow::anyhow!("Ollama host {why}"))?;
         let request = GenerationRequest::new(model.to_string(), prompt.to_string())
             .options(ModelOptions::default().num_predict(2048));
 
@@ -132,7 +135,9 @@ impl LocalExecutor {
 /// Check if Ollama is running by hitting /api/tags.
 /// Port of local_executor.py:114-122
 pub async fn is_ollama_running(host: &str, port: u16) -> bool {
-    let ollama = ollama_rs::Ollama::builder().host(host).port(port).build();
+    let Ok(ollama) = crate::ollama::client_at(host, port) else {
+        return false;
+    };
     matches!(
         tokio::time::timeout(Duration::from_secs(2), ollama.list_local_models()).await,
         Ok(Ok(_))
@@ -142,6 +147,11 @@ pub async fn is_ollama_running(host: &str, port: u16) -> bool {
 /// Start Ollama if not running. Poll until ready or timeout.
 /// Port of local_executor.py:124-168
 pub async fn ensure_ollama_running(host: &str, port: u16, max_wait_s: u64) -> bool {
+    if let Err(why) = crate::ollama::client_at(host, port) {
+        // Starting a server would not make a malformed host reachable.
+        warn!("not starting Ollama: host {why}");
+        return false;
+    }
     if is_ollama_running(host, port).await {
         return true;
     }
