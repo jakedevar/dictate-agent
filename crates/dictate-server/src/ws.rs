@@ -35,7 +35,8 @@
 //! - Binary frames: refused (1003). Audio streaming is not implemented in this
 //!   build (design §11); whole clips go as `transcribe_audio`.
 //! - Time: every await is bounded. A request (admission, execution and reply)
-//!   must finish within [`IDLE`] of arriving (else 1011); a session with no
+//!   is abandoned if the peer disconnects, and must finish within [`IDLE`] of
+//!   arriving (else 1011); a session with no
 //!   client message for [`IDLE`] closes (1000); a write a peer does not read
 //!   for [`SEND_TIMEOUT`] ends the session; the close handshake gets
 //!   [`CLOSE_TIMEOUT`]. Server shutdown interrupts all of it (1001), and
@@ -175,7 +176,10 @@ pub(crate) async fn run(
                     break None;
                 }
                 deadline = Instant::now() + IDLE;
-                let work = answer(&mut sink, session.as_mut(), &state, peer, &credential, &text, &gone);
+                let work = unless_gone(
+                    answer(&mut sink, session.as_mut(), &state, peer, &credential, &text, &gone),
+                    hangup(gone.clone()),
+                );
                 match bounded(&mut closing, deadline, work).await {
                     Bounded::Done(Answered::Next) => {}
                     Bounded::Done(Answered::Close(frame)) => break Some(frame),
@@ -296,6 +300,18 @@ async fn answer(
     match send(sink, &reply).await {
         Ok(()) => Answered::Next,
         Err(()) => Answered::Gone,
+    }
+}
+
+/// `work`, unless the peer goes first: then [`Answered::Gone`], and `work`
+/// is dropped where it stands. A command that does not watch its own hang-up
+/// cannot hold the session (or its slot) for a peer that left; dropping the
+/// session afterwards cancels whatever the request started.
+async fn unless_gone(work: impl Future<Output = Answered>, gone: Hangup) -> Answered {
+    tokio::select! {
+        biased;
+        out = work => out,
+        () = gone => Answered::Gone,
     }
 }
 

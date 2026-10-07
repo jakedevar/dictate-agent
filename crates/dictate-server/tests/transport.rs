@@ -99,6 +99,11 @@ impl FakeSession {
                     hangup.await;
                     return Err(ProtoError::new(ErrorCode::Cancelled, "hung up"));
                 }
+                // `app = "stall"`: never ends, and ignores the hang-up too.
+                if options.as_ref().and_then(|o| o.app.as_deref()) == Some("stall") {
+                    drop(hangup);
+                    std::future::pending::<()>().await;
+                }
                 let len = match audio {
                     dictate_proto::AudioSource::Inline { data, .. } => data.len(),
                     _ => 0,
@@ -1183,6 +1188,40 @@ async fn shutdown_interrupts_a_websocket_request_in_flight() {
         "the daemon connection is dropped before shutdown returns"
     );
     assert_eq!(close_code(&mut ws).await, 1001);
+}
+
+/// WS_IDLE_SHUTDOWN_NOT_ENFORCED_IN_FLIGHT: a peer that disconnects mid-request
+/// frees its session at once, even when the command in flight does not watch
+/// for the hang-up itself.
+#[tokio::test]
+async fn a_disconnect_mid_request_frees_the_session_even_if_the_command_ignores_it() {
+    let api = Running::start(|_| {}).await;
+    let calls = api.calls.clone();
+    let mut ws = authed_ws(&api).await;
+    ws_send(&mut ws, handshake_line(1)).await;
+    let _ = next_text(&mut ws).await;
+    ws_send(
+        &mut ws,
+        request_line(
+            2,
+            serde_json::json!({"type":"transcribe_audio","audio":{"source":"inline","format":{"encoding":"wav"},"data":"UklGRg=="},"options":{"app":"stall"}}),
+        ),
+    )
+    .await;
+    within("the request to start", async {
+        while !commands(&calls).contains(&"transcribe_audio".to_string()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(ws);
+    within("the daemon connection to be dropped", async {
+        while calls.dropped.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    api.stop().await;
 }
 
 // --- TLS -----------------------------------------------------------------------
