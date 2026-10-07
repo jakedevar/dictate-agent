@@ -52,9 +52,17 @@ continue to cover cancellation and pipelined request ordering.
   check passed. The Rust log also contains two successful private-Xvfb child
   summaries, excluded from the top-level count.
   Log: `/tmp/issue-1508-check-cpu.log`.
-- GPU acceptance is pending: ten full `just e2e` runs are in progress; the
-  first run is building the cold release/CUDA target with eight jobs. The
-  runner checks `uptime` and pauses before a run if one-minute load exceeds 40.
+- `CARGO_BUILD_JOBS=8 just e2e`, looped ten times: 10 consecutive green full
+  suites, 70 passed / 0 failed. Default `E2E_RUNS=8`: 27 headline uploads per
+  suite, 270 in total. Every short/medium/long fixture summary reported WER
+  0.000; no stalls. Per-suite runtime after the cold release/CUDA build was
+  9.02–12.02 seconds. Logs: `/tmp/issue-1508-e2e-{1..10}.log`.
+  The runner checked `uptime` before every run and required one-minute load
+  at most 40. Build jobs were capped at eight.
+
+Acceptance gate total: 1,134 passed / 0 failed (1,041 Rust + 23 cutover +
+70 real-hardware tests). The focused suites above are additional executions,
+not included again in that gate total.
 
 Only `crates/dictated/src/server.rs` and `crates/dictated/tests/upload.rs`
 changed in the code commit. No live daemon or real display was used, and
