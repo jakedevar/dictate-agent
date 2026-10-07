@@ -319,9 +319,16 @@ impl LlmFormatter {
                     return (fail(e.to_string(), None), LlmTrace::default());
                 }
             };
-        let model = match self.resolver.ensure(self.backend.as_ref()).await {
-            Ok(m) => m,
-            Err(reason) => {
+        let total_words = req.text.split_whitespace().count();
+        let budget = self.config.timeout.for_words(total_words);
+        let deadline = start + budget;
+        let model = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.resolver.ensure(self.backend.as_ref()),
+        ).await {
+            Ok(Ok(m)) => m,
+            Err(_) => return (fail(BackendError::Timeout(budget).to_string(), None), LlmTrace::default()),
+            Ok(Err(reason)) => {
                 return (
                     fail(format!("no LLM model available: {reason}"), None),
                     LlmTrace::default(),
@@ -329,13 +336,11 @@ impl LlmFormatter {
             }
         };
 
-        let total_words = req.text.split_whitespace().count();
         let ranges: Vec<Range<usize>> = if total_words > self.config.chunking.max_single_words {
             chunk::split(&req.text, &spans, self.config.chunking.chunk_words)
         } else {
             std::iter::once(0..req.text.len()).collect()
         };
-        let deadline = start + self.config.timeout.for_words(total_words);
         let policy = self.config.categories.get(&req.category).clone();
 
         let jobs: Vec<SegmentJob> = ranges

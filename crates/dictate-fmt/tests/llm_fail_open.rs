@@ -793,3 +793,18 @@ async fn private_rejection_logs_no_dictated_words() {
     assert!(!logged.contains("syntheticsecret"), "{logged}");
     assert!(!logged.contains(&req.text), "{logged}");
 }
+
+#[tokio::test]
+async fn model_probe_is_inside_the_pass_deadline() {
+    let fake = Fake::start(|_, _| Reply::Hang).await;
+    let mut c = config(&fake.host());
+    c.timeout.base_ms = 50;
+    c.timeout.per_word_ms = 0;
+    c.timeout.max_ms = 50;
+    let f = LlmFormatter::new(c);
+    let started = std::time::Instant::now();
+    let out = f.format(&request(INPUT)).await;
+    assert_failed_open(&out, INPUT, "timed out");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(fake.chat_requests().is_empty());
+}
