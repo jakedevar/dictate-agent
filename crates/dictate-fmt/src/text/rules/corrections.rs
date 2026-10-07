@@ -354,4 +354,17 @@ mod tests {
         // The unambiguous spoken commands still work by default.
         assert_eq!(chain.format("then create plan", &ctx), "Then /create_plan");
     }
+
+    /// `SPAN_CAPACITY_CORRUPTS_TEXT`: with no room for one more protected
+    /// span, a spoken command is left as spoken — never half-deleted.
+    #[test]
+    fn a_full_document_keeps_a_command_phrase_whole() {
+        let mut input = "`x` ".repeat(crate::text::MAX_PROTECTED_SPANS);
+        input.push_str("create plan");
+        let mut doc = TextDoc::protected(&input);
+        assert!(!doc.is_raw(), "exactly at the limit still fits");
+        assert_eq!(doc.spans().len(), crate::text::MAX_PROTECTED_SPANS);
+        BuiltinCorrections::default().apply(&mut doc, &FormatContext::default());
+        assert_eq!(doc.restore(), input);
+    }
 }
