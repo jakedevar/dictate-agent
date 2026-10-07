@@ -444,6 +444,15 @@ impl LlmFormatter {
     ///
     /// The reason no model could be loaded.
     pub async fn warm_up(&self, prime: Option<(&AppCategory, &Tone)>) -> Result<Duration, String> {
+        // One budget covers lookup, load and cache priming, including fake or
+        // third-party backends that have no transport timeout of their own.
+        let budget = Duration::from_millis(self.config.timeout.max_ms);
+        tokio::time::timeout(budget, self.warm_up_bounded(prime))
+            .await
+            .map_err(|_| BackendError::Timeout(budget).to_string())?
+    }
+
+    async fn warm_up_bounded(&self, prime: Option<(&AppCategory, &Tone)>) -> Result<Duration, String> {
         if !self.config.enabled {
             return Err("LLM formatting is disabled".into());
         }
