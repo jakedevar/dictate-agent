@@ -352,7 +352,14 @@ fn build_tray(app: &tauri::App, sink: &AppSink) -> tauri::Result<()> {
 }
 
 /// Hub pages `--hub <page>` accepts. Mirrors `PAGES` in `ui/src/hub/App.tsx`.
-pub const HUB_PAGES: &[&str] = &["home", "history", "dictionary", "settings", "doctor"];
+pub const HUB_PAGES: &[&str] = &[
+    "home",
+    "history",
+    "notes",
+    "dictionary",
+    "settings",
+    "doctor",
+];
 
 /// What the command line asks for at start: `None` to start in the tray,
 /// `Some(page)` to open the hub (`--hub`, optionally followed by a page).
@@ -415,6 +422,8 @@ pub fn run() {
             crate::commands::list_dictionary_suggestions,
             crate::commands::upsert_dictionary_entry,
             crate::commands::delete_dictionary_entry,
+            crate::commands::list_notes,
+            crate::commands::delete_note,
             crate::commands::query_history,
             crate::commands::get_history_analytics,
             crate::commands::purge_history,
@@ -475,6 +484,10 @@ mod tests {
         assert_eq!(
             start_page(args(&["--hub", "settings"])),
             Ok(Some("settings".into()))
+        );
+        assert_eq!(
+            start_page(args(&["--hub", "notes"])),
+            Ok(Some("notes".into()))
         );
     }
 

@@ -15,6 +15,7 @@ import type {
   HistoryAnalytics,
   HistoryPage,
   HistoryQuery,
+  NotesResult,
   Status,
 } from "./protocol";
 
@@ -40,6 +41,13 @@ export const daemon = {
     invoke<{ entry: DictionaryEntry }>("upsert_dictionary_entry", { entry }),
   deleteEntry: (id: number) => invoke<unknown>("delete_dictionary_entry", { id }),
   queryHistory: (query: HistoryQuery) => invoke<HistoryPage>("query_history", { query }),
+  listNotes: (query?: string) =>
+    invoke<NotesResult>("list_notes", { query: query || null, limit: 200 }),
+  deleteNote: (id: number) => invoke<unknown>("delete_note", { id }),
+  /** Start a dictation whose transcript goes to the scratchpad instead of the focused window. */
+  startNote: () =>
+    invoke<unknown>("start_dictation", { mode: null, options: { route: "note" } }),
+  stop: () => invoke<unknown>("stop"),
   analytics: () => invoke<HistoryAnalytics>("get_history_analytics"),
   diagnose: (quick: boolean) => invoke<DiagnosticsReport>("diagnose", { quick }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),

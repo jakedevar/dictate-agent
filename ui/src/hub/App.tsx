@@ -4,12 +4,14 @@ import { HubContext, useHub, useHubState } from "./useDaemon";
 import { Home } from "./pages/Home";
 import { History } from "./pages/History";
 import { Dictionary } from "./pages/Dictionary";
+import { Notes } from "./pages/Notes";
 import { Settings } from "./pages/Settings";
 import { Doctor } from "./pages/Doctor";
 
 const PAGES = [
   { id: "home", title: "Home", render: () => <Home /> },
   { id: "history", title: "History", render: () => <History /> },
+  { id: "notes", title: "Notes", render: () => <Notes /> },
   { id: "dictionary", title: "Dictionary", render: () => <Dictionary /> },
   { id: "settings", title: "Settings", render: () => <Settings /> },
   { id: "doctor", title: "Doctor", render: () => <Doctor /> },

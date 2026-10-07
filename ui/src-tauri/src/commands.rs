@@ -128,6 +128,28 @@ pub async fn delete_dictionary_entry(bridge: State<'_, Bridge>, id: i64) -> Repl
     bridge.request(Command::DeleteDictionaryEntry { id }).await
 }
 
+/// `list_notes` (S35)
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_notes(
+    bridge: State<'_, Bridge>,
+    query: Option<String>,
+    limit: Option<u32>,
+) -> Reply {
+    bridge
+        .request(Command::ListNotes {
+            query,
+            limit,
+            id: None,
+        })
+        .await
+}
+
+/// `delete_note` (S35)
+#[tauri::command(rename_all = "snake_case")]
+pub async fn delete_note(bridge: State<'_, Bridge>, id: i64) -> Reply {
+    bridge.request(Command::DeleteNote { id }).await
+}
+
 /// `query_history`
 #[tauri::command(rename_all = "snake_case")]
 pub async fn query_history(bridge: State<'_, Bridge>, query: Option<HistoryQuery>) -> Reply {
