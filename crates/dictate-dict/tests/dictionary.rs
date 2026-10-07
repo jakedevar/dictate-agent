@@ -331,3 +331,48 @@ fn unicode_casefold_sigma_and_sharp_s_respect_boundaries_and_uniqueness() {
         "partial expanded character must not match"
     );
 }
+/// `matcher-contraction-inside-word`: an apostrophe or hyphen between
+/// letters is inside a word, so no entry matches a piece of a contraction or
+/// a hyphenated compound — while possessives still match and recase.
+#[test]
+fn contractions_and_hyphenated_compounds_are_never_split() {
+    let d = dict(Default::default()); // recase_phrases = true
+    for e in [
+        entry("Don", &[]),
+        entry("Won", &[]),
+        entry("Cant", &["can"]),
+        entry("Mail", &[]),
+        entry("Tauri", &["tow ree"]),
+    ] {
+        d.upsert(e).unwrap();
+    }
+    // Must not change.
+    for input in [
+        "I don't know.",
+        "I DON'T know.",
+        "I don\u{2019}t know.",
+        "I can't go.",
+        "I can\u{2019}t go.",
+        "It won't work.",
+        "Send an e-mail.",
+        "Send e-mails and e-mail's drafts.",
+        "the tow-ree thing",
+        "rock'n'roll and o'won",
+    ] {
+        assert_eq!(d.apply(input, None).text, input, "input: {input:?}");
+    }
+    // Still matched: whole words, possessives, and a trailing quote or dash.
+    for (input, want) in [
+        ("ask don about it", "ask Don about it"),
+        (
+            "don's car and don\u{2019}s bike",
+            "Don's car and Don\u{2019}s bike",
+        ),
+        ("he said 'don' twice", "he said 'Don' twice"),
+        ("won - barely", "Won - barely"),
+        ("I can go", "I Cant go"),
+        ("tow ree's docs", "Tauri's docs"),
+    ] {
+        assert_eq!(d.apply(input, None).text, want, "input: {input:?}");
+    }
+}
