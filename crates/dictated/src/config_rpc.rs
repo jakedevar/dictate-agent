@@ -15,6 +15,12 @@
 //!   synced, and renamed over it; the previous contents are kept as
 //!   `<file>.bak`. A symlinked config (dotfile managers) is written through to
 //!   its target rather than replaced by a regular file.
+//! - **No lost updates.** Every snapshot carries the file's `revision`. A
+//!   write that names the revision it was based on (`base_revision`) is
+//!   refused as `conflict` if the file has changed since — whether another
+//!   client wrote it or someone edited it by hand — and the file is re-read
+//!   immediately before the rename, so an edit that lands while a write is
+//!   being validated is not overwritten either.
 //! - **Honest about restarts.** Most of the daemon is built from the
 //!   configuration once, at startup. A write reports every key whose value on
 //!   disk now differs from what the running daemon uses in
@@ -110,6 +116,7 @@ impl ConfigService {
         let file = ConfigFile {
             path: self.path.to_string_lossy().into_owned(),
             exists,
+            revision: revision(&text),
             document: text,
         };
         let Some(path) = path.filter(|p| !p.is_empty()) else {
@@ -145,17 +152,26 @@ impl ConfigService {
     ///
     /// `invalid_params` for a malformed request, `config_invalid` (with the
     /// offending `path` in `detail`) for a configuration the daemon would
-    /// refuse, `internal` when the file cannot be written.
+    /// refuse, `conflict` when the file is no longer at `base_revision` (or
+    /// changed while this write was being validated), `internal` when the
+    /// file cannot be written.
     pub fn write(
         &self,
         entries: Vec<ConfigEntry>,
         document: Option<String>,
         dry_run: bool,
+        base_revision: Option<&str>,
     ) -> Result<ConfigSnapshot, ProtoError> {
         let _writer = self.writes.lock().map_err(|_| {
             ProtoError::new(ErrorCode::Internal, "configuration writer is poisoned")
         })?;
         let (old_text, exists) = self.load_text()?;
+        if let Some(base) = base_revision {
+            let current = revision(&old_text);
+            if base != current {
+                return Err(conflict(&current));
+            }
+        }
         let running = self.running_snapshot();
         let old_values = resolve(&old_text)
             .map(|(v, _)| v)
@@ -212,6 +228,12 @@ impl ConfigService {
         diff_paths(&old_values, &new_values, "", &mut applied);
 
         if !dry_run && new_text != old_text {
+            // The file may have been edited by hand while this write was being
+            // validated; never overwrite what we did not read.
+            let (now_text, _) = self.load_text()?;
+            if now_text != old_text {
+                return Err(conflict(&revision(&now_text)));
+            }
             write_atomically(&self.path, &new_text).map_err(|e| {
                 ProtoError::new(
                     ErrorCode::Internal,
@@ -245,6 +267,7 @@ impl ConfigService {
             file: Some(ConfigFile {
                 path: self.path.to_string_lossy().into_owned(),
                 exists: exists || !dry_run,
+                revision: revision(if dry_run { &old_text } else { &new_text }),
                 document: new_text,
             }),
             warnings,
@@ -408,6 +431,27 @@ fn invalid(path: Option<String>, errors: Vec<String>) -> ProtoError {
     };
     let mut error = ProtoError::new(ErrorCode::ConfigInvalid, message);
     error.detail = Some(Box::new(json!({ "path": path, "errors": errors })));
+    error
+}
+
+/// The opaque revision token for a file's contents: FNV-1a over its bytes.
+///
+/// Not a security boundary — it only has to change when the text does, so a
+/// stale editor is noticed. Stable across builds (unlike `DefaultHasher`).
+#[must_use]
+pub fn revision(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn conflict(current: &str) -> ProtoError {
+    let mut error = ProtoError::new(
+        ErrorCode::Conflict,
+        "the configuration file changed since it was read; reload it and apply the edit again",
+    );
+    error.detail = Some(Box::new(json!({ "revision": current })));
     error
 }
 
@@ -649,6 +693,13 @@ mod tests {
 
     fn defaults() -> Value {
         to_json(&Config::default())
+    }
+
+    #[test]
+    fn revision_tracks_content_and_is_stable() {
+        assert_eq!(revision(""), "fnv1a64:cbf29ce484222325");
+        assert_eq!(revision("a"), "fnv1a64:af63dc4c8601ec8c");
+        assert_ne!(revision("[grammar]\n"), revision("[grammar] \n"));
     }
 
     #[test]

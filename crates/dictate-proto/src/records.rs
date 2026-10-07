@@ -90,6 +90,11 @@ pub struct ConfigFile {
     /// The file's contents; empty when it does not exist.
     #[serde(default)]
     pub document: String,
+    /// An opaque token that changes whenever `document` does. Send it back as
+    /// `set_config.base_revision` to refuse a write that would overwrite an
+    /// edit made since this snapshot was read.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub revision: String,
 }
 
 // ---------------------------------------------------------------------------

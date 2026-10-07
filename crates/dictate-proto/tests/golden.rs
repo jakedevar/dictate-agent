@@ -309,6 +309,7 @@ fn golden_command_crud() {
             entries: vec![ConfigEntry::new("whisper.model", json!("large-v3-turbo"))],
             document: None,
             dry_run: false,
+            base_revision: None,
         },
         json!({
             "type": "set_config",
@@ -322,12 +323,29 @@ fn golden_command_crud() {
             entries: vec![],
             document: Some("[grammar]\nenabled = true\n".into()),
             dry_run: true,
+            base_revision: None,
         },
         json!({
             "type": "set_config",
             "entries": [],
             "document": "[grammar]\nenabled = true\n",
             "dry_run": true
+        }),
+    );
+    // A guarded write: refused as `conflict` if the file moved on since the
+    // client read revision `base_revision`.
+    pin(
+        "set_config_guarded",
+        Command::SetConfig {
+            entries: vec![ConfigEntry::new("grammar.enabled", json!(true))],
+            document: None,
+            dry_run: false,
+            base_revision: Some("fnv1a64:0123456789abcdef".into()),
+        },
+        json!({
+            "type": "set_config",
+            "entries": [{"path": "grammar.enabled", "value": true}],
+            "base_revision": "fnv1a64:0123456789abcdef"
         }),
     );
     pin(
@@ -1120,6 +1138,7 @@ fn golden_config_snapshot() {
                 path: "/home/user/.config/dictate-agent/config.toml".into(),
                 exists: true,
                 document: "# mine\n[grammar]\nenabled = true\n".into(),
+                revision: "fnv1a64:0123456789abcdef".into(),
             }),
             warnings: vec!["unknown section [editor] ignored".into()],
             errors: vec![],
@@ -1133,7 +1152,8 @@ fn golden_config_snapshot() {
             "file": {
                 "path": "/home/user/.config/dictate-agent/config.toml",
                 "exists": true,
-                "document": "# mine\n[grammar]\nenabled = true\n"
+                "document": "# mine\n[grammar]\nenabled = true\n",
+                "revision": "fnv1a64:0123456789abcdef"
             },
             "warnings": ["unknown section [editor] ignored"],
             "dry_run": true

@@ -85,7 +85,7 @@ pub enum Command {
     /// Write configuration. Applied atomically: either every entry validates
     /// and is written, or none is.
     ///
-    /// `document` and `dry_run` were added before any daemon implemented
+    /// `document`, `dry_run` and `base_revision` were added before any daemon implemented
     /// `set_config` (every earlier daemon answers `unsupported_command`), so no
     /// server exists that would silently ignore them and write anyway.
     SetConfig {
@@ -99,6 +99,15 @@ pub enum Command {
         /// Validate and report what would change without writing anything.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         dry_run: bool,
+        /// Optimistic concurrency: the [`ConfigFile::revision`] the client's
+        /// edit was based on. When present and the file has changed since,
+        /// the write is refused as `conflict` and nothing is written, so a
+        /// stale editor never overwrites a newer file. Absent writes
+        /// unconditionally.
+        ///
+        /// [`ConfigFile::revision`]: crate::records::ConfigFile::revision
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_revision: Option<String>,
     },
 
     /// List personal-dictionary entries.
@@ -486,6 +495,7 @@ mod tests {
             entries: vec![],
             document: None,
             dry_run: false,
+            base_revision: None,
         }
         .is_permitted(&remote));
         // ...or read the host's dictation history.
@@ -511,6 +521,7 @@ mod tests {
                 entries: vec![],
                 document: None,
                 dry_run: false,
+                base_revision: None,
             },
             Command::QueryHistory {
                 query: HistoryQuery::default(),
@@ -545,6 +556,7 @@ mod tests {
             entries: vec![],
             document: None,
             dry_run: false,
+            base_revision: None,
         }
         .mutates());
         assert!(Command::DeleteSnippet { id: 3 }.mutates());
@@ -570,6 +582,7 @@ mod tests {
                 entries: vec![],
                 document: None,
                 dry_run: false,
+                base_revision: None,
             },
             Command::DeleteSnippet { id: 1 },
             Command::EndAudioStream { stream_id: 1 },

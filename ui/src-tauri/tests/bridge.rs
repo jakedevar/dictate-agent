@@ -137,6 +137,7 @@ async fn results_and_errors_pass_through_intact() {
             entries: vec![ConfigEntry::new("grammar.timeout_s", json!(0))],
             document: None,
             dry_run: false,
+            base_revision: None,
         })
         .await
         .unwrap_err();

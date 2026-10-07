@@ -82,12 +82,14 @@ pub async fn set_config(
     entries: Option<Vec<ConfigEntry>>,
     document: Option<String>,
     dry_run: Option<bool>,
+    base_revision: Option<String>,
 ) -> Reply {
     bridge
         .request(Command::SetConfig {
             entries: entries.unwrap_or_default(),
             document,
             dry_run: dry_run.unwrap_or(false),
+            base_revision,
         })
         .await
 }

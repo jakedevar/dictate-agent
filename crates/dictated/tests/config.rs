@@ -42,6 +42,7 @@ fn set(entries: Vec<ConfigEntry>) -> Command {
         entries,
         document: None,
         dry_run: false,
+        base_revision: None,
     }
 }
 
@@ -141,13 +142,28 @@ async fn a_write_round_trips_and_preserves_comments_and_unknown_keys() {
         ]))
         .await,
     );
-    assert_eq!(
-        s.applied,
-        vec![
-            "grammar.enabled",
-            "grammar.timeout_s",
-            "vad.trailing_silence_ms"
-        ]
+    for key in [
+        "grammar.enabled",
+        "grammar.timeout_s",
+        "vad.trailing_silence_ms",
+    ] {
+        assert!(s.applied.iter().any(|k| k == key), "{key}: {:?}", s.applied);
+    }
+    // The fixture has no [format.llm], so [grammar] is the deprecated alias
+    // the loader maps onto it (S21): the effective LLM switch moves too, and
+    // the snapshot says so. Nothing outside the written keys and that alias
+    // changes.
+    assert!(
+        s.applied.iter().any(|k| k == "format.llm.enabled"),
+        "{:?}",
+        s.applied
+    );
+    assert!(
+        s.applied.iter().all(|k| k.starts_with("grammar.")
+            || k.starts_with("format.llm.")
+            || k.starts_with("vad.")),
+        "{:?}",
+        s.applied
     );
     // None of these is applied live, and the daemon says so.
     assert_eq!(s.restart_required, s.applied);
@@ -254,6 +270,7 @@ async fn invalid_writes_are_config_invalid_with_the_offending_path_and_change_no
             entries: vec![],
             document: Some("[grammar\nenabled = true\n".into()),
             dry_run: false,
+            base_revision: None,
         })
         .await
         .unwrap_err();
@@ -263,6 +280,7 @@ async fn invalid_writes_are_config_invalid_with_the_offending_path_and_change_no
             entries: vec![],
             document: Some("[grammar]\ntimeout_s = -1.0\n".into()),
             dry_run: false,
+            base_revision: None,
         })
         .await
         .unwrap_err();
@@ -277,6 +295,7 @@ async fn invalid_writes_are_config_invalid_with_the_offending_path_and_change_no
             entries: vec![ConfigEntry::new("grammar.enabled", json!(true))],
             document: Some(String::new()),
             dry_run: false,
+            base_revision: None,
         })
         .await
         .unwrap_err();
@@ -302,6 +321,7 @@ async fn a_whole_document_write_and_a_dry_run() {
             entries: vec![],
             document: Some(proposed.into()),
             dry_run: true,
+            base_revision: None,
         })
         .await,
     );
@@ -324,6 +344,7 @@ async fn a_whole_document_write_and_a_dry_run() {
             entries: vec![],
             document: Some(proposed.into()),
             dry_run: false,
+            base_revision: None,
         })
         .await,
     );
@@ -516,5 +537,79 @@ async fn context_profiles_read_and_write_back_in_their_configured_shape() {
     // And the daemon's own loader accepts what was written.
     let (_, report) = dictate_core::config::parse_config(&written).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
+    h.stop().await;
+}
+
+/// A stale editor must never overwrite a newer file: not another client's
+/// write, and not a hand edit made after the snapshot was read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_based_on_a_stale_revision_is_a_conflict_and_changes_nothing() {
+    let (h, path) = harness_with_file(Some(FIXTURE)).await;
+    let mut c = h.client().await;
+
+    let read = snapshot(c.request(Command::GetConfig { path: None }).await);
+    let base = read.file.expect("whole-tree reads carry the file").revision;
+    assert!(base.starts_with("fnv1a64:"), "{base}");
+
+    // A guarded write at the current revision goes through and reports the
+    // revision of what it wrote.
+    let s = snapshot(
+        c.request(Command::SetConfig {
+            entries: vec![ConfigEntry::new("grammar.enabled", json!(true))],
+            document: None,
+            dry_run: false,
+            base_revision: Some(base.clone()),
+        })
+        .await,
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    let after = s.file.expect("a write carries the file");
+    assert_eq!(after.document, written);
+    assert_ne!(after.revision, base, "the revision moves with the file");
+
+    // The same base is now stale: refused, nothing written.
+    let err = c
+        .request(Command::SetConfig {
+            entries: vec![ConfigEntry::new("grammar.min_words", json!(9))],
+            document: None,
+            dry_run: false,
+            base_revision: Some(base.clone()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+    assert_eq!(
+        err.detail.as_ref().and_then(|d| d.get("revision")),
+        Some(&json!(after.revision)),
+        "the conflict names the revision to reload"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+
+    // A hand edit behind the UI's back is caught the same way, including for
+    // a whole-document (raw editor) write.
+    let hand = format!("{written}\n# edited by hand\n");
+    std::fs::write(&path, &hand).unwrap();
+    let err = c
+        .request(Command::SetConfig {
+            entries: vec![],
+            document: Some("[grammar]\nenabled = false\n".into()),
+            dry_run: false,
+            base_revision: Some(after.revision.clone()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), hand);
+
+    // An unguarded write still works (CLI-style), and a fresh read sees it.
+    snapshot(
+        c.request(set(vec![ConfigEntry::new("grammar.min_words", json!(9))]))
+            .await,
+    );
+    let fresh = snapshot(c.request(Command::GetConfig { path: None }).await)
+        .file
+        .unwrap();
+    assert_eq!(fresh.document, std::fs::read_to_string(&path).unwrap());
+    assert!(fresh.document.contains("# edited by hand"));
     h.stop().await;
 }

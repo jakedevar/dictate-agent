@@ -559,12 +559,14 @@ async fn dispatch(
             entries,
             document,
             dry_run,
+            base_revision,
         } => {
             let service = config_service(deps)?;
-            let snapshot =
-                tokio::task::spawn_blocking(move || service.write(entries, document, dry_run))
-                    .await
-                    .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            let snapshot = tokio::task::spawn_blocking(move || {
+                service.write(entries, document, dry_run, base_revision.as_deref())
+            })
+            .await
+            .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
             Ok(CommandResult::Config(snapshot))
         }
 

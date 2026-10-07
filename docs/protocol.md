@@ -190,7 +190,7 @@ All commands are objects tagged with `type`.
 | `subscribe` | `events?` (names; empty = all) | — |
 | `unsubscribe` | — | — |
 | `get_config` | `path?` | `config_read` |
-| `set_config` | `entries[]`, `document?`, `dry_run?` | `config_write` |
+| `set_config` | `entries[]`, `document?`, `dry_run?`, `base_revision?` | `config_write` |
 | `list_dictionary` | `query?`, `limit?` | `dictionary_read` |
 | `upsert_dictionary_entry` | `entry` | `dictionary_write` |
 | `delete_dictionary_entry` | `id` | `dictionary_write` |
@@ -253,7 +253,8 @@ as `config_invalid`.
 - `get_config` answers a `config` result. `values` is every key with the value
   the configuration file resolves to, built-in defaults included — what the
   daemon runs after a restart. A whole-tree read also carries
-  `file: {path, exists, document}` (the user's file, comments and all) and the
+  `file: {path, exists, document, revision}` (the user's file, comments and
+  all, and an opaque token that changes whenever its text does) and the
   loader's `warnings` (unknown keys, mapped legacy spellings — the list
   `dictated --check-config` prints). If the file on disk cannot be resolved,
   `errors` says why and `values` falls back to the running configuration.
@@ -275,7 +276,15 @@ as `config_invalid`.
   daemon uses — a plain read reports these too). Only `history.privacy_mode`
   applies live today; `get_status` reports the privacy mode in force.
 - `dry_run: true` validates and reports without writing; `file.document` is
-  then the text that would have been written.
+  then the text that would have been written (`file.revision` stays that of
+  the file on disk).
+- **No lost updates.** Send the `file.revision` an edit was based on as
+  `base_revision`; if the file has changed since (another client's write or a
+  hand edit), the write is `conflict` with `detail: {"revision": <current>}`
+  and nothing is written. Independently of `base_revision`, the daemon
+  re-reads the file just before the rename and answers `conflict` if it
+  changed while the write was being validated. Without `base_revision` a
+  write applies to whatever the file holds at the time.
 
 ```json
 {"type":"set_config","entries":[],"document":"[grammar]\nenabled = true\n","dry_run":true}
@@ -533,7 +542,7 @@ the protocol crate — bearer-token auth is S33's mechanism.
 | `handshake` | ServerHello |
 | `status` | Status |
 | `session_started` / `session_stopped` / `session_cancelled` | `session_id` |
-| `config` | `values`, `path?`, `applied[]`, `restart_required[]`, `file?` (`path`, `exists`, `document`), `warnings[]`, `errors[]`, `dry_run?` |
+| `config` | `values`, `path?`, `applied[]`, `restart_required[]`, `file?` (`path`, `exists`, `document`, `revision?`), `warnings[]`, `errors[]`, `dry_run?` |
 | `dictionary` / `snippets` | `entries[]` / `snippets[]` |
 | `dictionary_entry` / `snippet` | the stored record, with server-assigned `id` |
 | `deleted` | `id` |
