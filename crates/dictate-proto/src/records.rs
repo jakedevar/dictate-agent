@@ -225,6 +225,23 @@ impl Snippet {
     }
 }
 
+/// A quick voice note kept in the local scratchpad (S35).
+///
+/// Notes live in the history database, so they obey privacy mode (nothing is
+/// stored while it is on) and the history retention window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    /// Server-assigned identifier. Never reused after a delete.
+    pub id: i64,
+    /// When the note was saved, milliseconds since the Unix epoch.
+    pub ts_ms: i64,
+    /// The note text, as it would have been typed (rules chain applied).
+    pub text: String,
+    /// Whitespace-separated word count of [`Note::text`].
+    #[serde(default)]
+    pub word_count: u32,
+}
+
 pub(crate) fn default_true() -> bool {
     true
 }

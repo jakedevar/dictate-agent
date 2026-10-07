@@ -83,3 +83,16 @@ CREATE TABLE IF NOT EXISTS history_imports (
     imported_at TEXT NOT NULL,
     row_count INTEGER NOT NULL
 );
+
+-- S35 scratchpad. Additive: one new table, `interactions` is untouched. It
+-- lives in this database so notes obey the same privacy mode and retention
+-- window as dictations. Timestamps are milliseconds since the Unix epoch.
+-- AUTOINCREMENT so a deleted note's id is never handed to a later note.
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at_ms INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    word_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS notes_created_at_ms ON notes (created_at_ms);

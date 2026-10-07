@@ -617,6 +617,8 @@ pub enum Notice {
     Cancelled,
     /// A timer was set.
     TimerSet(String),
+    /// A scratchpad note was saved (S35); carries the saved text.
+    NoteSaved(String),
     /// Injection failed or became clipboard-only; never overwrite clipboard.
     InjectionFailed(String),
     /// Selection rewrite preview; does not change the clipboard.
@@ -665,6 +667,7 @@ impl StatusNotifier for DesktopNotifier {
             Notice::Cancelled => n.cancelled(),
             Notice::TimerSet(msg) => n.timer_set(&msg),
             Notice::Error(msg) => n.error(&msg),
+            Notice::NoteSaved(text) => n.note_saved(&text),
             Notice::InjectionFailed(msg) => n.injection_failed(&msg),
             Notice::EditPreview(msg) => n.edit_preview(&msg),
             Notice::EditError(msg) => n.edit_error(&msg),

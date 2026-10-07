@@ -44,7 +44,7 @@ fn encoded_size(payload_bytes: usize) -> u64 {
 
 /// Parse `--route`, refusing a route this build does not know rather than
 /// forwarding a typo that would silently fall through to the router.
-fn parse_route(name: &str) -> Result<Route> {
+pub(crate) fn parse_route(name: &str) -> Result<Route> {
     let route = Route::from(name);
     if !route.is_known() {
         let known: Vec<&str> = Route::known().iter().map(Route::as_str).collect();

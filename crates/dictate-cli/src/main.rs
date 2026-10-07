@@ -12,13 +12,14 @@
 mod client;
 mod dict;
 mod doctor;
+mod notes;
 mod render;
 mod safe;
 mod snippet;
 mod upload;
 
 use anyhow::{bail, Result};
-use dictate_proto::{Command, CommandResult, DictationMode, Event, HistoryQuery};
+use dictate_proto::{Command, CommandResult, DictationMode, Event, HistoryQuery, SessionOptions};
 
 use crate::client::Client;
 
@@ -41,20 +42,22 @@ COMMANDS:
     snippet <ACTION>    list|add|rm|enable|disable  (spoken trigger → stored text)
                         add PHRASE --sounds-like ALIASES --app APP
                         import/export [FILE|-] (JSON lines; default stdin/stdout)
+    notes [ACTION]      list|search Q|show N|copy N|rm N|new  (the voice-note scratchpad)
+                        say 'note: ...' or 'note to self ...' while dictating, or use `notes new`
     transcribe <FILE>   Transcribe a WAV file through the daemon and print the text
     doctor              Check every dependency and say how to fix what is broken
     model pull [NAME]   Download and SHA-256 verify a pinned GGUF (default large-v3-turbo)
     model list          List catalog models and local verification state
 
 OPTIONS:
-    --limit <N>         history: rows to return (default 20)
-    --text <QUERY>      history: substring to match
+    --limit <N>         history / notes list: rows to return (default 20 / 100)
+    --text <QUERY>      history / notes list: substring to match
     --errors            history: only sessions that failed
-    --purge             history: permanently delete all stored dictations
+    --purge             history: permanently delete all stored dictations and notes
     --analytics         history: show WPM, daily words, and streaks
     --events <A,B>      tail: only these event types
     --inject            transcribe: type the result into the focused window
-    --route <R>         transcribe: force a route (type, local, timer, ...)
+    --route <R>         start, transcribe: force a route (type, local, timer, note, ...)
     --privacy           transcribe: persist nothing about this session
     --quick             doctor: skip the slow checks (hashing the model file)
     --json              print raw protocol JSON instead of a summary
@@ -109,10 +112,19 @@ async fn run() -> Result<i32> {
     match command.as_str() {
         "toggle" => toggle(&mut client, &args).await,
         "start" => {
+            let options = args
+                .route
+                .as_deref()
+                .map(upload::parse_route)
+                .transpose()?
+                .map(|route| SessionOptions {
+                    route: Some(route),
+                    ..SessionOptions::default()
+                });
             let result = client
                 .request(Command::StartDictation {
                     mode: DictationMode::Toggle,
-                    options: None,
+                    options,
                 })
                 .await?;
             render::result(&result, args.json);
@@ -142,6 +154,16 @@ async fn run() -> Result<i32> {
         "history" => history(&mut client, &args).await,
         "dict" => dict::run(&mut client, &args.dict_args, args.json).await,
         "snippet" => snippet::run(&mut client, &args.dict_args, args.json).await,
+        "notes" => {
+            notes::run(
+                &mut client,
+                &args.dict_args,
+                args.limit,
+                args.text.clone(),
+                args.json,
+            )
+            .await
+        }
         "transcribe" => {
             let Some(file) = args.file.clone() else {
                 eprintln!("dictate: transcribe needs a WAV file\n");
@@ -427,7 +449,7 @@ impl Args {
                             .ok_or_else(|| anyhow::anyhow!("--socket needs a value"))?,
                     )
                 }
-                other if matches!(out.command.as_deref(), Some("dict" | "snippet")) => {
+                other if matches!(out.command.as_deref(), Some("dict" | "snippet" | "notes")) => {
                     out.dict_args.push(other.to_string())
                 }
                 other if other.starts_with('-') => bail!("unknown option '{other}'"),

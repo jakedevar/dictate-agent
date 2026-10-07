@@ -108,6 +108,12 @@ impl Notifier {
         );
     }
 
+    /// A scratchpad note was saved. The note text is the body, truncated.
+    pub fn note_saved(&self, text: &str) {
+        let preview: String = text.chars().take(120).collect();
+        self.notify("Note saved", &preview, "document-save", None);
+    }
+
     pub fn edit_preview(&self, replacement: &str) {
         self.notify("Edit preview", replacement, "document-edit", Some(10000));
     }

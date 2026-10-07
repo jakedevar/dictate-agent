@@ -7,17 +7,17 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{error, info};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 // S02 deliberately gives the Rust daemon a distinct database from the live
 // Python daemon. S30 can optionally import the latter read-only.
 const DEFAULT_DB_DIR: &str = "dictated";
 
 pub struct HistoryStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
     session_id: String,
-    enabled: bool,
+    pub(crate) enabled: bool,
     privacy_mode: bool,
-    retention_days: Option<u32>,
+    pub(crate) retention_days: Option<u32>,
     db_path: Option<PathBuf>,
 }
 
@@ -107,11 +107,26 @@ impl HistoryStore {
         }
 
         let mut conn = Connection::open(&db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Switching a fresh file to WAL can report SQLITE_BUSY without invoking
+        // the busy handler when another opener is doing the same; retry it.
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match conn.execute_batch("PRAGMA journal_mode=WAL") {
+                Ok(()) => break,
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        conn.execute_batch("PRAGMA secure_delete=ON")?;
 
-        // Install the current schema then migrate v1/Python databases in place.
-        conn.execute_batch(include_str!("../../../sql/schema.sql"))?;
-        migrate(&mut conn)?;
+        // Install the schema, migrate v1/Python databases in place and stamp
+        // the version in ONE transaction (see `install_schema`).
+        install_schema(&mut conn, |_| Ok(()))?;
 
         let session_id = uuid::Uuid::new_v4().to_string()[..12].to_string();
         info!(
@@ -180,18 +195,23 @@ impl HistoryStore {
         crate::query::query(&self.conn, q)
     }
 
-    /// Remove every persisted interaction and return the number removed.
+    /// Remove every persisted interaction **and note** and return the number of
+    /// rows removed (dictations plus notes).
     pub fn purge(&self) -> Result<u64> {
         if !self.enabled {
             return Ok(0);
         }
         let removed = self.conn.execute("DELETE FROM interactions", [])? as u64;
+        // An explicit privacy purge clears the scratchpad too: notes are
+        // history-class data in the same file, and a purge that left them
+        // behind would not do what it says.
+        let notes = self.conn.execute("DELETE FROM notes", [])? as u64;
         // secure_delete overwrites deleted cells in the main database. A WAL
         // checkpoint plus VACUUM removes residual pages from both files so an
         // explicit privacy purge is stronger than ordinary retention cleanup.
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM")?;
-        Ok(removed)
+        Ok(removed + notes)
     }
 
     /// Enforce the configured retention window now and after each commit.
@@ -202,10 +222,17 @@ impl HistoryStore {
         let Some(days) = self.retention_days else {
             return Ok(0);
         };
-        let cutoff = (Utc::now() - Duration::days(i64::from(days))).to_rfc3339();
-        Ok(self
-            .conn
-            .execute("DELETE FROM interactions WHERE timestamp < ?1", [cutoff])? as u64)
+        let cutoff_time = Utc::now() - Duration::days(i64::from(days));
+        let removed = self.conn.execute(
+            "DELETE FROM interactions WHERE timestamp < ?1",
+            [cutoff_time.to_rfc3339()],
+        )? as u64;
+        // Notes share the history window (S35).
+        let notes = self.conn.execute(
+            "DELETE FROM notes WHERE created_at_ms < ?1",
+            [cutoff_time.timestamp_millis()],
+        )? as u64;
+        Ok(removed + notes)
     }
 
     /// Return WPM, daily word totals, and active-day streaks.
@@ -356,6 +383,18 @@ impl HistoryStore {
     }
 
     fn insert(&self, i: &Interaction, total_duration: f64) -> rusqlite::Result<()> {
+        // A scratchpad note's body lives in `notes` and nowhere else, so that
+        // deleting the note removes its only copy. Its interaction row keeps
+        // the route, timings and word count but no text, and so nothing for
+        // `interactions_fts` to index.
+        let is_note = i.route_type.as_deref() == Some("note");
+        let text = |value: &Option<String>| -> Option<String> {
+            if is_note {
+                None
+            } else {
+                value.clone()
+            }
+        };
         self.conn.execute(
             "INSERT INTO interactions (
                 session_id, timestamp, audio_duration_s,
@@ -379,11 +418,11 @@ impl HistoryStore {
                 i.session_id,
                 i.timestamp,
                 i.audio_duration_s,
-                i.raw_transcription,
-                i.corrected_transcription,
+                text(&i.raw_transcription),
+                text(&i.corrected_transcription),
                 i.transcription_duration_s,
-                i.grammar_input,
-                i.grammar_output,
+                text(&i.grammar_input),
+                text(&i.grammar_output),
                 i.grammar_changed as i32,
                 i.grammar_error,
                 i.grammar_duration_s,
@@ -391,8 +430,8 @@ impl HistoryStore {
                 i.route_model,
                 i.route_trigger,
                 i.route_confidence,
-                i.prompt_sent,
-                i.response_text,
+                text(&i.prompt_sent),
+                text(&i.response_text),
                 i.execution_model,
                 i.execution_duration_s,
                 i.execution_success.map(|b| b as i32),
@@ -435,7 +474,63 @@ fn default_python_db_path() -> PathBuf {
         .join(".local/share/dictate-agent/history.db")
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
+/// The version stamped in `schema_version`, or 0 for a database that has no
+/// such table (brand new) or an empty one (an interrupted pre-atomic upgrade).
+fn stored_version(conn: &Connection) -> Result<i64> {
+    if !table_exists(conn, "schema_version")? {
+        return Ok(0);
+    }
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Install the schema, migrate old shapes and stamp the version atomically.
+///
+/// Everything runs inside a single `BEGIN IMMEDIATE` transaction:
+///
+/// * the write lock is taken *before* the stored version is read, so a
+///   concurrent opener waits and then sees the finished migration instead of
+///   running `ALTER TABLE` a second time;
+/// * a database stamped newer than this binary is refused before any schema
+///   statement runs, and is left exactly as found;
+/// * a failure or crash at any point rolls back to the old version with
+///   nothing half-applied (SQLite DDL is transactional);
+/// * an already-current database skips the schema, the column checks and the
+///   FTS rebuild entirely.
+///
+/// `before_stamp` runs after the schema and migration but before the version
+/// is written; tests use it to inject a failure at the worst moment.
+fn install_schema(
+    conn: &mut Connection,
+    before_stamp: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
+) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let stored = stored_version(&tx)?;
+    anyhow::ensure!(
+        stored <= i64::from(SCHEMA_VERSION),
+        "history database is schema version {stored}, newer than this dictated \
+         (supports up to {SCHEMA_VERSION}); refusing to open or modify it. \
+         Upgrade dictated or point [history] db_path at another file"
+    );
+    if stored == i64::from(SCHEMA_VERSION) {
+        return Ok(());
+    }
+    tx.execute_batch(include_str!("../../../sql/schema.sql"))?;
+    migrate(&tx)?;
+    before_stamp(&tx)?;
+    tx.execute("DELETE FROM schema_version", [])?;
+    tx.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        [SCHEMA_VERSION],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn migrate(conn: &Connection) -> Result<()> {
     // SQLite's CREATE IF NOT EXISTS never adds columns to an existing table.
     for (name, ty) in [
         ("capture_duration_ms", "REAL"),
@@ -452,11 +547,6 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             conn.execute_batch(&format!("ALTER TABLE interactions ADD COLUMN {name} {ty}"))?;
         }
     }
-    conn.execute("DELETE FROM schema_version", [])?;
-    conn.execute(
-        "INSERT INTO schema_version (version) VALUES (?1)",
-        [SCHEMA_VERSION],
-    )?;
     // Backfill the external-content FTS table after creating it over old rows.
     conn.execute(
         "INSERT INTO interactions_fts(interactions_fts) VALUES ('rebuild')",
@@ -631,6 +721,153 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file("/tmp/dictate-agent-test-history-commit.db");
+    }
+
+    fn tables(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn version_rows(conn: &Connection) -> Vec<i64> {
+        conn.prepare("SELECT version FROM schema_version")
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    /// A schema-version-2 database: a real dictation row, no `notes` table.
+    fn create_v2_database(path: &Path) {
+        {
+            let store = HistoryStore::new(&config(path.to_path_buf())).unwrap();
+            store.commit(&Interaction {
+                session_id: "legacy".into(),
+                timestamp: "2026-01-02T00:00:00+00:00".into(),
+                raw_transcription: Some("raw".into()),
+                corrected_transcription: Some("Corrected.".into()),
+                completed: true,
+                ..Default::default()
+            });
+            store
+                .connection()
+                .execute_batch(
+                    "DROP TABLE notes;
+                     DELETE FROM schema_version; INSERT INTO schema_version VALUES (2);",
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_upgrade_leaves_a_v2_database_at_v2_with_nothing_half_applied() {
+        let path = temp_db("atomic-v2");
+        create_v2_database(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        // Fail after the schema and migration ran, right before the stamp.
+        let err = install_schema(&mut conn, |tx| {
+            assert!(table_exists(tx, "notes").unwrap(), "notes created in-tx");
+            anyhow::bail!("injected stamp failure")
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("injected"));
+        assert!(!table_exists(&conn, "notes").unwrap());
+        assert_eq!(version_rows(&conn), [2]);
+        drop(conn);
+        // A retry recovers and keeps the dictation.
+        let store = HistoryStore::new(&config(path.clone())).unwrap();
+        assert_eq!(version_rows(store.connection()), [3]);
+        let n: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM interactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn a_crash_mid_upgrade_rolls_back_to_the_old_version() {
+        let path = temp_db("atomic-crash");
+        create_v1_database(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        // A panic unwinds with the transaction open and the connection dropped
+        // without commit, which is what a killed process looks like to SQLite.
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = install_schema(&mut conn, |_| panic!("simulated crash"));
+        }));
+        assert!(crashed.is_err());
+        drop(conn);
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(version_rows(&conn), [1]);
+        assert!(!column_exists(&conn, "interactions", "word_count").unwrap());
+        assert!(!table_exists(&conn, "notes").unwrap());
+        assert!(!table_exists(&conn, "interactions_fts").unwrap());
+        drop(conn);
+        // And the next open completes the upgrade.
+        let store = HistoryStore::new(&config(path)).unwrap();
+        assert_eq!(version_rows(store.connection()), [SCHEMA_VERSION as i64]);
+        assert!(column_exists(store.connection(), "interactions", "word_count").unwrap());
+    }
+
+    #[test]
+    fn failed_first_open_leaves_an_empty_database() {
+        let path = temp_db("atomic-fresh");
+        let mut conn = Connection::open(&path).unwrap();
+        let _ = install_schema(&mut conn, |_| anyhow::bail!("injected")).unwrap_err();
+        assert!(tables(&conn).is_empty(), "{:?}", tables(&conn));
+    }
+
+    #[test]
+    fn a_newer_database_is_refused_and_left_untouched() {
+        let path = temp_db("newer");
+        {
+            // Only a version table, stamped from the future: if schema.sql
+            // ever ran against it, `interactions` would appear.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+                 INSERT INTO schema_version VALUES (4);
+                 CREATE TABLE future_only (x TEXT); INSERT INTO future_only VALUES ('keep');",
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let err = HistoryStore::new(&config(path.clone()))
+            .err()
+            .expect("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains("newer") && msg.contains('4'), "{msg}");
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(version_rows(&conn), [4]);
+        assert_eq!(tables(&conn), ["future_only", "schema_version"]);
+        drop(conn);
+        // WAL mode may add a -wal file but the main file's pages are unchanged
+        // apart from the journal-mode header bytes; the data must be intact.
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn an_already_current_database_skips_the_schema_and_fts_rebuild() {
+        let path = temp_db("current");
+        drop(HistoryStore::new(&config(path.clone())).unwrap());
+        // Dropping a trigger proves schema.sql is not re-run on a current DB.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TRIGGER interactions_ai").unwrap();
+        drop(conn);
+        let store = HistoryStore::new(&config(path)).unwrap();
+        let n: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'interactions_ai'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
