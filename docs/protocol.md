@@ -671,6 +671,7 @@ Stable check `id`s (order is the order to read them):
 | `stt_model` | the model file exists and, for catalog models, matches the pinned SHA-256 |
 | `stt_backend` | the loaded backend is what the config asked for (CUDA verified against the GPU's process list when `nvidia-smi` is available) |
 | `formatter` | the formatting pass's observed health (see `status.formatter`) |
+| `dictionary` | the personal dictionary database opened (Skipped when `[dictionary] enabled = false`; Fail when it could not be opened, in which case dictation runs without a dictionary and the dictionary capabilities are withdrawn) |
 | `ollama` | the Ollama server answers |
 | `grammar_model` | the `[format.llm]` model ladder: Ok when the preferred (first) model is installed, Warn when a fallback rung will be used, Fail when none is installed (lists the installed alternatives). The id predates S21 and is kept stable |
 | `local_model` | the `local` route's model is installed |

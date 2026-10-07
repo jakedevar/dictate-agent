@@ -41,7 +41,7 @@ use dictate_core::{Engine, EngineHandle, EventBus, Pipeline, ResolvedOptions};
 use dictate_history::HistoryStore;
 use dictate_proto::Capabilities;
 use tokio::sync::Notify;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::paths::{PidFile, RuntimePaths};
 use crate::server::{local_capabilities, DiagnosticsProvider, Server, ServerDeps};
@@ -254,23 +254,17 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         HistoryStore::new(&history_config).context("opening the history database")?,
     ));
 
-    let dictionary = Arc::new(
-        dictate_dict::Dictionary::open(
-            config.dictionary.clone(),
-            config.whisper.initial_prompt.clone(),
-        )
-        .context("opening the dictionary database")?,
-    );
+    let dictionary = open_dictionary(config);
     // The configured rules with the dictionary in its chain slot (S20 ← S22).
     let text_chain = Arc::new(dictate_core::dictionary_stage::assemble_text_chain(
         &config.format,
-        Some(&dictionary),
+        dictionary.as_ref(),
     ));
     let pipeline = Arc::new(Pipeline {
         context: Arc::new(dictate_core::ContextEngine::from_config(
             config.context.clone(),
         )),
-        dictionary: Some(dictionary),
+        dictionary,
         audio,
         stt,
         vad,
@@ -289,6 +283,34 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     });
 
     Ok((pipeline, history, injection_available))
+}
+
+/// Open the personal dictionary, or run without one.
+///
+/// `None` when `[dictionary] enabled = false` (the database is then not even
+/// opened) and when the database cannot be opened: a damaged or unwritable
+/// dictionary must not stop dictation. The daemon logs the failure, withdraws
+/// the dictionary capabilities, and `dictate doctor` reports the `dictionary`
+/// check as failed.
+#[must_use]
+pub fn open_dictionary(config: &Config) -> Option<Arc<dictate_dict::Dictionary>> {
+    if !config.dictionary.enabled {
+        info!("dictionary disabled ([dictionary] enabled = false): its database is not opened");
+        return None;
+    }
+    match dictate_dict::Dictionary::open(
+        config.dictionary.clone(),
+        config.whisper.initial_prompt.clone(),
+    ) {
+        Ok(dictionary) => Some(Arc::new(dictionary)),
+        Err(e) => {
+            error!(
+                "could not open the dictionary database at {}: {e:#}; running without a dictionary",
+                config.dictionary.path().display()
+            );
+            None
+        }
+    }
 }
 
 /// Run the daemon: pipeline, socket, signal shim, and shutdown.

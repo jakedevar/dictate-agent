@@ -78,6 +78,7 @@ impl Doctor {
             stt_model,
             backend,
             self.check_formatter(),
+            self.check_dictionary(),
         ];
         checks.extend(ollama_checks);
         checks.push(self.check_injection().await);
@@ -344,6 +345,31 @@ impl Doctor {
 
     /// Probe Ollama once (per distinct host) and derive the three checks that
     /// depend on it.
+    fn check_dictionary(&self) -> DiagnosticCheck {
+        const ID: &str = "dictionary";
+        const TITLE: &str = "Personal dictionary";
+        let cfg = &self.config.dictionary;
+        if !cfg.enabled {
+            return DiagnosticCheck::skipped(ID, TITLE, "disabled ([dictionary] enabled = false)");
+        }
+        let path = cfg.path();
+        match &self.pipeline.dictionary {
+            Some(_) => DiagnosticCheck::ok(ID, TITLE, format!("open at {}", path.display())),
+            None => DiagnosticCheck::fail(
+                ID,
+                TITLE,
+                format!(
+                    "could not open {}: dictation runs without a dictionary",
+                    path.display()
+                ),
+                format!(
+                    "check the file's permissions or move it aside ({}), then restart dictated",
+                    path.display()
+                ),
+            ),
+        }
+    }
+
     async fn check_ollama(&self) -> Vec<DiagnosticCheck> {
         let llm = &self.config.format.llm;
         let local = &self.config.local;
