@@ -98,8 +98,8 @@ pub fn local_capabilities(injection_available: bool) -> Capabilities {
     // Not implemented in this slice — see `unsupported_command` in `dispatch`.
     caps.features.dictionary_read = true;
     caps.features.dictionary_write = true;
-    caps.features.snippets_read = false;
-    caps.features.snippets_write = false;
+    caps.features.snippets_read = true;
+    caps.features.snippets_write = true;
     // S32. Local only: `remote_transcription_only` never grants these, and
     // `Daemon::start_with` withdraws them when no config service is wired.
     caps.features.config_read = true;
@@ -766,6 +766,27 @@ async fn dispatch(
                 .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
             Ok(CommandResult::Deleted { id })
         }
+        // S24: snippets live in the dictionary's database and share its handle.
+        Command::ListSnippets { query, limit } => {
+            let dictionary = dictionary(deps)?;
+            Ok(CommandResult::Snippets {
+                snippets: dictionary.list_snippets(query.as_deref(), limit),
+            })
+        }
+        Command::UpsertSnippet { snippet } => {
+            let dictionary = dictionary(deps)?.clone();
+            let snippet = tokio::task::spawn_blocking(move || dictionary.upsert_snippet(snippet))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Snippet { snippet })
+        }
+        Command::DeleteSnippet { id } => {
+            let dictionary = dictionary(deps)?.clone();
+            tokio::task::spawn_blocking(move || dictionary.delete_snippet(id))
+                .await
+                .map_err(|e| ProtoError::new(ErrorCode::Internal, e.to_string()))??;
+            Ok(CommandResult::Deleted { id })
+        }
         Command::ListDictionarySuggestions { limit } => {
             let known = dictionary(deps)?.list(None, None);
             let history = deps.history.clone();
@@ -903,18 +924,14 @@ async fn transcribe_audio(
 /// Whether this build can actually perform a command, as distinct from whether
 /// this connection is allowed to ask for it.
 ///
-/// The unimplemented set is owned by later slices: S24 brings snippets and S33
-/// audio streaming (S32 implemented config). Until then the honest answer is
+/// The unimplemented set is owned by later slices: S33 audio streaming (S32
+/// implemented config, S24 snippets). Until then the honest answer is
 /// `unsupported_command` — never a stub that returns an empty list, which a
 /// client would reasonably read as "you have no dictionary entries".
 fn is_implemented(command: &Command) -> bool {
     !matches!(
         command,
-        Command::ListSnippets { .. }
-            | Command::UpsertSnippet { .. }
-            | Command::DeleteSnippet { .. }
-            | Command::BeginAudioStream { .. }
-            | Command::EndAudioStream { .. }
+        Command::BeginAudioStream { .. } | Command::EndAudioStream { .. }
     )
 }
 
@@ -999,7 +1016,9 @@ mod tests {
         let caps = local_capabilities(true);
         assert!(caps.features.dictionary_read);
         assert!(caps.features.dictionary_write);
-        assert!(!caps.features.snippets_read);
+        // S24 implements snippets over the socket.
+        assert!(caps.features.snippets_read);
+        assert!(caps.features.snippets_write);
         // S32 implements configuration over the socket, for local peers.
         assert!(caps.features.config_read);
         assert!(caps.features.config_write);
@@ -1027,10 +1046,11 @@ mod tests {
             limit: None
         }));
         assert!(is_implemented(&Command::GetConfig { path: None }));
-        assert!(!is_implemented(&Command::ListSnippets {
+        assert!(is_implemented(&Command::ListSnippets {
             query: None,
             limit: None
         }));
+        assert!(!is_implemented(&Command::EndAudioStream { stream_id: 1 }));
         // Implemented by this slice.
         assert!(is_implemented(&Command::GetStatus));
         assert!(is_implemented(&Command::Toggle));

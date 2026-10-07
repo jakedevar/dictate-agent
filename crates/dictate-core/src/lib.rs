@@ -40,6 +40,7 @@ pub mod pipeline;
 pub mod ports;
 pub mod router;
 pub mod session;
+pub mod snippet_stage;
 pub mod timer;
 pub mod upload;
 

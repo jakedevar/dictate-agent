@@ -139,6 +139,8 @@ async fn the_llm_pass_gets_the_rules_output_and_the_resolved_context() {
             format_llm: None,
             // Nothing in this sentence is protected.
             protected: Vec::new(),
+            // A live session: snippet variables may read the clipboard.
+            host_variables: true,
         }
     );
     h.stop().await;

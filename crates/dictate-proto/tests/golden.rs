@@ -376,6 +376,44 @@ fn golden_command_crud() {
         }),
     );
     pin(
+        "upsert_snippet",
+        Command::UpsertSnippet {
+            snippet: Snippet {
+                id: Some(3),
+                trigger: "work email".into(),
+                expansion: "me@example.com".into(),
+                enabled: true,
+                category: Some("contact".into()),
+                apps: vec!["slack".into()],
+                hit_count: Some(2),
+            },
+        },
+        json!({
+            "type": "upsert_snippet",
+            "snippet": {
+                "id": 3,
+                "trigger": "work email",
+                "expansion": "me@example.com",
+                "enabled": true,
+                "category": "contact",
+                "apps": ["slack"],
+                "hit_count": 2
+            }
+        }),
+    );
+    // Additive: a snippet from before `apps`/`hit_count` existed still parses,
+    // and a new one without them serializes exactly as it used to.
+    pin(
+        "upsert_snippet_minimal",
+        Command::UpsertSnippet {
+            snippet: Snippet::new("sig", "— Jake"),
+        },
+        json!({
+            "type": "upsert_snippet",
+            "snippet": {"trigger": "sig", "expansion": "— Jake", "enabled": true}
+        }),
+    );
+    pin(
         "delete_snippet",
         Command::DeleteSnippet { id: 9 },
         json!({"type": "delete_snippet", "id": 9}),

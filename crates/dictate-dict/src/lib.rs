@@ -2,14 +2,17 @@
 //! read-only proposals. No dependency on core, hardware, or a language model.
 mod config;
 mod matcher;
+pub mod snippets;
 pub mod store;
 pub mod suggestions;
 pub use config::DictionaryConfig;
 pub use matcher::{Applied, Replacement};
+pub use snippets::{expand as expand_snippet, NoVariables, SnippetMatch, SnippetVariables};
 pub use store::{DictionaryStore, StoredEntry};
 
 use dictate_proto::{AppContext, DictionaryEntry, ProtoError};
 use matcher::Matcher;
+use snippets::SnippetMatcher;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -30,6 +33,9 @@ pub struct Dictionary {
     store: Mutex<DictionaryStore>,
     snapshot: RwLock<Arc<Matcher>>,
     pending: Mutex<HashMap<i64, u64>>,
+    /// S24: snippets share the database and the handle (see `snippets.rs`).
+    snippets: RwLock<Arc<SnippetMatcher>>,
+    snippet_pending: Mutex<HashMap<i64, u64>>,
     static_prompt: Option<String>,
 }
 impl Dictionary {
@@ -45,11 +51,14 @@ impl Dictionary {
     ) -> anyhow::Result<Self> {
         config.validate()?;
         let snapshot = Matcher::new(store.entries()?, &config)?;
+        let snippets = SnippetMatcher::new(store.snippets()?);
         Ok(Self {
             config,
             store: Mutex::new(store),
             snapshot: RwLock::new(Arc::new(snapshot)),
             pending: Mutex::new(HashMap::new()),
+            snippets: RwLock::new(Arc::new(snippets)),
+            snippet_pending: Mutex::new(HashMap::new()),
             static_prompt,
         })
     }
@@ -115,6 +124,7 @@ impl Dictionary {
             .store
             .lock()
             .map_err(|_| anyhow::anyhow!("dictionary store poisoned"))?;
+        self.flush_snippet_hits(&mut store)?;
         let batch = std::mem::take(
             &mut *self
                 .pending
