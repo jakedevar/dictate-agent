@@ -36,10 +36,29 @@ const NOTE_PHRASES: &[&[&str]] = &[
     &["add", "a", "note"],
 ];
 
+/// Whether `rest` (the text right after the last word of a trigger phrase)
+/// ends the phrase: end of text, whitespace, or sentence punctuation.
+///
+/// A hyphen, dash or apostrophe glues the next word on, so "new note-taking
+/// apps", "take a note-taking class" and "quick note's cover" are ordinary
+/// prose, not commands. A deliberate spaced separator ("New note - ship it")
+/// still works because whitespace comes first. A full stop only counts when
+/// it ends a word ("new note.txt" is a file name).
+fn ends_trigger(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => true,
+        Some(c) if c.is_whitespace() => true,
+        Some(':' | ',' | ';' | '!' | '?') => true,
+        Some('.') => chars.next().is_none_or(char::is_whitespace),
+        Some(_) => false,
+    }
+}
+
 /// If `text` opens with a scratchpad trigger, the note body that follows it.
 fn note_body(text: &str) -> Option<&str> {
     let is_sep =
-        |c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '.' | '-' | '–' | '—');
+        |c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '.' | '!' | '?' | '-' | '–' | '—');
     // "note:" / "note," (also unspaced, "note:buy milk").
     for opener in ["note:", "note,"] {
         if text
@@ -67,7 +86,7 @@ fn note_body(text: &str) -> Option<&str> {
             let boundary = if i + 1 < phrase.len() {
                 rest.starts_with(char::is_whitespace)
             } else {
-                rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
+                ends_trigger(rest)
             };
             if !boundary {
                 continue 'phrase;
@@ -270,6 +289,46 @@ mod tests {
         }
         assert_eq!(route("make a note").text, "");
         assert_eq!(route("note:").text, "");
+    }
+
+    #[test]
+    fn compound_nouns_with_a_hyphen_or_apostrophe_are_typed_not_saved() {
+        for text in [
+            "New note-taking apps are useful.",
+            "Take a note-taking class this summer.",
+            "Quick note-taking tips for students",
+            "make a note-worthy change",
+            "add a note–taking step",
+            "new note—taking apps",
+            "note to self-help books are fine",
+            "Quick note's cover is red",
+            "New note\u{2019}s format",
+            "new note.txt is open",
+        ] {
+            let r = route(text);
+            assert_eq!(r.route, RouteType::Type, "{text}");
+            assert_eq!(r.text, text, "typed text is the whole sentence: {text}");
+        }
+    }
+
+    #[test]
+    fn true_triggers_survive_the_stricter_boundary() {
+        for (said, body) in [
+            ("New note - ship it", "ship it"),
+            ("new note – ship it", "ship it"),
+            ("quick note: the meeting moved", "the meeting moved"),
+            ("Quick note, the meeting moved", "the meeting moved"),
+            ("take a note; ship it", "ship it"),
+            ("add a note! ship it", "ship it"),
+            ("note to self: it's fine", "it's fine"),
+            ("New note. Ship it.", "Ship it."),
+            ("new note", ""),
+            ("new note.", ""),
+        ] {
+            let r = route(said);
+            assert_eq!(r.route, RouteType::Note, "{said}");
+            assert_eq!(r.text, body, "{said}");
+        }
     }
 
     #[test]
