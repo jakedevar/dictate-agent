@@ -195,9 +195,9 @@ pub fn validate(c: &Check<'_>) -> Result<(), Rejection> {
     let output_words = words(&output_text);
 
     numbers(&input_words, &output_words)?;
-    number_values(c)?;
     novel_words(c, &input_words, &output_words)?;
     edit_distance(c, &input_words, &output_words)?;
+    number_values(c)?;
     dropped_words(c, &input_words, &output_words)?;
     length_ratio(c)?;
     Ok(())
@@ -891,6 +891,19 @@ fn novel_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(),
     let licensed = licensed_numbers(input);
     let vocabulary: Vec<String> = c.vocabulary.iter().flat_map(|v| words(v)).collect();
 
+    // Reusing a known negation is still an insertion. A bag-of-words check
+    // must not allow a double negative in prose either.
+    for w in NEGATIONS {
+        if c.policy.style != Style::Verbatim
+            && output.iter().filter(|token| token.as_str() == *w).count()
+                > input.iter().filter(|token| token.as_str() == *w).count()
+        {
+            return Err(Rejection::new(
+                Validator::NovelWords,
+                "added negation occurrence",
+            ));
+        }
+    }
     let mut novel = Vec::new();
     for (i, w) in output.iter().enumerate() {
         if known.contains(w.as_str()) || licensed.contains(w.as_str()) {
@@ -1230,7 +1243,7 @@ fn is_cue_at(input: &[&str], k: usize) -> bool {
             && input
                 .get(k + 1)
                 .is_some_and(|n| matches!(*n, "wait" | "sorry" | "actually" | "no" | "#")))
-        || (input[k] == "no" && k > 0 && input[k - 1] == "no")
+        || (input[k] == "no" && k > 0 && (input[k - 1] == "no" || CUES.contains(&input[k - 1])))
 }
 
 fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(), Rejection> {
@@ -1262,11 +1275,6 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     let cue = |k: usize| {
         is_cue_at(input, k)
             || (input[k] == "no" && k > 0 && !kept[k - 1] && kept.get(k + 1) == Some(&true))
-    };
-    let cue_near = |d: usize| {
-        let lo = d.saturating_sub(3);
-        let hi = (d + 7).min(input.len());
-        (lo..hi).any(cue)
     };
     // A numbered list absorbs the spoken enumerators ("first…", "two…",
     // "finally…") into its markers.
@@ -1312,7 +1320,7 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
         while d < input.len() && !kept[d] {
             d += 1;
         }
-        let restart = (d..(d + 6).min(input.len())).any(|j| kept[j] && input[j] == input[start]);
+        let restart = d < input.len() && kept[d] && input[d] == input[start];
         let modal_restart = input.get(start..start + 2) == Some(&["can", "you"])
             && input.get(d..d + 2) == Some(&["could", "you"]);
         let repeated =
@@ -1328,6 +1336,37 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
         // A cue must actually be inside the deleted retraction before a
         // restart. Mere proximity to "actually" cannot license a lost not.
         let retracted = |k: usize| restart && (k + 1..d).any(cue);
+        let correction_run = (start..d).any(cue);
+        let grammar_swap = |k: usize| {
+            if c.policy.style == Style::Verbatim {
+                return false;
+            }
+            let modal = |w: &str| {
+                matches!(
+                    w,
+                    "can"
+                        | "could"
+                        | "should"
+                        | "would"
+                        | "will"
+                        | "do"
+                        | "does"
+                        | "did"
+                        | "is"
+                        | "are"
+                )
+            };
+            let swapped = |a: &str, b: &str| output.windows(2).any(|pair| pair == [b, a]);
+            (k > 0 && modal(input[k - 1]) && swapped(input[k - 1], input[k]))
+                || (k + 1 < input.len() && modal(input[k + 1]) && swapped(input[k], input[k + 1]))
+        };
+        let repair_scaffold = |k: usize| {
+            input[k] == "it"
+                && k > 0
+                && input[k - 1] == "make"
+                && input.get(k + 1) == Some(&"#")
+                && (start..k).any(cue)
+        };
         for (k, &w) in input.iter().enumerate().take(d).skip(start) {
             let negation = NEGATIONS.contains(&w);
             let explained = if negation {
@@ -1354,8 +1393,11 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
                     || (repeated(k) && in_output.contains(w))
                     || restart
                     || modal_restart
+                    || grammar_swap(k)
+                    || repair_scaffold(k)
             } else {
                 DELETABLE.contains(&w)
+                    || w == "#" // Complete numeric values already validated above.
                     || phrase_filler(k)
                     || (repeated(k) && in_output.contains(w))
                     || joined(k)
@@ -1363,7 +1405,7 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
                     || unit_of_number(k)
                     || enumerator(w)
                     || vocab_replaced(k)
-                    || cue_near(k)
+                    || correction_run
                     || restart
                     || modal_restart
             };
@@ -1806,6 +1848,16 @@ mod tests {
     }
 
     #[test]
+    fn prose_cannot_duplicate_a_dictated_negation() {
+        for category in ["chat", "document", "email"] {
+            assert_eq!(
+                rejected_by(run("do not deploy", "Do not not deploy.", category)),
+                Validator::NovelWords
+            );
+        }
+    }
+
+    #[test]
     fn a_single_grammatical_swap_is_not_a_reorder() {
         run(
             "so you can check the logs",
@@ -1915,7 +1967,19 @@ mod tests {
                 ("no deployments today", "Deployments today."),
                 ("she said he deploys", "She said deploys."),
                 ("I know the answer", "I the answer."),
+                (
+                    "I ask for help and I wait here",
+                    "Ask for help and I wait here.",
+                ),
                 ("ship it if approved", "Ship it approved."),
+                (
+                    "please actually check the red file",
+                    "Please check the file.",
+                ),
+                (
+                    "please check the red file actually today",
+                    "Please check the file today.",
+                ),
             ] {
                 assert!(
                     run(input, output, category).is_err(),
@@ -1924,7 +1988,12 @@ mod tests {
             }
         }
         run("you know we should ship", "We should ship.", "terminal").unwrap();
-        run("do not ship scratch that do ship", "Do ship.", "terminal").unwrap();
+        run(
+            "do not ship scratch that do ship the synthetic update today",
+            "Do ship the synthetic update today.",
+            "terminal",
+        )
+        .unwrap();
     }
 
     #[test]
