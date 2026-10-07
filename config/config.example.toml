@@ -224,10 +224,10 @@ structure = true
 # (`[router]` in a Python-era config is read as this section, with a warning.)
 # Ollama configuration for local inference (triggered by "easy/simple/medium/hard" prefix)
 host = "http://localhost:11434"
-model = "qwen3:14b"
+model = "gemma4:e4b"
 # Fallbacks, tried in order when `model` is not installed (resolved against
 # `ollama list` at first use and after a "model not found").
-models = ["gemma4:12b", "gemma4:e4b"]
+models = ["gemma4:12b"]
 timeout_s = 120.0
 
 [output]
