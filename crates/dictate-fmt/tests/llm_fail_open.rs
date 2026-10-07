@@ -789,10 +789,13 @@ async fn warmup_prime_times_out_and_background_warmup_can_retry() {
     c.timeout.max_ms = 50;
     let f = Arc::new(LlmFormatter::new(c));
     let started = std::time::Instant::now();
-    let err = f
-        .warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
-        .await
-        .unwrap_err();
+    let err = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))),
+    )
+    .await
+    .expect("warm-up must enforce its own deadline")
+    .unwrap_err();
     assert!(err.contains("timed out"));
     assert!(started.elapsed() < Duration::from_millis(500));
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
