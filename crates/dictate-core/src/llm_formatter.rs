@@ -347,8 +347,10 @@ mod tests {
         let port = port(fake.clone());
         port.probe().await;
         let text = "/create_plan for the new login flow please";
+        // One protected byte range: the slash command.
+        let command = 0.."/create_plan".len();
         let ctx = FormatContext {
-            protected: vec![0..12],
+            protected: vec![command],
             ..ctx("ghostty", AppCategory::Terminal)
         };
         let out = port.format(text, &ctx).await;
