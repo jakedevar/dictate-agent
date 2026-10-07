@@ -641,7 +641,7 @@ Stable check `id`s (order is the order to read them):
 ## 12a. Application context
 
 `AppContext` names where a session's text is going. The context engine (S23)
-resolves it from the focused window at session start; a network client names
+resolves it from the focused window at session start and stop; a network client names
 its target through `options.app` instead.
 
 ```json
@@ -651,7 +651,7 @@ its target through `options.app` instead.
 | Field | Meaning |
 |---|---|
 | `app` | Stable identifier: lowercased X11 `WM_CLASS` class, or the client-supplied name |
-| `title` | Window title at session start. Optional; privacy-sensitive, never persisted in privacy mode |
+| `title` | Window title at context resolution (start or stop). Optional; privacy-sensitive, never persisted in privacy mode |
 | `category` | Open enum: `terminal`, `editor`, `browser`, `chat`, `email`, `document`, `other` (default) |
 | `profile` | Name of the configured profile that matched, if any |
 
@@ -711,8 +711,12 @@ Sessions publish an additive `context_resolved` event before `transcribing`:
 ```
 
 `context` is explicitly `null` when absent. Focus/profile resolution happens
-once at local session acceptance, before opening audio, and is immutable for
-that session. Caller-supplied `SessionOptions.app` resolves without a host
+at local session acceptance before opening audio, and again when a live
+session stops (explicit Stop, hold release, or VAD auto-stop). The user's
+stop-time app selects formatting and injection policy. If that app differs,
+a second `ContextResolved` is published before transcription. An unchanged
+app retains its initial profile. Injection still goes to current focus at
+delivery; the daemon never re-focuses or refuses a changed window. Caller-supplied `SessionOptions.app` resolves without a host
 window title; uploads and remote clients must never query host focus.
 `ContextResolved` events are withheld entirely from connections lacking
 `context_read`, including subscribers to all events. Context titles are

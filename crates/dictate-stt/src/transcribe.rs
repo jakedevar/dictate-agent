@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -34,6 +34,7 @@ enum WorkerMessage {
 
 struct WorkerModel {
     state: WhisperState,
+    backend: Option<String>,
 }
 
 struct WorkerOutput {
@@ -248,10 +249,19 @@ fn ensure_model_loaded<'a>(
         let load_ms = start.elapsed().as_secs_f64() * 1000.0;
         if let Ok(mut value) = status.lock() {
             value.loaded = true;
-            // `use_gpu(true)` was accepted by whisper.cpp context creation,
-            // which is the backend selected for this loaded context.
-            value.backend = Some(requested_backend.to_string());
+            value.backend = loaded.backend.clone();
         }
+        if loaded.backend.as_deref() != Some(requested_backend) {
+            warn!(
+                requested = requested_backend,
+                actual = loaded.backend.as_deref().unwrap_or("unknown"),
+                "Whisper backend differs from request; check dictate doctor"
+            );
+        }
+        info!(
+            backend = loaded.backend.as_deref().unwrap_or("unknown"),
+            "Whisper backend initialized"
+        );
         *model = Some(loaded);
         return Ok((model.as_mut().expect("assigned above"), load_ms));
     }
@@ -259,6 +269,7 @@ fn ensure_model_loaded<'a>(
 }
 
 fn load_worker_model(model_path: &std::path::Path, use_gpu: bool) -> Result<WorkerModel> {
+    let observation = crate::backend::LoadObservation::start();
     let mut params = WhisperContextParameters::default();
     params.use_gpu(use_gpu);
     let context = WhisperContext::new_with_params(model_path, params)
@@ -266,7 +277,10 @@ fn load_worker_model(model_path: &std::path::Path, use_gpu: bool) -> Result<Work
     let state = context
         .create_state()
         .map_err(|e| anyhow!("failed to initialize Whisper state: {e}"))?;
-    Ok(WorkerModel { state })
+    Ok(WorkerModel {
+        state,
+        backend: observation.backend(),
+    })
 }
 
 fn transcribe_with_model(

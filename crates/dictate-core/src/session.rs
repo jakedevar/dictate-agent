@@ -232,6 +232,7 @@ pub struct SessionHandle {
     token: CancelToken,
     bus: EventBus,
     supplied: Option<Arc<SuppliedAudio>>,
+    stop_profile: Arc<Mutex<Option<dictate_proto::ResolvedProfile>>>,
 }
 
 /// Audio a session was handed instead of capturing it.
@@ -261,6 +262,7 @@ impl SessionHandle {
             token,
             bus,
             supplied: None,
+            stop_profile: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -276,6 +278,25 @@ impl SessionHandle {
         let mut handle = Self::new(id, DictationMode::Toggle, token, bus);
         handle.supplied = Some(Arc::new(audio));
         handle
+    }
+
+    /// Snapshot taken by the engine at explicit stop (including hold release),
+    /// before waking a possibly delayed pipeline task. First stop wins.
+    pub(crate) fn set_stop_profile(&self, profile: dictate_proto::ResolvedProfile) {
+        let mut slot = self
+            .stop_profile
+            .lock()
+            .expect("stop profile mutex poisoned");
+        if slot.is_none() {
+            *slot = Some(profile);
+        }
+    }
+
+    pub(crate) fn stop_profile(&self) -> Option<dictate_proto::ResolvedProfile> {
+        self.stop_profile
+            .lock()
+            .expect("stop profile mutex poisoned")
+            .clone()
     }
 
     /// The audio this session was handed, when it is an upload.
