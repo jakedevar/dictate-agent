@@ -153,7 +153,8 @@ const CODING: &[(&str, &str)] = &[
     ),
     (
         "the vector should hold twenty five thousand entries max",
-        "The vector should hold 25,000 entries max.",
+        // Never comma-grouped (`NUMBER_GROUPING_BREAKS_COMMANDS`).
+        "The vector should hold 25000 entries max.",
     ),
     (
         "Um so basically the cache is never invalidated",

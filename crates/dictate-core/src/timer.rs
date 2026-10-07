@@ -105,8 +105,10 @@ static DURATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     unit_keys.sort_by_key(|b| std::cmp::Reverse(b.len()));
     let unit_alts = unit_keys.join("|");
 
+    // A comma-grouped number (`12,300`) is one number: listed first so it
+    // wins over its last group (`NUMBER_GROUPING_BREAKS_COMMANDS`).
     let pattern = format!(
-        r"(?i)(\d+|{})(?:\s+and\s+a\s+half)?\s+({})\b",
+        r"(?i)(\d{{1,3}}(?:,\d{{3}})+|\d+|{})(?:\s+and\s+a\s+half)?\s+({})\b",
         word_alts, unit_alts
     );
 
@@ -123,10 +125,23 @@ static HALF_HOUR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 fn parse_word_number(word: &str) -> Option<u64> {
     let word = word.to_lowercase();
     let word = word.trim();
-    if let Ok(n) = word.parse::<u64>() {
-        return Some(n);
+    if let Ok(n) = word.replace(',', "").parse::<u64>() {
+        if word.starts_with(|c: char| c.is_ascii_digit()) {
+            return Some(n);
+        }
     }
     WORD_TO_NUM.get(word).copied()
+}
+
+/// A duration match that starts inside a longer number (`300` in `12,30 0`,
+/// `5,300` in `1.5,300`) is a fragment of it, not a duration.
+fn inside_a_number(text: &str, start: usize) -> bool {
+    let mut before = text[..start].chars().rev();
+    match before.next() {
+        Some(c) if c.is_ascii_digit() => true,
+        Some(',' | '.') => before.next().is_some_and(|c| c.is_ascii_digit()),
+        _ => false,
+    }
 }
 
 /// Parse a duration expression from text.
@@ -197,8 +212,11 @@ pub fn parse_duration(text: &str) -> (Option<u64>, String) {
 
     // Step 3: Fallback — search anywhere in original string
     if !found_any {
-        if let Some(m) = DURATION_PATTERN.find(&original) {
-            let caps = DURATION_PATTERN.captures(&original).unwrap();
+        let fallback = DURATION_PATTERN
+            .find_iter(&original)
+            .find(|m| !inside_a_number(&original, m.start()));
+        if let Some(m) = fallback {
+            let caps = DURATION_PATTERN.captures(&original[m.start()..]).unwrap();
             let num_str = &caps[1];
             let unit_str = caps[2].to_lowercase();
 
@@ -568,5 +586,50 @@ mod tests {
     #[test]
     fn test_human_format_complex() {
         assert_eq!(format_human_duration(3661), "1 hour 1 minute 1 second");
+    }
+
+    /// `NUMBER_GROUPING_BREAKS_COMMANDS`: a spoken timer runs through the
+    /// text chain and the router before it is parsed. Every duration across
+    /// the old 10,000 grouping threshold must arrive whole.
+    #[test]
+    fn spoken_timer_durations_survive_formatting_and_routing_exactly() {
+        let chain = dictate_fmt::text::TextChain::default();
+        let ctx = dictate_fmt::text::FormatContext::default();
+        for (spoken, seconds) in [
+            (
+                "timer nine thousand nine hundred ninety nine seconds",
+                9_999,
+            ),
+            ("timer ten thousand seconds", 10_000),
+            ("timer twelve thousand three hundred seconds", 12_300),
+            ("timer twenty five thousand seconds", 25_000),
+            ("timer one hundred twenty thousand seconds", 120_000),
+        ] {
+            let formatted = chain.format(spoken, &ctx);
+            let routed = crate::router::route(&formatted);
+            assert_eq!(
+                routed.route,
+                crate::router::RouteType::Timer,
+                "{spoken:?} -> {formatted:?}"
+            );
+            assert_eq!(
+                parse_duration(&routed.text).0,
+                Some(seconds),
+                "{spoken:?} -> {formatted:?} -> {:?}",
+                routed.text
+            );
+        }
+    }
+
+    /// A comma-grouped number Whisper wrote itself is one number, never its
+    /// last group.
+    #[test]
+    fn a_comma_grouped_number_is_parsed_whole() {
+        assert_eq!(parse_duration("12,300 seconds").0, Some(12_300));
+        assert_eq!(parse_duration("1,000 minutes").0, Some(60_000));
+        assert_eq!(parse_duration("for 25,000 seconds please").0, Some(25_000));
+        // Not a well-formed group: no part of it is taken as the duration.
+        assert_eq!(parse_duration("12,30 seconds").0, None);
+        assert_eq!(parse_duration("1.5,300 seconds").0, None);
     }
 }

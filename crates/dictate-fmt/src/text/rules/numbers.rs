@@ -1,9 +1,11 @@
 //! `numbers`: spoken numbers to digits, conservatively.
 //!
 //! - multi-word cardinals: "twenty five" → `25`, "one hundred and twenty" →
-//!   `120`, "twenty five thousand" → `25,000` (commas from 10,000 up, so
-//!   "port eight thousand" stays pasteable as `8000`), "two million" →
-//!   `2 million`;
+//!   `120`, "twenty five thousand" → `25000`, "two million" → `2 million`.
+//!   Never comma-grouped: a spoken port, id, size or timer argument has to
+//!   stay one token ("timer twelve thousand three hundred seconds" grouped
+//!   as `12,300` was read by the timer as 300 seconds;
+//!   `NUMBER_GROUPING_BREAKS_COMMANDS`). Money is the exception (`$5,000`);
 //! - decimals and versions: "three point five" → `3.5`, "version two point
 //!   one point three" → `version 2.1.3`;
 //! - percent and currency: "five percent" → `5%`, "ten dollars" → `$10`,
@@ -246,11 +248,6 @@ fn group_digits(v: u64, from: u64) -> String {
     out
 }
 
-/// Counts group from 10,000 so a spoken port or size (`8000`) stays pasteable.
-fn group_thousands(v: u64) -> String {
-    group_digits(v, 10_000)
-}
-
 /// A parsed run, rendered.
 struct Rendered {
     text: String,
@@ -269,7 +266,7 @@ fn render(items: &[Item]) -> Option<Rendered> {
             let p = parse_int(items)?;
             let text = match p.big {
                 Some((mult, name)) => format!("{mult} {name}"),
-                None => group_thousands(p.value),
+                None => p.value.to_string(),
             };
             Some(Rendered {
                 small_single: items.len() == 1 && p.value < 10,
@@ -287,7 +284,7 @@ fn render(items: &[Item]) -> Option<Rendered> {
                 return None;
             }
             let (frac, big) = parse_fraction(groups[1], true)?;
-            let mut text = format!("{}.{frac}", group_thousands(int.value));
+            let mut text = format!("{}.{frac}", int.value);
             if let Some(name) = big {
                 text.push(' ');
                 text.push_str(name);
@@ -724,6 +721,14 @@ fn try_time(ed: &mut Editor<'_>, i: usize) -> Option<usize> {
     let (label, marker_tokens, sentence_end) = marker(ed, m)?;
     used.push(msp);
     used.extend(marker_tokens.iter().copied());
+    // The whole candidate is validated before any edit, with the guards an
+    // ordinary number run gets: glued to a dotted name, a slash token or
+    // digits (`v.five pm`, `x/five pm`, `5 five pm`), it is part of
+    // something else (`CLOCK_REWRITE_BYPASSES_GLUE_GUARD`).
+    let last = *used.last().unwrap_or(&i);
+    if glued(ed, i, last) || digits_adjacent(ed, i, last) {
+        return None;
+    }
     let mut text = match minutes {
         Some(mm) => format!("{hour}:{mm:02} {label}"),
         None => format!("{hour} {label}"),
@@ -731,7 +736,6 @@ fn try_time(ed: &mut Editor<'_>, i: usize) -> Option<usize> {
     if sentence_end {
         text.push('.');
     }
-    let last = *used.last().unwrap_or(&i);
     for t in used {
         ed.delete(t);
     }
@@ -799,12 +803,12 @@ mod tests {
             ("ten minutes", "10 minutes"),
             ("I have eleven apples", "I have 11 apples"),
             ("port eight thousand", "port 8000"),
-            ("twenty five thousand users", "25,000 users"),
+            ("twenty five thousand users", "25000 users"),
             ("one thousand two hundred thirty four", "1234"),
             ("two thousand and five", "2005"),
             ("nineteen hundred", "1900"),
             ("twenty five hundred", "2500"),
-            ("one million two hundred thousand", "1,200,000"),
+            ("one million two hundred thousand", "1200000"),
             ("two million", "2 million"),
             ("three hundred million", "300 million"),
             ("Twenty people came", "20 people came"),
@@ -896,9 +900,56 @@ mod tests {
     }
 
     #[test]
-    fn grouping() {
-        assert_eq!(group_thousands(9_999), "9999");
-        assert_eq!(group_thousands(10_000), "10,000");
-        assert_eq!(group_thousands(1_234_567), "1,234,567");
+    fn money_grouping() {
+        assert_eq!(group_digits(999, 1_000), "999");
+        assert_eq!(group_digits(1_000, 1_000), "1,000");
+        assert_eq!(group_digits(1_234_567, 1_000), "1,234,567");
+    }
+
+    /// `CLOCK_REWRITE_BYPASSES_GLUE_GUARD`: a clock time is validated like any
+    /// number run — glued to a dotted name, a slash token or digits, it is
+    /// part of something else and is left alone.
+    #[test]
+    fn clock_times_respect_the_glue_and_digit_guards() {
+        use crate::text::rules::test_support::stage_after_protect;
+        for input in [
+            "v.five pm",
+            "v.five thirty pm",
+            "x/five pm",
+            "_five pm",
+            "five pm/six",
+            "five p.m.x",
+            "5 five pm",
+            "five pm 6",
+            "five thirty pm 7",
+        ] {
+            assert_eq!(
+                stage_after_protect(&Numbers, input),
+                input,
+                "input: {input:?}"
+            );
+        }
+        assert_eq!(stage_after_protect(&Numbers, "at five pm"), "at 5 PM");
+        assert_eq!(stage_after_protect(&Numbers, "(five pm)"), "(5 PM)");
+        assert_eq!(stage_after_protect(&Numbers, "five thirty pm."), "5:30 PM.");
+    }
+
+    /// `NUMBER_GROUPING_BREAKS_COMMANDS`: spoken integers render as plain
+    /// digits, so a port, an id or a timer argument stays one token. Money
+    /// keeps its thousands separators.
+    #[test]
+    fn spoken_integers_are_never_comma_grouped() {
+        for (input, want) in [
+            ("port fifty thousand", "port 50000"),
+            ("twelve thousand three hundred seconds", "12300 seconds"),
+            ("twenty five thousand seconds", "25000 seconds"),
+            ("ten thousand", "10000"),
+            ("nine thousand nine hundred ninety nine", "9999"),
+            ("one million two hundred thousand", "1200000"),
+            ("about five thousand dollars", "about $5,000"),
+            ("twenty five thousand dollars", "$25,000"),
+        ] {
+            assert_eq!(num(input), want, "input: {input:?}");
+        }
     }
 }
