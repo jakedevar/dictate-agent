@@ -163,7 +163,22 @@ append in your own block; do not reorder or reformat others' entries.
 - Deferred: R2 streaming partials (NO-GO until measured headroom changes), S34
   wake word (conditional on the idle-CPU gate), S40a/S40 macOS, S41 Windows.
 
-Every slice ends with an independent cross-family review and the integrator's
-own merge verification before it lands on the integration branch
-(`rsi/ec5d83e2-c213-49ba-b211-cdedbaee507b`). Nothing is pushed; Jake merges to
-`master` at his gate.
+**Landing and review (revised 2026-10-07, current RSI standard; replaces the
+per-slice review → fix → delta-review loop).** A slice lands on `master` when
+the integrator's merge verification passes: compile, the touched tests, then
+the full suite with no new failures, plus clippy and fmt. The operator granted
+the project manager full project control on 2026-10-07, so the manager lands
+and pushes `master`.
+
+Pre-merge review happens only for two kinds of change:
+- a new SQLite schema migration (for example S24's `dictionary.db` migration 3);
+- credential, IAM or network-exposure changes (for example S33's LAN bind).
+
+Either kind gets one plain reviewer pass by a model family other than the
+author's, and the verdict goes in the merge commit.
+
+Everything else lands first. An authority, custody or user-data-safety change
+(clipboard handling, config writes, injection targeting) gets one post-land
+review. Its findings become follow-up fix Issues, and there are no delta-review
+rounds. Regressions are caught by the full suite and QA sweeps, and filed as
+Issues.
