@@ -16,7 +16,8 @@ It has three parts:
   keeps running).
 - **Hub window** — Home (words per minute, words today and this week, streak,
   a 14-day chart, recent dictations), History (full-text search, copy,
-  privacy-mode indicator), Dictionary (entries and suggestions), Settings (a
+  privacy-mode indicator), Notes (the voice-note scratchpad: search, copy, delete,
+  *Dictate a note*), Dictionary (entries and suggestions), Settings (a
   structured editor for common keys plus a raw TOML editor), and Doctor (every
   `dictate doctor` check with its fix, problems first).
 

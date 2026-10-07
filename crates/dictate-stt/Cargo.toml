@@ -2,6 +2,7 @@
 name = "dictate-stt"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # The default is the CPU build of whisper.cpp: a plain `cargo test|clippy

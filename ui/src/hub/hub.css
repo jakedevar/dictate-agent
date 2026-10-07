@@ -582,6 +582,24 @@ th.num {
   align-self: center;
 }
 
+/* A note has two actions; they sit in the button column together. */
+.history-item .actions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: flex;
+  gap: 6px;
+}
+
+.history-item .actions button {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+button.danger:hover:not(:disabled) {
+  color: var(--err);
+}
+
 /* ---- dictionary -------------------------------------------------------- */
 .entry-form {
   display: grid;

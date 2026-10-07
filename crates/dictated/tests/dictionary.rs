@@ -82,7 +82,7 @@ async fn dictionary_crud_validation_and_live_snapshot() {
 }
 #[tokio::test]
 async fn dictionary_capabilities_deny_reads_writes_and_suggestion_history() {
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.features.dictionary_read = false;
     caps.features.dictionary_write = false;
     let h = Harness::with(Setup::default().with_capabilities(caps)).await;
@@ -100,7 +100,7 @@ async fn dictionary_capabilities_deny_reads_writes_and_suggestion_history() {
     }
     assert!(h.dictionary.list(None, None).is_empty());
     h.stop().await;
-    let mut caps = dictated::server::local_capabilities(true);
+    let mut caps = dictated::server::host_capabilities(true, false);
     caps.features.history_read = false;
     let h = Harness::with(Setup::default().with_capabilities(caps)).await;
     let mut c = h.client().await;

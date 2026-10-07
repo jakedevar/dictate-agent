@@ -2,6 +2,7 @@
 name = "dictate-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Compiles the deterministic port doubles in `ports::mock` into the library so
@@ -16,6 +17,7 @@ cuda = ["dictate-stt/cuda"]
 dictate-dict = { workspace = true }
 anyhow = { workspace = true }
 arboard = { workspace = true }
+chrono = { workspace = true }
 dictate-audio = { workspace = true }
 dictate-context = { workspace = true }
 dictate-fmt = { workspace = true }

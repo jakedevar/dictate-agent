@@ -376,9 +376,70 @@ fn golden_command_crud() {
         }),
     );
     pin(
+        "upsert_snippet",
+        Command::UpsertSnippet {
+            snippet: Snippet {
+                id: Some(3),
+                trigger: "work email".into(),
+                expansion: "me@example.com".into(),
+                enabled: true,
+                category: Some("contact".into()),
+                apps: vec!["slack".into()],
+                hit_count: Some(2),
+            },
+        },
+        json!({
+            "type": "upsert_snippet",
+            "snippet": {
+                "id": 3,
+                "trigger": "work email",
+                "expansion": "me@example.com",
+                "enabled": true,
+                "category": "contact",
+                "apps": ["slack"],
+                "hit_count": 2
+            }
+        }),
+    );
+    // Additive: a snippet from before `apps`/`hit_count` existed still parses,
+    // and a new one without them serializes exactly as it used to.
+    pin(
+        "upsert_snippet_minimal",
+        Command::UpsertSnippet {
+            snippet: Snippet::new("sig", "— Jake"),
+        },
+        json!({
+            "type": "upsert_snippet",
+            "snippet": {"trigger": "sig", "expansion": "— Jake", "enabled": true}
+        }),
+    );
+    pin(
         "delete_snippet",
         Command::DeleteSnippet { id: 9 },
         json!({"type": "delete_snippet", "id": 9}),
+    );
+    pin(
+        "list_notes",
+        Command::ListNotes {
+            query: Some("milk".into()),
+            limit: Some(20),
+            id: None,
+        },
+        json!({"type": "list_notes", "query": "milk", "limit": 20}),
+    );
+    pin(
+        "list_notes_bare",
+        Command::ListNotes {
+            query: None,
+            limit: None,
+            id: None,
+        },
+        json!({"type": "list_notes"}),
+    );
+    pin(
+        "delete_note",
+        Command::DeleteNote { id: 4 },
+        json!({"type": "delete_note", "id": 4}),
     );
     pin(
         "query_history",
@@ -655,6 +716,21 @@ fn golden_result_simple_variants() {
         json!({"type": "session_started", "session_id": "s1"}),
     );
     pin(
+        "result/notes",
+        CommandResult::Notes {
+            notes: vec![Note {
+                id: 4,
+                ts_ms: 1_760_000_000_000,
+                text: "buy milk".into(),
+                word_count: 2,
+            }],
+        },
+        json!({
+            "type": "notes",
+            "notes": [{"id": 4, "ts_ms": 1_760_000_000_000_i64, "text": "buy milk", "word_count": 2}]
+        }),
+    );
+    pin(
         "result/deleted",
         CommandResult::Deleted { id: 9 },
         json!({"type": "deleted", "id": 9}),
@@ -695,7 +771,7 @@ fn golden_enum_vocabularies() {
         (
             "Route",
             Route::known().iter().map(Route::to_string).collect(),
-            &["type", "timer", "local", "edit", "command"],
+            &["type", "timer", "local", "edit", "command", "note"],
         ),
         (
             "DictationMode",

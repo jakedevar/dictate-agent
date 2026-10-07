@@ -202,6 +202,12 @@ pub struct Snippet {
     /// Optional grouping label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Application identifiers in scope (case-insensitive). Empty means global.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
+    /// Times this snippet has expanded. Server-maintained; ignored on upsert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_count: Option<u64>,
 }
 
 impl Snippet {
@@ -213,8 +219,27 @@ impl Snippet {
             expansion: expansion.into(),
             enabled: true,
             category: None,
+            apps: Vec::new(),
+            hit_count: None,
         }
     }
+}
+
+/// A quick voice note kept in the local scratchpad (S35).
+///
+/// Notes live in the history database, so they obey privacy mode (nothing is
+/// stored while it is on) and the history retention window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    /// Server-assigned identifier. Never reused after a delete.
+    pub id: i64,
+    /// When the note was saved, milliseconds since the Unix epoch.
+    pub ts_ms: i64,
+    /// The note text, as it would have been typed (rules chain applied).
+    pub text: String,
+    /// Whitespace-separated word count of [`Note::text`].
+    #[serde(default)]
+    pub word_count: u32,
 }
 
 pub(crate) fn default_true() -> bool {

@@ -108,6 +108,20 @@ impl Notifier {
         );
     }
 
+    /// A scratchpad note was saved. The note text is the body, truncated.
+    pub fn note_saved(&self, text: &str) {
+        let preview: String = text.chars().take(120).collect();
+        self.notify("Note saved", &preview, "document-save", None);
+    }
+
+    pub fn edit_preview(&self, replacement: &str) {
+        self.notify("Edit preview", replacement, "document-edit", Some(10000));
+    }
+
+    pub fn edit_error(&self, message: &str) {
+        self.notify("Edit failed", message, "dialog-error", Some(10000));
+    }
+
     /// Error — 10s display, auto-copies the full error message to clipboard.
     pub fn error(&self, message: &str) {
         if !self.enabled {
@@ -135,6 +149,12 @@ impl Notifier {
         {
             error!("Notification failed: {}", e);
         }
+    }
+
+    /// Injection already settled clipboard ownership. Error reporting must
+    /// preserve the dictation (or a concurrent user copy) left there.
+    pub fn injection_failed(&self, message: &str) {
+        self.notify("Dictation", message, "dialog-warning", Some(10000));
     }
 
     /// No speech detected — clears status, then 1.25s auto-dismiss.

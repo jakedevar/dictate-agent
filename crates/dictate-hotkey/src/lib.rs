@@ -485,6 +485,11 @@ mod tests {
             timer: Arc::new(dictate_core::timer::TimerExecutor::new(
                 &dictate_core::config::TimerConfig::default(),
             )),
+            editor: Arc::new(dictate_core::edit_executor::EditExecutor::new(
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+            )),
             local_model: "mock".into(),
         });
         let bus = EventBus::default();

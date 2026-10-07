@@ -147,7 +147,7 @@ Two reference capability sets:
 | `transcribe_upload` / `streaming_audio` | ✅ | ✅ |
 | config / dictionary / snippets / history | ✅ | ❌ |
 | `raw_text` | ✅ | ❌ |
-| `routes` | all five | `["type"]` |
+| `routes` | all six | `["type"]` |
 
 ---
 
@@ -200,6 +200,8 @@ All commands are objects tagged with `type`.
 | `list_snippets` | `query?`, `limit?` | `snippets_read` |
 | `upsert_snippet` | `snippet` | `snippets_write` |
 | `delete_snippet` | `id` | `snippets_write` |
+| `list_notes` | `query?`, `limit?`, `id?` | `history_read` |
+| `delete_note` | `id` | `history_write` |
 | `query_history` | `query` | `history_read` |
 | `get_history_analytics` | — | `history_read` |
 | `purge_history` | — | `history_write` |
@@ -436,8 +438,10 @@ cannot drift apart.
 }
 ```
 
-Routes: `type` | `timer` | `local` | `edit` | `command`. `timer` (systemd-run)
-and `local` (Ollama) are preserved features, not legacy.
+Routes: `type` | `timer` | `local` | `edit` | `command` | `note`. `timer`
+(systemd-run) and `local` (Ollama) are preserved features, not legacy. `note`
+appends the utterance to the local scratchpad and types nothing (see
+[Scratchpad (S35)](#scratchpad-s35)).
 
 ### Timings
 
@@ -580,6 +584,7 @@ failed before producing text) is distinct from an **empty string** (the user
 said nothing). Do not conflate them.
 
 `purge_history` removes every persisted interaction (and its FTS index entry)
+and every scratchpad note, and reports the combined count,
 while keeping the daemon's SQLite connection open. A daemon in global privacy
 mode, or a `start_dictation` request with `options.privacy: true`, stores no
 row at all; this is stronger than masking transcript text after the fact.
@@ -851,3 +856,80 @@ file path or `-` (default stdin/stdout). Import remaps ids by phrase and leaves 
 counts server-owned. Import validates JSON before sending requests; record-level
 validation/database failures are reported and earlier successful records remain
 installed. `--case-sensitive` on `add` preserves alias case.
+
+### Snippets (S24)
+
+`list_snippets`, `upsert_snippet`, and `delete_snippet` are implemented; a
+snippet maps a spoken `trigger` to stored `expansion` text. A `Snippet` carries
+`id` (server-assigned), `trigger`, `expansion`, `enabled`, optional `category`,
+optional `apps` (application identifiers, case-insensitive, empty = global; with
+no window context only global snippets apply) and server-owned `hit_count`
+(client values are ignored). `apps` and `hit_count` were added after the type
+shipped and are additive: older payloads parse and omit them.
+
+Triggers are compared on their words (Unicode default case-fold, whitespace and
+simple punctuation between words ignored), so `"My  Address"` and `"my address"`
+are the same trigger and a duplicate returns `conflict`. A trigger must be words
+and simple separators only — it is something you *say* — and an expansion may
+hold newlines and tabs but no other control characters (1..4000 characters).
+Invalid values return `invalid_params`, an absent id `not_found`.
+
+At dictation time the longest trigger wins, matches never overlap, a trigger that
+ends the utterance also swallows the sentence punctuation Whisper appended, and
+the expansion is inserted as a **protected span**: no later text stage and no LLM
+pass can alter it. A trigger inside a URL, path or code span never fires, and the
+expansion is typed verbatim, even when it begins with a route word such as
+`timer` or `edit:`. `SessionOptions.use_dictionary=false` and
+`[dictionary] enabled = false` disable expansion; privacy sessions never count
+hits.
+
+An expansion may use `{date}` (`YYYY-MM-DD`), `{time}` (`HH:MM`), `{clipboard}`
+and `{selection}` (the X11 primary selection). Variables are read only when a
+matched snippet uses them, in a single pass (a clipboard that contains
+`{date}` is inserted as written). `{{date}}` writes a literal `{date}`; an
+unknown `{name}` is left as written. Reading the host clipboard or selection is
+allowed only for a live dictation session — an uploaded recording
+(`transcribe_audio`) keeps `{clipboard}`/`{selection}` as literal text — and an
+unavailable clipboard expands to an empty string.
+
+Snippets live in `dictionary.db` (schema version 3) next to the dictionary.
+The CLI supports `dictate snippet list|add|rm|enable|disable`, e.g.
+`dictate snippet add "work email" "me@example.com" --app slack`; `add` also
+takes `--file PATH` or `-` (stdin) for a multi-line expansion and `--category`.
+
+### Scratchpad (S35)
+
+The `note` route stores an utterance in a local notes table instead of typing
+it. `list_notes` answers `{"type":"notes","notes":[Note…]}` newest first, and
+`delete_note` answers `deleted` (or `not_found`). A `Note` is `id` (never reused),
+`ts_ms` (UTC epoch milliseconds), `text` and `word_count`. `list_notes` filters
+with `query` (case-insensitive substring; `%` and `_` are literal), caps at
+`limit` (default 100, at most 500) and returns only one note when `id` is given.
+Notes are history-class data, so they are gated by `history_read` and
+`history_write`, not by new feature flags, and a connection's `routes` must
+include `note` for a spoken or forced note to be stored (a remote client granted
+only `type` cannot write to the scratchpad by saying the trigger).
+
+A session reaches the route three ways: it opens with `note:` or `note,` (what
+Whisper writes for a deliberate "note, …"), or with `note to self`, `quick note`,
+`new note`, `take a note`, `make a note` or `add a note`; or the caller forces
+it with `SessionOptions.route = "note"`. A bare "note" is deliberately not a
+trigger, so prose such as "note that the deadline moved" is still typed. The
+trigger words are not part of the saved text, and the rules chain (spacing,
+casing, dictionary, snippets) runs before saving; the LLM formatting pass does
+not (the route is not `type`). The resulting `Transcript` has `route: "note"`,
+`text` set to the saved note and `injection: {"status":"skipped","reason":
+"route_not_eligible"}`.
+
+Privacy and retention apply. While privacy mode is on (globally or for the
+session) or history is disabled, nothing is stored: the transcript's `text` is
+empty, `injection` is `skipped` with reason `not_permitted`, and a desktop
+notification says why — the words are never typed instead. Notes expire with
+`[history] retention_days` like dictations. `purge_history` removes notes
+along with dictations; one note is deleted with `delete_note`. The note's text is
+kept only in `notes`: its dictation row (route `note`) has no transcript text.
+
+Notes live in `history.db` (table `notes`, schema version 3). The CLI is
+`dictate notes list|search|show|copy|rm|new`; `dictate start --route note`
+and the hub's Notes page's *Dictate a note* button start a session forced to the
+route.

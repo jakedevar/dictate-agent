@@ -111,6 +111,19 @@ export interface HistoryEntry {
   app?: string;
 }
 
+/** A scratchpad note (S35). Mirrors `dictate_proto::Note`. */
+export interface Note {
+  id: number;
+  ts_ms: number;
+  text: string;
+  word_count: number;
+}
+
+export interface NotesResult {
+  type: "notes";
+  notes: Note[];
+}
+
 export interface HistoryPage {
   type: "history";
   items: HistoryEntry[];
