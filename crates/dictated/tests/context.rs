@@ -275,7 +275,8 @@ async fn get_context_returns_resolved_profile_and_none_has_defined_defaults() {
         panic!("expected context result")
     };
     assert_eq!(p.context.as_ref().unwrap().app, "ghostty");
-    assert_eq!(p.llm_format, Some(false));
+    assert_eq!(p.llm_format, None, "terminals get the verbatim LLM policy, not an opt-out");
+    assert_eq!(p.spoken_punctuation, Some(false));
     assert_eq!(p.inject, None, "ghostty preserves global Ctrl+V");
     focus.set(None);
     let CommandResult::Context(p) = client.request(Command::GetContext).await.unwrap() else {

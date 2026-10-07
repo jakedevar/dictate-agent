@@ -692,13 +692,16 @@ focus is unavailable/disabled, or includes an `AppContext` and the resolved
 profile overrides, for example:
 
 ```json
-{"type":"context","context":{"app":"com.mitchellh.ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"claude-code"},"tone":"neutral","llm_format":false,"inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}
+{"type":"context","context":{"app":"com.mitchellh.ghostty","title":"Synthetic Claude fixture","category":"terminal","profile":"claude-code"},"tone":"neutral","inject":"paste","spoken_punctuation":false,"spoken_line_breaks":false}
 ```
 
 Overrides are optional: omitted means inherit category/global configuration.
 `inject` accepts `paste`, `type`, or `off`. All category tones are neutral;
-terminal defaults disable LLM formatting and spoken punctuation/line breaks,
-while inheriting the configured paste policy. A profile may override these.
+terminal defaults disable spoken punctuation/line breaks while inheriting the
+configured paste policy. They do not disable LLM formatting: the pass applies
+its verbatim terminal policy (fillers, false starts, self-corrections and
+punctuation only). A profile may override any of these, including
+`llm_format: false` to skip the pass.
 The thin `dictate context [--json]` CLI sends only this protocol command.
 
 Sessions publish an additive `context_resolved` event before `transcribing`:

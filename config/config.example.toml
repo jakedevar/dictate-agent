@@ -283,8 +283,11 @@ double_tap_ms = 320
 
 # App context (S23). X11 focus is captured once, before audio starts. Headless
 # and Wayland (without a compositor adapter) use global defaults, with no title.
-# Every category uses neutral tone. Terminals disable LLM formatting and spoken
-# punctuation/line breaks by default, but keep the global Ctrl+V paste policy.
+# Every category uses neutral tone. Terminals turn spoken punctuation/line
+# breaks off by default and keep the global Ctrl+V paste policy. The LLM pass
+# still runs there, but verbatim ([format.llm.categories.terminal]): fillers,
+# false starts, self-corrections and punctuation only. `llm_format = false` in
+# a profile skips it entirely.
 [context]
 enabled = true
 # Profiles match in file order: first matching user profile wins, then browser
@@ -318,7 +321,6 @@ enabled = true
 # match = { class = "com.mitchellh.ghostty", title = "(?i)claude" }
 # category = "terminal"
 # tone = "neutral"
-# llm_format = false
 # inject = "paste"
 # spoken_punctuation = false
 # spoken_line_breaks = false

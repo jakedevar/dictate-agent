@@ -213,13 +213,16 @@ impl ContextConfig {
             category: profile.and_then(|p| p.category.clone()).unwrap_or(category),
             profile: profile.map(|p| p.name.clone()),
         });
-        // Terminals are verbatim by default; their Ctrl+V policy still inherits.
+        // Terminals keep spoken punctuation and line breaks off by default.
+        // The LLM pass is *not* forced off: its terminal category policy
+        // (`[format.llm.categories.terminal]`, verbatim) already limits it to
+        // fillers, false starts, self-corrections and punctuation. The Ctrl+V
+        // policy still inherits.
         if decision
             .context
             .as_ref()
             .is_some_and(|c| c.category == AppCategory::Terminal)
         {
-            decision.llm_format.get_or_insert(false);
             decision.spoken_punctuation.get_or_insert(false);
             decision.spoken_line_breaks.get_or_insert(false);
         }
