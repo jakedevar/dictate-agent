@@ -41,7 +41,7 @@ slice section of
   `AgentSubmitJob` for long gates:** `AgentSubmitJob` cannot run this repo's
   gates. Its typed cargo params have no clippy, `just` recipe or feature lines.
   Run `just check-cpu` in your own turn as described above. This gap is already
-  tracked as #1466 and reported to RSI, so do not file it again.
+  tracked in RSI as harness Issue #1538 (was #1466 here), so do not file it again.
 - **Shared host, so cap load and clean up.** Never start more than 8 synthetic
   load processes (busy loops, `cargo build -j 8`), and only when `uptime`'s
   1-minute load is under 40. Before you end your turn, stop every background
