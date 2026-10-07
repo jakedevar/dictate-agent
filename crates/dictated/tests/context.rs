@@ -358,6 +358,57 @@ async fn remote_context_discovery_and_sensitive_events_are_denied() {
     h.stop().await;
 }
 
+/// `capture_context = context_read && host_capture`, end to end: a connection
+/// that holds `host_capture` but not `context_read` starts and finishes a
+/// dictation without the daemon ever reading the host's focus, and without a
+/// `context_resolved` event.
+#[tokio::test]
+async fn a_host_capture_connection_without_context_read_never_reads_focus() {
+    struct CountingFocus(Arc<AtomicUsize>);
+    impl ContextProvider for CountingFocus {
+        fn capture(&self) -> Option<WindowInfo> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some(window("slack", "Synthetic title"))
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut s = setup(
+        ContextConfig::default(),
+        Arc::new(CountingFocus(calls.clone())),
+    );
+    s.capabilities.features.host_capture = true;
+    s.capabilities.features.context_read = false;
+    let h = Harness::with(s).await;
+    let mut client = h.client().await;
+    client.subscribe().await;
+    client
+        .request(Command::StartDictation {
+            mode: DictationMode::Toggle,
+            options: Some(SessionOptions {
+                inject: Some(false),
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap();
+    client.request(Command::Stop).await.unwrap();
+    loop {
+        match client.next_event().await {
+            Event::ContextResolved { .. } => panic!("context event without context_read"),
+            Event::StateChanged {
+                to: State::Done, ..
+            } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "host focus was read for a connection without context_read"
+    );
+    h.stop().await;
+}
+
 /// A one-second 16 kHz mono WAV of a quiet tone (the mock VAD and STT decide
 /// what it "says"; only the decoder reads the samples).
 fn tone_wav() -> Vec<u8> {

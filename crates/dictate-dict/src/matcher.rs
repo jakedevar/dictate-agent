@@ -39,12 +39,11 @@ impl Matcher {
         let mut aliases = Vec::new();
         for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.entry.enabled) {
             let mut seen = HashSet::new();
-            for a in e
-                .entry
-                .sounds_like
-                .iter()
-                .chain(cfg.recase_phrases.then_some(&e.entry.phrase))
-            {
+            for a in e.entry.sounds_like.iter().chain(
+                (cfg.recase_phrases
+                    && (e.entry.case_sensitive || !is_ordinary_phrase(&e.entry.phrase)))
+                .then_some(&e.entry.phrase),
+            ) {
                 if seen.insert(if e.entry.case_sensitive {
                     a.clone()
                 } else {
@@ -224,6 +223,36 @@ impl Matcher {
         }
     }
 }
+/// Ordinary lowercase English words that are also names, products or
+/// languages (`Rust`, `Swift`, `Apple`, `Mark`, `Will`, …). Sorted.
+///
+/// With `recase_phrases` on, an entry's own phrase is a match for its
+/// lowercase spelling — `kubernetes` → `Kubernetes`. For an entry that is an
+/// ordinary word that would recase every plain "rust" or "will" in running
+/// prose, so such a phrase is **not** recased on its own: list the spoken
+/// form in `sounds_like` (an explicit alias is always honoured) or mark the
+/// entry `case_sensitive`. The list is deliberately short and conservative;
+/// it holds words that dictation produces in lowercase prose all the time.
+/// (`Don`, `Won` and `Can` stay recased: those are the user's own names, and
+/// the contraction rule already keeps them out of "don't".)
+const ORDINARY_WORDS: &[&str] = &[
+    "apple", "april", "art", "bill", "bob", "bridge", "chat", "chrome", "dash", "drive", "edge",
+    "elm", "flow", "gem", "go", "grace", "hope", "jack", "jade", "june", "kit", "lens", "light",
+    "link", "march", "mark", "may", "mercury", "mint", "nest", "next", "note", "notion", "page",
+    "pat", "pilot", "pine", "pipe", "pop", "post", "present", "pro", "rose", "ruby", "rust",
+    "safari", "slack", "spark", "stripe", "swift", "teams", "will", "zoom",
+];
+
+/// Whether every word of `phrase` is an ordinary English word (see
+/// [`ORDINARY_WORDS`]). A single distinctive word makes the phrase a term.
+fn is_ordinary_phrase(phrase: &str) -> bool {
+    let mut words = phrase
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .peekable();
+    words.peek().is_some() && words.all(|w| ORDINARY_WORDS.binary_search(&fold(w).as_str()).is_ok())
+}
+
 fn scoped(e: &StoredEntry, app: Option<&AppContext>) -> bool {
     e.entry.enabled
         && (e.entry.apps.is_empty()
@@ -244,4 +273,15 @@ fn levenshtein(a: &str, b: &str) -> usize {
         }
     }
     row[b.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ordinary_word_list_is_sorted_for_binary_search() {
+        assert!(ORDINARY_WORDS.windows(2).all(|w| w[0] < w[1]));
+        assert!(ORDINARY_WORDS.iter().all(|w| *w == w.to_lowercase()));
+    }
 }

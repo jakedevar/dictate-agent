@@ -227,3 +227,65 @@ async fn recognizer_bias_scope_opt_out_and_private_hit_counts() {
         h.stop().await;
     }
 }
+
+// ---- a dictionary that cannot open must not stop the daemon ------------------
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("dictated-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn config_with_dictionary_at(
+    path: &std::path::Path,
+    enabled: bool,
+) -> dictate_core::config::Config {
+    let mut config = dictate_core::config::Config::default();
+    config.dictionary.enabled = enabled;
+    config.dictionary.db_path = path.to_string_lossy().into_owned();
+    config
+}
+
+#[test]
+fn an_unopenable_dictionary_degrades_to_no_dictionary() {
+    let dir = scratch("dict-blocked");
+    // A directory where the database file should be: SQLite cannot open it.
+    let blocked = dir.join("dictionary.db");
+    std::fs::create_dir(&blocked).unwrap();
+    let config = config_with_dictionary_at(&blocked, true);
+    assert!(dictated::open_dictionary(&config).is_none());
+}
+
+#[test]
+fn a_healthy_dictionary_opens_and_a_disabled_one_is_never_opened() {
+    let dir = scratch("dict-open");
+    let path = dir.join("dictionary.db");
+    assert!(dictated::open_dictionary(&config_with_dictionary_at(&path, true)).is_some());
+    assert!(path.exists());
+
+    let off = dir.join("never.db");
+    assert!(dictated::open_dictionary(&config_with_dictionary_at(&off, false)).is_none());
+    assert!(
+        !off.exists(),
+        "a disabled dictionary must not create its database"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_dictionary_dictation_works_and_the_capabilities_are_withdrawn() {
+    let h = Harness::with(Setup::default().without_dictionary()).await;
+    let mut c = h.raw_client().await;
+    let hello = c.handshake().await;
+    assert!(!hello.capabilities.features.dictionary_read);
+    assert!(!hello.capabilities.features.dictionary_write);
+    let err = c
+        .request(Command::ListDictionary {
+            query: None,
+            limit: None,
+        })
+        .await
+        .unwrap_err();
+    assert_ne!(err.code, ErrorCode::Internal);
+    h.stop().await;
+}

@@ -2,7 +2,8 @@
 //!
 //! - runs of spaces/tabs → one space; no space at either end or around a
 //!   line break;
-//! - no space before `, ; ! ?`, nor before `. : …` when they end a word
+//! - no space before `, ; ! ?` (but `!` stays put in the operators `!=` /
+//!   `!==`), nor before `. : …` when they end a word
 //!   (`the .env file` and ` :wq` are not sentence punctuation);
 //! - one space after `, ;` between two words, and after `? !` before a word
 //!   (never after `.` or `:` — `config.yaml`, `std::fs`, `3.14`, `12:30`);
@@ -69,7 +70,8 @@ fn space(ed: &mut Editor<'_>) {
                 let before_punct = next.is_some_and(|x| {
                     ed.kind(x) == Kind::Punct
                         && match ed.text(x) {
-                            "," | ";" | "!" | "?" => true,
+                            "!" => ed.touching_next(x).is_none_or(|m| ed.text(m) != "="),
+                            "," | ";" | "?" => true,
                             "." | ":" | "..." | "\u{2026}" => ends_word(ed, x),
                             _ => false,
                         }
@@ -201,6 +203,29 @@ mod tests {
         ] {
             assert_eq!(stage(&Spacing, input), input, "input: {input:?}");
         }
+    }
+
+    /// Operators carry their own spacing: `x != y` must not become `x!= y`
+    /// (the `!`-before-punctuation rule is for prose), and the other
+    /// comparison/arrow operators must survive untouched.
+    #[test]
+    fn leaves_code_operators_alone() {
+        for input in [
+            "x != y",
+            "if a != b then",
+            "x !== y",
+            "x == y",
+            "x <= y",
+            "x >= y",
+            "x => y",
+            "x -> y",
+            "a === b",
+        ] {
+            assert_eq!(stage(&Spacing, input), input, "input: {input:?}");
+        }
+        // Prose is unchanged by the carve-out.
+        assert_eq!(stage(&Spacing, "stop !"), "stop!");
+        assert_eq!(stage(&Spacing, "wow ! = fine"), "wow! = fine");
     }
 
     #[test]

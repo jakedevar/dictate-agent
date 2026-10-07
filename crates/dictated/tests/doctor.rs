@@ -510,6 +510,7 @@ async fn a_healthy_mock_daemon_produces_the_full_named_vocabulary() {
         "stt_model",
         "stt_backend",
         "formatter",
+        "dictionary",
         "ollama",
         "grammar_model",
         "local_model",
@@ -534,5 +535,50 @@ async fn a_healthy_mock_daemon_produces_the_full_named_vocabulary() {
             );
         }
     }
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_dictionary_check_reports_a_missing_disabled_and_open_dictionary() {
+    let ollama = fake_ollama(&["gemma4:12b"]).await;
+    let dir = std::env::temp_dir().join(format!("dictated-doctor-dict-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = config_in(&dir, &ollama, "gemma4:12b");
+    config.dictionary.db_path = dir.join("dict.db").to_string_lossy().into_owned();
+
+    // Enabled but the daemon could not open it: a failure that names the file.
+    let h = Harness::with(
+        Setup::default()
+            .without_dictionary()
+            .with_doctor(config.clone(), ConfigReport::default()),
+    )
+    .await;
+    let report = diagnose(&h, true).await;
+    let check = report.check("dictionary").unwrap();
+    assert_eq!(check.status, CheckStatus::Fail);
+    assert!(check.detail.contains("dict.db"), "{}", check.detail);
+    assert!(check.fix.is_some());
+    h.stop().await;
+
+    // Disabled: nothing to report.
+    let mut off = config.clone();
+    off.dictionary.enabled = false;
+    let h = Harness::with(
+        Setup::default()
+            .without_dictionary()
+            .with_doctor(off, ConfigReport::default()),
+    )
+    .await;
+    let report = diagnose(&h, true).await;
+    assert_eq!(
+        report.check("dictionary").unwrap().status,
+        CheckStatus::Skipped
+    );
+    h.stop().await;
+
+    // Open: fine.
+    let h = Harness::with(Setup::default().with_doctor(config, ConfigReport::default())).await;
+    let report = diagnose(&h, true).await;
+    assert_eq!(report.check("dictionary").unwrap().status, CheckStatus::Ok);
     h.stop().await;
 }

@@ -340,6 +340,9 @@ db_path = ""
 stt_bias = true
 # Static whisper.initial_prompt plus glossary: hard cap 400 chars/UTF-8 bytes.
 max_prompt_chars = 400
+# Recase an entry's own phrase in running text (kubernetes -> Kubernetes). Entries
+# that are ordinary words (Rust, Swift, Apple, Will, ...) are NOT recased this way,
+# so plain "rust" or "will" stays; give them a spoken alias in sounds_like instead.
 recase_phrases = true
 # Exact aliases are conservative. Fuzzy matching is experimental, opt-in.
 fuzzy = false

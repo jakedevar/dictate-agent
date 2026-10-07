@@ -85,6 +85,8 @@ pub struct Setup {
     pub config_file: Option<PathBuf>,
     /// The LOCAL route's Ollama settings (point `host` at a fake server).
     pub local: dictate_core::config::LocalConfig,
+    /// Run the pipeline with no dictionary at all (as after an open failure).
+    pub no_dictionary: bool,
 }
 
 impl Default for Setup {
@@ -115,6 +117,7 @@ impl Default for Setup {
             doctor: None,
             config_file: None,
             local: dictate_core::config::LocalConfig::default(),
+            no_dictionary: false,
         }
     }
 }
@@ -158,6 +161,10 @@ impl Setup {
     }
     pub fn with_local(mut self, local: dictate_core::config::LocalConfig) -> Self {
         self.local = local;
+        self
+    }
+    pub fn without_dictionary(mut self) -> Self {
+        self.no_dictionary = true;
         self
     }
     pub fn with_doctor(mut self, config: Config, report: ConfigReport) -> Self {
@@ -224,7 +231,7 @@ impl Harness {
         let dictionary = Arc::new(dictate_dict::Dictionary::in_memory().unwrap());
         let pipeline = Arc::new(Pipeline {
             context: setup.context,
-            dictionary: Some(dictionary.clone()),
+            dictionary: (!setup.no_dictionary).then(|| dictionary.clone()),
             audio: setup
                 .audio_source
                 .clone()
@@ -233,7 +240,7 @@ impl Harness {
             vad: setup.vad.clone(),
             text_chain: Arc::new(dictate_core::dictionary_stage::assemble_text_chain(
                 &setup.format,
-                Some(&dictionary),
+                (!setup.no_dictionary).then_some(&dictionary),
             )),
             formatter: setup.formatter.clone(),
             injector: setup.injector.clone(),

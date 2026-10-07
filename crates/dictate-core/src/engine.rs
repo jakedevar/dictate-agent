@@ -895,6 +895,39 @@ mod tests {
         c
     }
 
+    /// `capture_context = context_read && host_capture`: a session reads the
+    /// host's focused window only for a connection that may both see context
+    /// and has the host's input focus to capture. Every combination.
+    #[test]
+    fn capture_context_requires_both_context_read_and_host_capture() {
+        for (context_read, host_capture) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut c = Capabilities::local_trusted();
+            c.features.context_read = context_read;
+            c.features.host_capture = host_capture;
+            let want = context_read && host_capture;
+            assert_eq!(
+                resolve_options(None, &c).unwrap().capture_context,
+                want,
+                "context_read={context_read} host_capture={host_capture}"
+            );
+            // A session start does not widen it, and uploads never capture.
+            let options = SessionOptions {
+                app: Some("slack".into()),
+                ..SessionOptions::default()
+            };
+            assert_eq!(
+                resolve_options(Some(&options), &c).unwrap().capture_context,
+                want
+            );
+            assert!(
+                !resolve_upload_options(None, &c).unwrap().capture_context,
+                "uploads never read host focus"
+            );
+        }
+    }
+
     #[test]
     fn omitted_inject_follows_capabilities() {
         let resolved = resolve_options(None, &caps(true)).unwrap();

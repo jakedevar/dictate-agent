@@ -8,6 +8,7 @@
 use dictate_proto::{CheckStatus, Command, CommandResult, DiagnosticCheck, DiagnosticsReport};
 
 use crate::client::{self, Client};
+use crate::safe::inline;
 
 /// Render a report for a terminal: one line per check, and the fix under every
 /// warning and failure.
@@ -20,9 +21,13 @@ pub fn render(report: &DiagnosticsReport) -> String {
             CheckStatus::Fail => " FAIL ",
             CheckStatus::Skipped | CheckStatus::Unknown(_) => " skip ",
         };
-        out.push_str(&format!("[{tag}] {:<24} {}\n", check.title, check.detail));
+        out.push_str(&format!(
+            "[{tag}] {:<24} {}\n",
+            inline(&check.title),
+            inline(&check.detail)
+        ));
         if let Some(fix) = &check.fix {
-            out.push_str(&format!("         fix: {fix}\n"));
+            out.push_str(&format!("         fix: {}\n", inline(fix)));
         }
     }
     let failed = report
@@ -194,5 +199,19 @@ mod tests {
         assert!(daemon.fix.as_deref().unwrap().contains("dictated"));
         // The model check still runs, so the report is useful with no daemon.
         assert!(report.check("stt_model").is_some());
+    }
+
+    #[test]
+    fn a_hostile_check_detail_cannot_reach_the_terminal() {
+        let report = DiagnosticsReport {
+            checks: vec![DiagnosticCheck::fail(
+                "injection",
+                "Injection",
+                "no display \x1b]0;owned\x07",
+                "run \x1b[2Jthis",
+            )],
+        };
+        let out = render(&report);
+        assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
     }
 }
