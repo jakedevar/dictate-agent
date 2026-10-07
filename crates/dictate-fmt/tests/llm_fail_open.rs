@@ -771,19 +771,28 @@ async fn private_rejection_logs_no_dictated_words() {
             self.0.lock().unwrap().extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     let log = Arc::new(Mutex::new(Vec::new()));
     let writer = LogWriter(log.clone());
-    let subscriber = tracing_subscriber::fmt().with_ansi(false).without_time()
-        .with_writer(move || writer.clone()).finish();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
     let fake = Fake::start(|path, _| match path {
         "/api/tags" => tags(&["gemma4:e4b"]),
         _ => chat("Please check the logs."),
-    }).await;
+    })
+    .await;
     let f = LlmFormatter::new(config(&fake.host()));
-    let req = LlmRequest { private: true, ..request("please check the logs for syntheticsecret") };
+    let req = LlmRequest {
+        private: true,
+        ..request("please check the logs for syntheticsecret")
+    };
     let out = f.format(&req).await;
     assert_eq!(out.text, req.text);
     assert!(out.validator_rejection.is_some());
@@ -815,17 +824,25 @@ async fn warmup_prime_times_out_and_background_warmup_can_retry() {
         "/api/tags" => tags(&["gemma4:e4b"]),
         _ if body["messages"].as_array().is_some_and(Vec::is_empty) => chat(""),
         _ => Reply::Hang,
-    }).await;
+    })
+    .await;
     let mut c = config(&fake.host());
     c.timeout.max_ms = 50;
     let f = Arc::new(LlmFormatter::new(c));
     let started = std::time::Instant::now();
-    let err = f.warm_up(Some((&AppCategory::Terminal, &Tone::Neutral))).await.unwrap_err();
+    let err = f
+        .warm_up(Some((&AppCategory::Terminal, &Tone::Neutral)))
+        .await
+        .unwrap_err();
     assert!(err.contains("timed out"));
     assert!(started.elapsed() < Duration::from_millis(500));
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
     tokio::time::sleep(Duration::from_millis(150)).await;
     f.warm_up_in_background(AppCategory::Terminal, Tone::Neutral);
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(fake.chat_requests().len(), 6, "a timed-out prime must release the warming flag");
+    assert_eq!(
+        fake.chat_requests().len(),
+        6,
+        "a timed-out prime must release the warming flag"
+    );
 }

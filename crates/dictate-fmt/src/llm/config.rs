@@ -122,16 +122,26 @@ fn deserialize_policy<'de, D: serde::Deserializer<'de>>(
     mut policy: CategoryPolicy,
 ) -> Result<CategoryPolicy, D::Error> {
     let patch = CategoryPatch::deserialize(deserializer)?;
-    if let Some(enabled) = patch.enabled { policy.enabled = enabled; }
-    if let Some(style) = patch.style { policy.style = style; }
-    if let Some(structure) = patch.structure { policy.structure = structure; }
+    if let Some(enabled) = patch.enabled {
+        policy.enabled = enabled;
+    }
+    if let Some(style) = patch.style {
+        policy.style = style;
+    }
+    if let Some(structure) = patch.structure {
+        policy.structure = structure;
+    }
     Ok(policy)
 }
 
-fn deserialize_verbatim<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CategoryPolicy, D::Error> {
+fn deserialize_verbatim<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<CategoryPolicy, D::Error> {
     deserialize_policy(d, CategoryPolicy::verbatim())
 }
-fn deserialize_structured<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CategoryPolicy, D::Error> {
+fn deserialize_structured<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<CategoryPolicy, D::Error> {
     deserialize_policy(d, CategoryPolicy::prose(true))
 }
 fn deserialize_chat<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CategoryPolicy, D::Error> {
@@ -538,14 +548,25 @@ mod tests {
 
     #[test]
     fn partial_category_tables_preserve_each_categorys_defaults() {
-        for category in ["terminal", "editor", "browser", "chat", "email", "document", "other"] {
+        for category in [
+            "terminal", "editor", "browser", "chat", "email", "document", "other",
+        ] {
             let text = format!("[format.llm.categories.{category}]\nenabled = false\n");
             let loaded = load(&text).config;
-            let raw: crate::FormatConfig = toml::from_str(&format!("[llm.categories.{category}]\nenabled = false\n")).unwrap();
-            let mut expected = CategoryPolicies::default().get(&AppCategory::from(category)).clone();
+            let raw: crate::FormatConfig =
+                toml::from_str(&format!("[llm.categories.{category}]\nenabled = false\n")).unwrap();
+            let mut expected = CategoryPolicies::default()
+                .get(&AppCategory::from(category))
+                .clone();
             expected.enabled = false;
-            assert_eq!(loaded.categories.get(&AppCategory::from(category)), &expected);
-            assert_eq!(raw.llm.categories.get(&AppCategory::from(category)), &expected);
+            assert_eq!(
+                loaded.categories.get(&AppCategory::from(category)),
+                &expected
+            );
+            assert_eq!(
+                raw.llm.categories.get(&AppCategory::from(category)),
+                &expected
+            );
         }
     }
 

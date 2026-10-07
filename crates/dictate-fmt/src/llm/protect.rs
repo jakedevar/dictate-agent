@@ -707,7 +707,10 @@ mod tests {
             ] {
                 let m = mask(input, &normalize_spans(input, &[], true).unwrap(), style).unwrap();
                 let output = format!("{output_first} check {}.", style.token(1));
-                assert_eq!(m.restore(&output).unwrap(), format!("/review {expected_first} check src/a.rs."));
+                assert_eq!(
+                    m.restore(&output).unwrap(),
+                    format!("/review {expected_first} check src/a.rs.")
+                );
             }
         }
     }

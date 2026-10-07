@@ -325,9 +325,16 @@ impl LlmFormatter {
         let model = match tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
             self.resolver.ensure(self.backend.as_ref()),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(m)) => m,
-            Err(_) => return (fail(BackendError::Timeout(budget).to_string(), None), LlmTrace::default()),
+            Err(_) => {
+                return (
+                    fail(BackendError::Timeout(budget).to_string(), None),
+                    LlmTrace::default(),
+                )
+            }
             Ok(Err(reason)) => {
                 return (
                     fail(format!("no LLM model available: {reason}"), None),
@@ -419,7 +426,10 @@ impl LlmFormatter {
             (Some(_), rejection) => warn!(
                 model = outcome.model.as_deref().unwrap_or(""),
                 ms = outcome.duration.as_millis() as u64,
-                validator = rejection.as_ref().map(|r| r.validator.as_str()).unwrap_or(""),
+                validator = rejection
+                    .as_ref()
+                    .map(|r| r.validator.as_str())
+                    .unwrap_or(""),
                 "LLM pass failed open"
             ),
             (None, Some(r)) => warn!(
@@ -452,7 +462,10 @@ impl LlmFormatter {
             .map_err(|_| BackendError::Timeout(budget).to_string())?
     }
 
-    async fn warm_up_bounded(&self, prime: Option<(&AppCategory, &Tone)>) -> Result<Duration, String> {
+    async fn warm_up_bounded(
+        &self,
+        prime: Option<(&AppCategory, &Tone)>,
+    ) -> Result<Duration, String> {
         if !self.config.enabled {
             return Err("LLM formatting is disabled".into());
         }
@@ -801,20 +814,41 @@ mod tests {
     struct PanickingBackend;
 
     impl ChatBackend for PanickingBackend {
-        fn chat<'a>(&'a self, _: &'a ChatRequest) -> client::BoxFuture<'a, Result<ChatResponse, BackendError>> {
+        fn chat<'a>(
+            &'a self,
+            _: &'a ChatRequest,
+        ) -> client::BoxFuture<'a, Result<ChatResponse, BackendError>> {
             Box::pin(async { panic!("synthetic backend panic") })
         }
-        fn list_models(&self) -> client::BoxFuture<'_, Result<Vec<client::InstalledModel>, BackendError>> {
-            Box::pin(async { Ok(vec![client::InstalledModel { name: "gemma4:e4b".into(), family: String::new(), size: 0 }]) })
+        fn list_models(
+            &self,
+        ) -> client::BoxFuture<'_, Result<Vec<client::InstalledModel>, BackendError>> {
+            Box::pin(async {
+                Ok(vec![client::InstalledModel {
+                    name: "gemma4:e4b".into(),
+                    family: String::new(),
+                    size: 0,
+                }])
+            })
         }
-        fn load<'a>(&'a self, _: &'a str, _: &'a str) -> client::BoxFuture<'a, Result<Duration, BackendError>> {
+        fn load<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> client::BoxFuture<'a, Result<Duration, BackendError>> {
             Box::pin(async { Ok(Duration::ZERO) })
         }
     }
 
     #[tokio::test]
     async fn a_single_segment_panic_fails_open() {
-        let f = LlmFormatter::with_backend(LlmConfig { enabled: true, ..Default::default() }, Arc::new(PanickingBackend));
+        let f = LlmFormatter::with_backend(
+            LlmConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            Arc::new(PanickingBackend),
+        );
         let req = LlmRequest::new("please check the synthetic example");
         let out = f.format(&req).await;
         assert_eq!(out.text, req.text);

@@ -353,7 +353,10 @@ fn markup(c: &Check<'_>) -> Result<(), Rejection> {
 fn new_lines(c: &Check<'_>) -> Result<(), Rejection> {
     // CR submits terminal input just like LF. Other newly introduced control
     // characters (ESC, backspace, etc.) also have no formatting purpose.
-    let unsafe_control = c.output.chars().filter(|ch| ch.is_control() && *ch != '\n')
+    let unsafe_control = c
+        .output
+        .chars()
+        .filter(|ch| ch.is_control() && *ch != '\n')
         .any(|ch| c.output.matches(ch).count() > c.input.matches(ch).count());
     let added = c.output.matches('\n').count() > c.input.matches('\n').count();
     if unsafe_control || (added && !c.policy.allows_new_lines()) {
@@ -438,20 +441,36 @@ fn span_positions(c: &Check<'_>) -> Result<(), Rejection> {
     let pattern = c.mask.pattern();
     let input_spans: Vec<_> = pattern.find_iter(c.input).collect();
     let output_spans: Vec<_> = pattern.find_iter(c.output).collect();
-    if input_spans.is_empty() && output_spans.is_empty() { return Ok(()); }
-    let fail = || Rejection::new(Validator::ProtectedSpans, "protected span moved relative to dictated words");
-    if input_spans.len() != output_spans.len() { return Err(fail()); }
+    if input_spans.is_empty() && output_spans.is_empty() {
+        return Ok(());
+    }
+    let fail = || {
+        Rejection::new(
+            Validator::ProtectedSpans,
+            "protected span moved relative to dictated words",
+        )
+    };
+    if input_spans.len() != output_spans.len() {
+        return Err(fail());
+    }
     let (mut i, mut o) = (0, 0);
     for (a, b) in input_spans.iter().zip(&output_spans) {
-        if a.as_str() != b.as_str() { return Err(fail()); }
+        if a.as_str() != b.as_str() {
+            return Err(fail());
+        }
         let aw = words(&c.input[i..a.start()]);
         let bw = words(&c.output[o..b.start()]);
-        if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) { return Err(fail()); }
-        i = a.end(); o = b.end();
+        if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) {
+            return Err(fail());
+        }
+        i = a.end();
+        o = b.end();
     }
     let aw = words(&c.input[i..]);
     let bw = words(&c.output[o..]);
-    if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) { return Err(fail()); }
+    if !verbatim_alignment(c, &collapse_numbers(&aw), &collapse_numbers(&bw)) {
+        return Err(fail());
+    }
     Ok(())
 }
 
@@ -732,21 +751,35 @@ fn spoken_values(run: &[&str]) -> Vec<String> {
         }
         return vec![run.join(" ")];
     }
-    if run.iter().any(|w| matches!(*w, "hundred" | "thousand" | "million")) {
-        return compose(run).map(|v| vec![v.to_string()]).unwrap_or_default();
+    if run
+        .iter()
+        .any(|w| matches!(*w, "hundred" | "thousand" | "million"))
+    {
+        return compose(run)
+            .map(|v| vec![v.to_string()])
+            .unwrap_or_default();
     }
     let groups = group_values(run);
-    let mut values = vec![groups.iter().map(u64::to_string).collect::<Vec<_>>().join("|")];
+    let mut values = vec![groups
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join("|")];
     if let [a, b] = groups.as_slice() {
-        if (10..100).contains(a) && *b < 100 { values.push(format!("{a}{b:02}")); }
-        if *a <= 23 && *b < 60 { values.push(format!("{a}:{b:02}")); }
+        if (10..100).contains(a) && *b < 100 {
+            values.push(format!("{a}{b:02}"));
+        }
+        if *a <= 23 && *b < 60 {
+            values.push(format!("{a}:{b:02}"));
+        }
     }
     values
 }
 
 fn numeric_atoms(text: &str) -> Vec<NumericAtom> {
     static TOKEN: OnceLock<Regex> = OnceLock::new();
-    let re = TOKEN.get_or_init(|| Regex::new(r"[+-]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th)?|[\p{L}]+").unwrap());
+    let re = TOKEN
+        .get_or_init(|| Regex::new(r"[+-]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th)?|[\p{L}]+").unwrap());
     let tokens: Vec<_> = re.find_iter(text).collect();
     let mut atoms = Vec::new();
     let mut i = 0;
@@ -755,27 +788,50 @@ fn numeric_atoms(text: &str) -> Vec<NumericAtom> {
         let w = t.as_str().to_lowercase();
         if w.chars().any(|ch| ch.is_ascii_digit()) {
             let mut value = canonical_number(&w);
-            if value.ends_with(":00") && tokens.get(i + 1).is_some_and(|next| matches!(next.as_str().to_lowercase().as_str(), "am" | "pm")) {
+            if value.ends_with(":00")
+                && tokens.get(i + 1).is_some_and(|next| {
+                    matches!(next.as_str().to_lowercase().as_str(), "am" | "pm")
+                })
+            {
                 value.truncate(value.len() - 3);
             }
-            atoms.push(NumericAtom { values: vec![value], start: t.start(), end: t.end() });
+            atoms.push(NumericAtom {
+                values: vec![value],
+                start: t.start(),
+                end: t.end(),
+            });
             i += 1;
-        } else if number_word_value(&w).is_some() || matches!(w.as_str(), "hundred" | "thousand" | "million") {
+        } else if number_word_value(&w).is_some()
+            || matches!(w.as_str(), "hundred" | "thousand" | "million")
+        {
             let start = i;
             let mut run = vec![canonical_number(&w)];
             i += 1;
             while i < tokens.len() {
                 let w = tokens[i].as_str().to_lowercase();
                 let gap = &text[tokens[i - 1].end()..tokens[i].start()];
-                let number = number_word_value(&w).is_some() || matches!(w.as_str(), "hundred" | "thousand" | "million");
-                let connector = matches!(w.as_str(), "and" | "point") && tokens.get(i + 1).is_some_and(|next| number_word_value(&next.as_str().to_lowercase()).is_some());
-                if !gap.chars().all(|ch| ch.is_whitespace() || ch == '-') || !(number || connector) { break; }
+                let number = number_word_value(&w).is_some()
+                    || matches!(w.as_str(), "hundred" | "thousand" | "million");
+                let connector = matches!(w.as_str(), "and" | "point")
+                    && tokens.get(i + 1).is_some_and(|next| {
+                        number_word_value(&next.as_str().to_lowercase()).is_some()
+                    });
+                if !gap.chars().all(|ch| ch.is_whitespace() || ch == '-') || !(number || connector)
+                {
+                    break;
+                }
                 run.push(canonical_number(&w));
                 i += 1;
             }
             let refs: Vec<_> = run.iter().map(String::as_str).collect();
-            atoms.push(NumericAtom { values: spoken_values(&refs), start: tokens[start].start(), end: tokens[i - 1].end() });
-        } else { i += 1; }
+            atoms.push(NumericAtom {
+                values: spoken_values(&refs),
+                start: tokens[start].start(),
+                end: tokens[i - 1].end(),
+            });
+        } else {
+            i += 1;
+        }
     }
     atoms
 }
@@ -787,20 +843,36 @@ fn number_values(c: &Check<'_>) -> Result<(), Rejection> {
     let b = numeric_atoms(&output);
     let mut j = 0;
     for (i, atom) in a.iter().enumerate() {
-        let matches = b.get(j).is_some_and(|out| atom.values.iter().any(|v| out.values.contains(v)));
-        if matches { j += 1; continue; }
+        let matches = b
+            .get(j)
+            .is_some_and(|out| atom.values.iter().any(|v| out.values.contains(v)));
+        if matches {
+            j += 1;
+            continue;
+        }
         // Only a numeric retraction followed by another dictated value may
         // be removed. A value cannot disappear merely because it was licensed
         // somewhere else in the utterance.
         let correction = a.get(i + 1).is_some_and(|next| {
             let between = words(&input[atom.end..next.start]);
-            between.len() <= 6 && between.iter().any(|w| matches!(w.as_str(), "actually" | "sorry" | "correction" | "no"))
+            between.len() <= 6
+                && between
+                    .iter()
+                    .any(|w| matches!(w.as_str(), "actually" | "sorry" | "correction" | "no"))
         });
         if !correction {
-            return Err(Rejection::new(Validator::Numbers, "numeric values, order or occurrences changed"));
+            return Err(Rejection::new(
+                Validator::Numbers,
+                "numeric values, order or occurrences changed",
+            ));
         }
     }
-    if j != b.len() { return Err(Rejection::new(Validator::Numbers, "numeric values, order or occurrences changed")); }
+    if j != b.len() {
+        return Err(Rejection::new(
+            Validator::Numbers,
+            "numeric values, order or occurrences changed",
+        ));
+    }
     Ok(())
 }
 
@@ -983,14 +1055,22 @@ fn verbatim_alignment(c: &Check<'_>, input: &[&str], output: &[&str]) -> bool {
     reachable[0][0] = true;
     for i in 0..input.len() {
         for j in 0..=output.len() {
-            if !reachable[i][j] { continue; }
+            if !reachable[i][j] {
+                continue;
+            }
             reachable[i + 1][j] = true; // A deletion; checked by DroppedWords.
-            if j == output.len() { continue; }
-            if input[i] == output[j] { reachable[i + 1][j + 1] = true; }
+            if j == output.len() {
+                continue;
+            }
+            if input[i] == output[j] {
+                reachable[i + 1][j + 1] = true;
+            }
             for n in 1..=3.min(input.len() - i) {
                 let joined = input[i..i + n].concat();
-                if joined == output[j] || (vocabulary.contains(output[j])
-                    && normalized_similarity(&joined, output[j]) >= 0.6) {
+                if joined == output[j]
+                    || (vocabulary.contains(output[j])
+                        && normalized_similarity(&joined, output[j]) >= 0.6)
+                {
                     reachable[i + n][j + 1] = true;
                 }
             }
@@ -1008,7 +1088,10 @@ fn edit_distance(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
     let input = collapse_numbers(input);
     let output = collapse_numbers(output);
     if c.policy.style == Style::Verbatim && !verbatim_alignment(c, &input, &output) {
-        return Err(Rejection::new(Validator::EditDistance, "verbatim tokens are reordered or duplicated"));
+        return Err(Rejection::new(
+            Validator::EditDistance,
+            "verbatim tokens are reordered or duplicated",
+        ));
     }
     if input.is_empty() {
         return Ok(());
@@ -1232,12 +1315,14 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
         let restart = (d..(d + 6).min(input.len())).any(|j| kept[j] && input[j] == input[start]);
         let modal_restart = input.get(start..start + 2) == Some(&["can", "you"])
             && input.get(d..d + 2) == Some(&["could", "you"]);
-        let repeated = |k: usize| (k > 0 && input[k - 1] == input[k])
-            || input.get(k + 1) == Some(&input[k]);
+        let repeated =
+            |k: usize| (k > 0 && input[k - 1] == input[k]) || input.get(k + 1) == Some(&input[k]);
         let phrase_filler = |k: usize| {
             [("you", "know"), ("i", "mean")].iter().any(|(a, b)| {
                 (k > 0 && input[k - 1] == *a && input[k] == *b && !kept[k - 1])
-                    || (input[k] == *a && input.get(k + 1) == Some(b) && kept.get(k + 1) == Some(&false))
+                    || (input[k] == *a
+                        && input.get(k + 1) == Some(b)
+                        && kept.get(k + 1) == Some(&false))
             })
         };
         // A cue must actually be inside the deleted retraction before a
@@ -1249,8 +1334,26 @@ fn dropped_words(c: &Check<'_>, input: &[String], output: &[String]) -> Result<(
                 // Dropping a negation flips meaning unless it is itself the
                 // retracted part or the cue of a correction.
                 (w == "no" && cue(k)) || (repeated(k) && in_output.contains(w)) || retracted(k)
-            } else if matches!(w, "i" | "you" | "he" | "she" | "it" | "we" | "they" | "me" | "us" | "them" | "my" | "your" | "our" | "their") {
-                phrase_filler(k) || (repeated(k) && in_output.contains(w)) || restart || modal_restart
+            } else if matches!(
+                w,
+                "i" | "you"
+                    | "he"
+                    | "she"
+                    | "it"
+                    | "we"
+                    | "they"
+                    | "me"
+                    | "us"
+                    | "them"
+                    | "my"
+                    | "your"
+                    | "our"
+                    | "their"
+            ) {
+                phrase_filler(k)
+                    || (repeated(k) && in_output.contains(w))
+                    || restart
+                    || modal_restart
             } else {
                 DELETABLE.contains(&w)
                     || phrase_filler(k)
@@ -1528,10 +1631,18 @@ mod tests {
         for category in ["terminal", "editor", "chat", "document"] {
             for control in ['\r', '\u{1b}', '\u{8}', '\0'] {
                 let output = format!("Please check{control} the logs.");
-                assert_eq!(rejected_by(run("please check the logs", &output, category)), Validator::NewLines);
+                assert_eq!(
+                    rejected_by(run("please check the logs", &output, category)),
+                    Validator::NewLines
+                );
             }
         }
-        run("please check\r the logs", "Please check\r the logs.", "terminal").unwrap();
+        run(
+            "please check\r the logs",
+            "Please check\r the logs.",
+            "terminal",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1574,10 +1685,16 @@ mod tests {
         for category in ["terminal", "chat", "document"] {
             for (input, output) in [
                 ("copy ⟦1⟧ to ⟦2⟧", "Copy to ⟦1⟧ ⟦2⟧."),
-                ("send the report to ⟦1⟧ tomorrow", "Send ⟦1⟧ the report to tomorrow."),
+                (
+                    "send the report to ⟦1⟧ tomorrow",
+                    "Send ⟦1⟧ the report to tomorrow.",
+                ),
                 ("delete ⟦1⟧ then keep ⟦2⟧", "⟦1⟧ delete then keep ⟦2⟧."),
             ] {
-                assert_eq!(rejected_by(run(input, output, category)), Validator::ProtectedSpans);
+                assert_eq!(
+                    rejected_by(run(input, output, category)),
+                    Validator::ProtectedSpans
+                );
             }
             run("um copy ⟦1⟧ to ⟦2⟧", "Copy ⟦1⟧ to ⟦2⟧.", category).unwrap();
         }
@@ -1614,7 +1731,11 @@ mod tests {
                 ("use 1/2 liter", "Use 2/1 liter."),
                 ("use twenty five liters", "Use 5 liters."),
             ] {
-                assert_eq!(rejected_by(run(input, output, category)), Validator::Numbers, "{input} → {output}");
+                assert_eq!(
+                    rejected_by(run(input, output, category)),
+                    Validator::Numbers,
+                    "{input} → {output}"
+                );
             }
             run("use 3.5 liters", "Use 3.5 liters.", category).unwrap();
             run("use fifteen liters", "Use 15 liters.", category).unwrap();
@@ -1703,7 +1824,10 @@ mod tests {
                 ("copy alpha to beta", "Copy beta to alpha."),
                 ("send the report", "Send the report report."),
             ] {
-                assert_eq!(rejected_by(run(input, output, category)), Validator::EditDistance);
+                assert_eq!(
+                    rejected_by(run(input, output, category)),
+                    Validator::EditDistance
+                );
             }
             run("um Alice from Bob", "Alice from Bob.", category).unwrap();
             run("do not not deploy", "Do not deploy.", category).unwrap();
@@ -1793,7 +1917,10 @@ mod tests {
                 ("I know the answer", "I the answer."),
                 ("ship it if approved", "Ship it approved."),
             ] {
-                assert!(run(input, output, category).is_err(), "{category}: {input} → {output}");
+                assert!(
+                    run(input, output, category).is_err(),
+                    "{category}: {input} → {output}"
+                );
             }
         }
         run("you know we should ship", "We should ship.", "terminal").unwrap();
