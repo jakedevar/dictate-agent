@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flow bar</title>
+    <link rel="stylesheet" href="/src/hud/hud.css" />
+  </head>
+  <body>
+    <div id="pill" class="pill" data-phase="hidden" role="status" aria-live="polite">
+      <span class="indicator" aria-hidden="true"><span class="dot"></span><span class="spinner"><i></i><i></i><i></i></span><svg class="glyph ok" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" /></svg><svg class="glyph err" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg><span class="dash"></span></span>
+      <span class="meter" aria-hidden="true"></span>
+      <span class="label"></span>
+      <span class="timer" aria-hidden="true"></span>
+    </div>
+    <script type="module" src="/src/hud/main.ts"></script>
+  </body>
+</html>
