@@ -1,0 +1,33 @@
+# Durable gate jobs for RSI's AgentSubmitJob {kind:"test", params:{recipe:NAME}} (RSI #1477).
+# Each runs the local justfile target in the submitter's sandbox, survives the
+# turn ending and a daemon restart, and wakes the submitter once with the result.
+# cpu_quota_percent 800 = the host-etiquette 8 cores (shared 32-core host).
+version = 1
+
+# Worker gate: tests + clippy (3 feature lines) + fmt + dictate-cli tree check. CPU only.
+[recipes.check-cpu]
+runner = "just"
+target = "check-cpu"
+timeout_minutes = 60
+cpu_quota_percent = 800
+
+# Integrator gate: clippy with the CUDA backend (cold CUDA build is ~1000 CPU-s).
+[recipes.check-cuda]
+runner = "just"
+target = "check-cuda"
+timeout_minutes = 60
+cpu_quota_percent = 800
+
+# Integrator gate: real CUDA Whisper + Silero VAD end-to-end (GPU + model).
+[recipes.e2e]
+runner = "just"
+target = "e2e"
+timeout_minutes = 45
+cpu_quota_percent = 800
+
+# Cutover scripts in a temp HOME (never the real one).
+[recipes.cutover-test]
+runner = "just"
+target = "cutover-test"
+timeout_minutes = 15
+cpu_quota_percent = 200
