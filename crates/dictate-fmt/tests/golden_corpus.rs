@@ -765,3 +765,29 @@ fn the_opt_in_claude_corrections_keep_their_historical_intent() {
         assert_eq!(run.doc.verify_output(&out), Ok(()), "input: {input:?}");
     }
 }
+
+/// Code operators survive the whole chain: the prose rule that glues `!` to
+/// the previous word must not turn `x != y` into `x!= y`.
+#[test]
+fn code_operators_keep_their_spacing_through_the_whole_chain() {
+    let chain = TextChain::standard(&FormatConfig::default());
+    for input in [
+        "if x != y then stop",
+        "check that a !== b",
+        "x == y",
+        "x <= y and y >= z",
+        "x => y",
+        "x -> y",
+    ] {
+        let out = chain.run(input, &FormatContext::default()).doc.restore();
+        for op in ["!==", "!=", "==", "<=", ">=", "=>", "->"] {
+            // `!==` also contains `!=`; only check what the input spells.
+            if input.split(' ').any(|w| w == op) {
+                assert!(
+                    out.contains(&format!(" {op} ")),
+                    "operator {op:?} lost its spacing: {input:?} -> {out:?}"
+                );
+            }
+        }
+    }
+}
