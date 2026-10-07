@@ -11,6 +11,16 @@ language=""
 claude_dictionary=false
 
 fail() { printf 'cutover: %s\n' "$*" >&2; exit 1; }
+# dictated writes its PID file a little before it binds the control socket
+# (about 0.1 s on the real host), so a PID claim does not mean "answering".
+# Retry `dictate status` until it succeeds or the deadline passes.
+wait_ready() {
+    local deadline=$((SECONDS + ${CUTOVER_READY_SECS:-20}))
+    until "$cli" status >/dev/null 2>&1; do
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.2
+    done
+}
 parse_args() {
     while [ "$#" -gt 0 ]; do
         case "$1" in

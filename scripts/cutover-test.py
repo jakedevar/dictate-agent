@@ -58,6 +58,8 @@ if name in ("dictated", "dictate-agent"):
     if is_new:
         sock = pathlib.Path(os.environ.get("DICTATE_SOCKET", str(run / "dictate-agent/dictated.sock")))
         sock.parent.mkdir(parents=True, exist_ok=True)
+        # The real daemon binds its socket shortly after writing its PID file.
+        if (state / "slow-socket").exists(): time.sleep(0.6)
         sock.touch()
     def term(sig, frame):
         event("term-" + name)
@@ -93,7 +95,7 @@ elif name == "dictate":
     socket = pathlib.Path(os.environ.get("DICTATE_SOCKET", str(run / "dictate-agent/dictated.sock")))
     probe = not str(socket).startswith(str(home))
     if args[0] == "status":
-        sys.exit(1 if (state / "bad-status").exists() else 0)
+        sys.exit(1 if (state / "bad-status").exists() or not socket.exists() else 0)
     elif args[0] == "doctor":
         event("doctor " + ("probe" if probe else "service") + " " + " ".join(args))
         if (state / "bad-json").exists(): print("invalid"); sys.exit(1)
@@ -128,6 +130,7 @@ class CutoverTests(unittest.TestCase):
             p.mkdir(parents=True, exist_ok=True)
         self.env = dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.cfg),
                         XDG_DATA_HOME=str(self.data), XDG_RUNTIME_DIR=str(self.run),
+                        CUTOVER_READY_SECS="3",
                         PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         self.env.pop("DICTATE_SOCKET", None)
         self.env.pop("DBUS_SESSION_BUS_ADDRESS", None)
@@ -216,6 +219,13 @@ class CutoverTests(unittest.TestCase):
         self.script(success=False)
         self.assert_old()
         self.assertEqual(self.config.read_text(), self.original)
+
+    def test_socket_bound_after_pid_file_still_cuts_over(self):
+        # 2026-10-07 live run: the PID file appeared ~0.1 s before the socket
+        # and a single `dictate status` raced it, rolling a healthy cutover back.
+        (self.state / "slow-socket").touch()
+        self.script()
+        self.assertIn("systemctl --user enable --now dictated", self.events())
 
     def test_failed_status_rolls_back(self):
         (self.state / "bad-status").touch()

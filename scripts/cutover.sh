@@ -88,6 +88,7 @@ XDG_CONFIG_HOME="$probe/config" XDG_DATA_HOME="$probe/data" XDG_RUNTIME_DIR="$pr
     "$new_binary" --config "$probe/config.toml" >"$attempt/preflight-daemon.log" 2>&1 9>&- &
 probe_pid=$!
 python3 "$helper" wait claim "$probe/run/dictate-agent/dictated.pid" "$new_binary" >/dev/null
+DICTATE_SOCKET="$probe/run/dictate-agent/dictated.sock" wait_ready || fail 'preflight daemon never answered on its socket'
 DICTATE_SOCKET="$probe/run/dictate-agent/dictated.sock" doctor_check preflight "$attempt/preflight.json" --quick
 cleanup_probe
 
@@ -108,6 +109,7 @@ python3 "$helper" dropin "$new_binary" "$attempt/first-start.toml" >"$dropin"
 systemctl --user daemon-reload
 systemctl --user enable --now dictated
 python3 "$helper" wait claim "$new_pid" "$new_binary" >/dev/null
+wait_ready || true
 "$cli" status
 doctor_check postflight "$attempt/postflight.json"
 if [ "$claude_dictionary" = true ]; then
