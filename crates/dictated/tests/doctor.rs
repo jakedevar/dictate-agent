@@ -188,9 +188,8 @@ async fn a_formatter_ladder_with_no_installed_rung_fails() {
     h.stop().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_local_route_model_is_checked_separately_and_only_warns() {
-    let ollama = fake_ollama(&["gemma4:12b"]).await;
+async fn local_check(installed: &[&str]) -> dictate_proto::DiagnosticCheck {
+    let ollama = fake_ollama(installed).await;
     let h = Harness::with(Setup::default().with_doctor(
         config_in(&std::env::temp_dir(), &ollama, "gemma4:12b"),
         ConfigReport::default(),
@@ -201,13 +200,30 @@ async fn the_local_route_model_is_checked_separately_and_only_warns() {
         .check("local_model")
         .unwrap()
         .clone();
-    assert_eq!(
-        local.status,
-        CheckStatus::Warn,
-        "only the `local` route needs it"
-    );
-    assert!(local.fix.unwrap().contains("local.model"));
     h.stop().await;
+    local
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_installed_local_head_model_passes() {
+    let local = local_check(&["local-model:1b"]).await;
+    assert_eq!(local.status, CheckStatus::Ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_local_route_on_a_fallback_rung_warns_without_saying_it_fails() {
+    let local = local_check(&["gemma4:12b"]).await;
+    assert_eq!(local.status, CheckStatus::Warn);
+    assert!(local.detail.contains("gemma4:12b"), "{}", local.detail);
+    assert!(!local.detail.contains("will fail"), "{}", local.detail);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_local_ladder_with_no_installed_rung_fails_and_names_local_models() {
+    let local = local_check(&["qwen3.6:27b"]).await;
+    assert_eq!(local.status, CheckStatus::Fail);
+    assert!(local.detail.contains("qwen3.6:27b"), "{}", local.detail);
+    assert!(local.fix.unwrap().contains("local.models"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
