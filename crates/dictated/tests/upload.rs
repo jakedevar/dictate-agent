@@ -17,14 +17,17 @@ mod harness;
 
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dictate_core::ports::mock::{
-    ActiveMedia, Gate, MockAudio, MockInjector, MockStt, RecordingEarcons,
+    ActiveMedia, Gate, MockAudio, MockInjector, MockStt, MockVad, RecordingEarcons,
 };
 use dictate_core::ports::{AudioSource, DisabledAudioSource};
+use dictate_core::ports::{GateDecision, TrailingSilenceTracker, VoiceActivityGate};
 use dictate_proto::{
     AudioEncoding, AudioFormat, AudioSource as Upload, Capabilities, Command, CommandResult,
-    ErrorCode, Event, InjectionOutcome, RequestId, SessionOptions, StageTiming, State, Transcript,
+    ErrorCode, Event, InjectionOutcome, Message, RequestId, SessionOptions, StageTiming, State,
+    Transcript,
 };
 use harness::{Client, Harness, Setup};
 
@@ -102,6 +105,79 @@ async fn audio_activity_until_idle(client: &mut Client) -> Vec<Event> {
 // ---------------------------------------------------------------------------
 // 1. The happy path
 // ---------------------------------------------------------------------------
+
+/// Approximate the real CPU VAD + GPU STT stage times without either model.
+struct DelayedVad(MockVad);
+
+impl VoiceActivityGate for DelayedVad {
+    fn gate(&self, samples: &[f32]) -> anyhow::Result<GateDecision> {
+        std::thread::sleep(Duration::from_millis(20));
+        self.0.gate(samples)
+    }
+
+    fn trailing_silence_tracker(&self) -> anyhow::Result<Box<dyn TrailingSilenceTracker>> {
+        self.0.trailing_silence_tracker()
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled()
+    }
+
+    fn poll_interval_ms(&self) -> u32 {
+        self.0.poll_interval_ms()
+    }
+}
+
+fn delayed_upload_setup() -> (Setup, Arc<DelayedVad>) {
+    let vad = Arc::new(DelayedVad(MockVad::returning(GateDecision::Speech {
+        samples: vec![0.1; 16_000],
+        leading_trimmed_ms: 0.0,
+        trailing_trimmed_ms: 0.0,
+    })));
+    let setup = Setup::default()
+        .with_stt(Arc::new(
+            MockStt::returning("hello there").with_delay(Duration::from_millis(130)),
+        ))
+        .with_vad(vad.clone());
+    (setup, vad)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeated_uploads_survive_events_between_request_fragments() {
+    let (setup, vad) = delayed_upload_setup();
+    let h = Harness::with(setup).await;
+    let mut client = h.client().await;
+    // Receiving the marker below proves the event arm interrupted the reader.
+    client.subscribe().await;
+    let audio = wav(16_000, 1, 8.0);
+    for n in 0..6 {
+        // Like e2e_real: one connection, wait for each transcript, then repeat.
+        expect_transcript(client.request(transcribe(audio.clone())).await.unwrap());
+        let id = RequestId::Text(format!("fragmented-{n}"));
+        let line = Message::request(id.clone(), transcribe(audio.clone()))
+            .to_ndjson_line()
+            .unwrap();
+        // Larger than the socket send buffer: finishing this write requires
+        // the server to consume an incomplete frame before the event arrives.
+        let split = line.len() - 1024;
+        client.write_raw(&line.as_bytes()[..split]).await;
+        h.daemon.engine().bus().publish(Event::Error {
+            session_id: None,
+            error: dictate_proto::ProtoError::new(ErrorCode::Internal, "framing marker"),
+        });
+        loop {
+            if matches!(client.next_event().await, Event::Error { error, .. }
+                if error.message == "framing marker")
+            {
+                break;
+            }
+        }
+        client.write_raw(&line.as_bytes()[split..]).await;
+        assert_eq!(client.read_response_ids(1).await, [id]);
+    }
+    assert_eq!(vad.0.gate_count(), 12);
+    h.stop().await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_response_to_an_upload_is_its_transcript() {
@@ -214,16 +290,20 @@ async fn raw_pcm_uploads_work_at_the_declared_layout() {
 async fn back_to_back_uploads_do_not_race_the_slot_release() {
     // The engine frees its slot *before* answering, so a client that sends its
     // next request the instant it has a transcript must never see `busy`.
-    let h = Harness::start().await;
+    let (setup, vad) = delayed_upload_setup();
+    let h = Harness::with(setup).await;
     let mut client = h.client().await;
-    for _ in 0..25 {
-        expect_transcript(
-            client
-                .request(transcribe(wav(16_000, 1, 0.5)))
-                .await
-                .unwrap(),
-        );
+    // Mirror e2e_real's loop: three sizes, one warm-up plus eight repeats,
+    // on one connection without subscribing to events.
+    for secs in [1.0, 4.0, 8.0] {
+        let audio = wav(16_000, 1, secs);
+        for _ in 0..9 {
+            let transcript =
+                expect_transcript(client.request(transcribe(audio.clone())).await.unwrap());
+            assert_eq!(transcript.text.as_str(), "Hello there");
+        }
     }
+    assert_eq!(vad.0.gate_count(), 27);
     h.stop().await;
 }
 

@@ -315,9 +315,13 @@ async fn connection_loop(
     deps: &Arc<ServerDeps>,
 ) -> Result<()> {
     let id = conn.id;
+    // Event delivery can cancel a pending read after it consumed only part of
+    // a frame. Keep those bytes across select iterations, including for peers
+    // that are not subscribed (their event arm still runs).
+    let mut frame = Vec::new();
     loop {
         tokio::select! {
-            line = read_line_bounded(reader, conn.max_message_bytes()) => {
+            line = read_line_bounded(reader, conn.max_message_bytes(), &mut frame) => {
                 match line? {
                     Framed::Eof => break,
                     Framed::TooLarge(limit) => {
@@ -514,22 +518,27 @@ enum Framed {
 /// The bound is applied *while* reading rather than after, so a peer cannot
 /// make the daemon allocate an arbitrary amount of memory by omitting a
 /// newline — the same rule the binary frame decoder applies to `payload_len`.
-async fn read_line_bounded<R>(reader: &mut R, limit: usize) -> Result<Framed>
+/// `buf` belongs to the connection: `read_until` preserves consumed bytes in
+/// it if this future is cancelled by the event arm. A resumed read counts the
+/// entire frame toward the limit, not just the bytes read by this invocation.
+async fn read_line_bounded<R>(reader: &mut R, limit: usize, buf: &mut Vec<u8>) -> Result<Framed>
 where
     R: tokio::io::AsyncBufRead + Unpin,
 {
-    let mut buf = Vec::new();
-    let read = {
-        let mut limited = tokio::io::AsyncReadExt::take(reader, limit as u64 + 1);
-        limited.read_until(b'\n', &mut buf).await?
-    };
-    if read == 0 {
+    if buf.len() > limit {
+        return Ok(Framed::TooLarge(limit));
+    }
+    let mut limited = tokio::io::AsyncReadExt::take(reader, (limit - buf.len()) as u64 + 1);
+    limited.read_until(b'\n', buf).await?;
+    if buf.is_empty() {
         return Ok(Framed::Eof);
     }
     if buf.len() > limit {
         return Ok(Framed::TooLarge(limit));
     }
-    Ok(Framed::Line(String::from_utf8_lossy(&buf).into_owned()))
+    let line = String::from_utf8_lossy(buf).into_owned();
+    buf.clear();
+    Ok(Framed::Line(line))
 }
 
 async fn write(sink: &mut (impl AsyncWriteExt + Unpin), message: &Message) -> Result<()> {
@@ -1219,19 +1228,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_interrupted_read_preserves_the_frame_and_following_lines() {
+        use std::future::Future;
+        let (read, mut write) = tokio::io::duplex(128);
+        let mut reader = BufReader::new(read);
+        let mut frame = Vec::new();
+        write.write_all(b"{\"a\":").await.unwrap();
+        {
+            let mut pending = std::pin::pin!(read_line_bounded(&mut reader, 64, &mut frame));
+            std::future::poll_fn(|cx| {
+                assert!(pending.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        } // Exactly the cancellation performed when an event wins select!.
+        assert_eq!(frame, b"{\"a\":");
+        write.write_all(b"1}\nnext\n").await.unwrap();
+        for expected in ["{\"a\":1}\n", "next\n"] {
+            match read_line_bounded(&mut reader, 64, &mut frame)
+                .await
+                .unwrap()
+            {
+                Framed::Line(line) => assert_eq!(line, expected),
+                _ => panic!("expected a complete line"),
+            }
+            assert!(frame.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_reads_enforce_the_limit_across_fragments() {
+        use std::future::Future;
+        for size in [64, 65] {
+            let (read, mut write) = tokio::io::duplex(128);
+            let mut reader = BufReader::new(read);
+            let mut frame = Vec::new();
+            // Interrupt twice, so resetting the byte budget on any resume
+            // would let an oversized frame through.
+            for _ in 0..2 {
+                write.write_all(&[b'x'; 20]).await.unwrap();
+                let mut pending = std::pin::pin!(read_line_bounded(&mut reader, 64, &mut frame));
+                std::future::poll_fn(|cx| {
+                    assert!(pending.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+            }
+            write.write_all(&vec![b'x'; size - 41]).await.unwrap();
+            write.write_all(b"\n").await.unwrap();
+            match read_line_bounded(&mut reader, 64, &mut frame)
+                .await
+                .unwrap()
+            {
+                Framed::Line(line) if size == 64 => assert_eq!(line.len(), 64),
+                Framed::TooLarge(limit) if size == 65 => {
+                    assert_eq!(limit, 64);
+                    assert_eq!(frame.len(), 65);
+                }
+                _ => panic!("wrong size-limit decision for {size} bytes"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn eof_finishes_an_interrupted_frame_before_reporting_eof() {
+        use std::future::Future;
+        let (read, mut write) = tokio::io::duplex(128);
+        let mut reader = BufReader::new(read);
+        let mut frame = Vec::new();
+        write.write_all(b"last").await.unwrap();
+        {
+            let mut pending = std::pin::pin!(read_line_bounded(&mut reader, 64, &mut frame));
+            std::future::poll_fn(|cx| {
+                assert!(pending.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        drop(write);
+        assert!(matches!(
+            read_line_bounded(&mut reader, 64, &mut frame).await.unwrap(),
+            Framed::Line(line) if line == "last"
+        ));
+        assert!(matches!(
+            read_line_bounded(&mut reader, 64, &mut frame)
+                .await
+                .unwrap(),
+            Framed::Eof
+        ));
+    }
+
+    #[tokio::test]
     async fn read_line_bounded_returns_whole_lines_then_eof() {
         let input = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
         let mut reader = BufReader::new(std::io::Cursor::new(input));
-        match read_line_bounded(&mut reader, 1024).await.unwrap() {
+        let mut frame = Vec::new();
+        match read_line_bounded(&mut reader, 1024, &mut frame)
+            .await
+            .unwrap()
+        {
             Framed::Line(l) => assert_eq!(l.trim(), r#"{"a":1}"#),
             _ => panic!("expected a line"),
         }
-        match read_line_bounded(&mut reader, 1024).await.unwrap() {
+        match read_line_bounded(&mut reader, 1024, &mut frame)
+            .await
+            .unwrap()
+        {
             Framed::Line(l) => assert_eq!(l.trim(), r#"{"b":2}"#),
             _ => panic!("expected a line"),
         }
         assert!(matches!(
-            read_line_bounded(&mut reader, 1024).await.unwrap(),
+            read_line_bounded(&mut reader, 1024, &mut frame)
+                .await
+                .unwrap(),
             Framed::Eof
         ));
     }
@@ -1240,7 +1349,10 @@ mod tests {
     async fn an_oversized_line_is_refused_before_it_is_buffered() {
         let huge = format!("{}\n", "x".repeat(4096));
         let mut reader = BufReader::new(std::io::Cursor::new(huge.into_bytes()));
-        match read_line_bounded(&mut reader, 64).await.unwrap() {
+        match read_line_bounded(&mut reader, 64, &mut Vec::new())
+            .await
+            .unwrap()
+        {
             Framed::TooLarge(limit) => assert_eq!(limit, 64),
             _ => panic!("expected the read to be refused"),
         }
@@ -1251,7 +1363,9 @@ mod tests {
         let line = format!("{}\n", "x".repeat(63));
         let mut reader = BufReader::new(std::io::Cursor::new(line.into_bytes()));
         assert!(matches!(
-            read_line_bounded(&mut reader, 64).await.unwrap(),
+            read_line_bounded(&mut reader, 64, &mut Vec::new())
+                .await
+                .unwrap(),
             Framed::Line(_)
         ));
     }
