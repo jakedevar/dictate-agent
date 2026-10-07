@@ -502,9 +502,9 @@ struct LegacyGrammar {
 impl LegacyGrammar {
     fn into_config(self) -> LlmConfig {
         let mut config = LlmConfig::default();
-        if let Some(enabled) = self.enabled {
-            config.enabled = enabled;
-        }
+        // The historical [grammar] table enabled the pass unless explicitly
+        // opted out; the new default (no table) remains disabled.
+        config.enabled = self.enabled.unwrap_or(true);
         if let Some(host) = self.host {
             config.host = host;
         }
@@ -654,6 +654,14 @@ min_words = 3
     fn legacy_model_already_in_the_ladder_is_not_duplicated() {
         let l = load("[grammar]\nmodel = \"gemma4:12b\"\n");
         assert_eq!(l.config.models, ["gemma4:12b", "gemma4:e4b"]);
+    }
+
+    #[test]
+    fn legacy_table_without_enabled_keeps_the_historical_opt_in() {
+        for text in ["[grammar]\n", "[grammar]\nmodel = \"qwen3:14b\"\n"] {
+            assert!(load(text).config.enabled);
+        }
+        assert!(!load("").config.enabled);
     }
 
     #[test]
