@@ -11,7 +11,9 @@ Wants=pipewire.service
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/dictated
-Restart=on-failure
+# The daemon handles SIGINT/SIGTERM and exits successfully. Recover those exits
+# too; an explicit `systemctl --user stop dictated` still keeps it stopped.
+Restart=always
 RestartSec=5
 
 # X11 is the first-class injection backend today (locked decision 4).

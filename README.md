@@ -7,6 +7,7 @@ a control CLI (`dictate`) and an optional desktop UI (`dictate-ui`).
 - Install, upgrade, roll back: [docs/INSTALL.md](docs/INSTALL.md)
 - Coming from the Python or monolithic daemon: [docs/MIGRATION-FROM-PYTHON.md](docs/MIGRATION-FROM-PYTHON.md)
 - Wire protocol: [docs/protocol.md](docs/protocol.md)
+- Speech model candidates: [docs/STT-MODELS.md](docs/STT-MODELS.md)
 - Contributing / architecture: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
 
 CI (`.github/workflows/ci.yml`) runs the CPU gate only: `just check-cpu`, the UI

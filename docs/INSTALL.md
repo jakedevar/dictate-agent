@@ -100,6 +100,63 @@ Bind `dictate toggle` and `dictate cancel` in your window manager, or enable
 The UI: put `dictate-ui` where your session starts it, for example in i3
 `exec --no-startup-id ~/.local/bin/dictate-ui`. See `ui/README.md`.
 
+For i3 sessions, also start the enabled daemon at desktop login. The systemd
+user manager can outlive an X11 session, so its `default.target` does not
+necessarily start again when i3 does:
+
+```i3
+exec --no-startup-id systemctl --user start dictated
+```
+
+`scripts/run.sh` also starts the service when it is enabled; after rollback
+disables it, that launcher starts the legacy binary. The unit restarts after
+unexpected clean exits as well as failures. `systemctl --user stop dictated`
+still stops it until the next explicit start.
+
+### Diagnosing startup and missing cleanup
+
+```bash
+systemctl --user status dictated
+systemctl --user cat dictated
+journalctl --user -u dictated -b --no-pager -n 60
+dictate status
+dictate doctor --quick
+ollama list
+```
+
+An enabled unit can be inactive. The CLI and i3 bindings need `dictated`;
+running the older `dictate-agent` binary does not provide its control socket.
+Use the cutover procedure below to move between them, keeping one daemon in
+charge.
+
+Check the unit's complete `ExecStart`, including drop-ins. `cutover.sh` pins
+a generated `cutover/.../steady.toml`, so editing the usual
+`~/.config/dictate-agent/config.toml` does not change that service's config.
+Pass the effective path to `dictated --check-config --config PATH` and restart
+the service after changing it. To return to the normal path, back up both
+files, copy the desired settings there, and change the cutover drop-in's
+`--config` argument before `daemon-reload` and restart.
+
+Cleanup fails open when its configured model is absent. Check
+`dictate status --json` for formatter health, compare `[format.llm].models`
+(or the older `[grammar].model`) with `ollama list`, and choose an installed
+model. Raw dictation can still work while cleanup is failing.
+
+If Ghostty sessions report `paste unconfirmed; no typing retry`, the existing
+per-app typing policy bypasses the clipboard transaction from the outset:
+
+```toml
+[[context.profiles]]
+name = "ghostty-typing"
+match = { class = "com.mitchellh.ghostty" }
+category = "terminal"
+inject = "type"
+```
+
+Put this in the effective daemon config and restart it; first matching profile
+wins. Check `dictate context --json` while Ghostty has focus. This is a
+workaround for clipboard compatibility, not a retry after an uncertain paste.
+
 ## 4. Upgrade
 
 ```bash
