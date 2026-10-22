@@ -194,6 +194,17 @@ Rule 7 is checked when the listener starts.
 > API became an always-on dependency of the Mac app, and the operator's
 > dictation must never stop because a port was taken or a token file was
 > chmodded.
+>
+> **Amended 2026-10-21 (pre-land review #3553 of #3528).** The Mac app reaches
+> the loopback API through `ssh -R 127.0.0.1:P` from the hub. That bind address
+> is a request the Mac's sshd may override (`GatewayPorts yes` binds every
+> interface), so "the Mac side is loopback only" is enforced by the unit's
+> wrapper `scripts/dictate-mac-tunnel`, not assumed: an sshd-policy preflight
+> (`sshd -G` plus the full Include tree, Match blocks included) refuses any
+> GatewayPorts other than `no` or an unreadable policy, and a post-start
+> `lsof` check on the Mac kills any non-loopback listener. Refusal = exit 78,
+> not retried. Tokens never ride an argv (curl `-K -` on stdin), and the Mac
+> token file is written via `mktemp` + rename (#3555, #3556, #3557).
 
 ## 5. Authentication
 
