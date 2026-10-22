@@ -68,11 +68,15 @@ final class OnboardingModel {
     var now = Date()
     /// The user asked to open the Accessibility pane at least once.
     var accessibilityRequested = false
+    /// Set when the hotkey is Option+N and AeroSpace binds alt-n.
+    var aerospaceWarning: String?
 
     private let tokens: TokenStore
     private let settings: HubSettings
     private let testConnection: () -> Void
     private let permissionsChanged: () -> Void
+    /// "Re-check permissions": the controller re-reads trust and re-arms the hotkey.
+    var onRecheck: () -> Void = {}
     var onClose: () -> Void = {}
 
     init(tokens: TokenStore, settings: HubSettings,
@@ -99,8 +103,14 @@ final class OnboardingModel {
         TextInserter.isTrusted() ? .granted : .notAsked
     }
 
+    var diagnosis: PermissionDiagnosis {
+        PermissionDiagnosis(PermissionSnapshot(
+            accessibility: accessibility == .granted, inputMonitoring: inputMonitoringGranted,
+            microphone: microphone, hotkeyNeedsInputMonitoring: settings.hotkey.chord != nil))
+    }
+
     func refresh() {
-        let before = (microphone, accessibility)
+        let before = [microphone == .granted, accessibility == .granted, inputMonitoringGranted]
         microphone = Self.microphoneState()
         accessibility = Self.accessibilityState()
         inputMonitoringGranted = CGPreflightListenEventAccess()
@@ -108,7 +118,22 @@ final class OnboardingModel {
         hotkeyName = settings.hotkey.displayName
         hotkeyMode = settings.hotkey.mode
         now = Date()
-        if before != (microphone, accessibility) { permissionsChanged() }
+        aerospaceWarning = Self.aerospaceWarning(for: settings.hotkey)
+        if before != [microphone == .granted, accessibility == .granted, inputMonitoringGranted] { permissionsChanged() }
+    }
+
+    static func aerospaceWarning(for hotkey: HotkeyChoice) -> String? {
+        guard hotkey == .optionN else { return nil }
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/aerospace/aerospace.toml")
+        guard let text = try? String(contentsOf: path, encoding: .utf8) else { return nil }  // read only
+        return AeroSpaceConflict.bindsAltN(in: text) ? AeroSpaceConflict.warning : nil
+    }
+
+    func recheck() {
+        refresh()
+        onRecheck()
+        refresh()
     }
 
     func requestMicrophone() {
@@ -179,6 +204,23 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if let detail = model.diagnosis.detail {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("What is missing", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                    Text(detail)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let warning = model.aerospaceWarning {
+                Label(warning, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             PermissionRow(
                 title: "Microphone",
                 detail: "Records only between the hotkey press and release (or its second press); the clip goes to your hub, nowhere else.",
@@ -195,7 +237,7 @@ struct OnboardingView: View {
                 showButton: model.accessibility != .granted,
                 action: model.openAccessibility)
             if model.accessibility != .granted && model.accessibilityRequested {
-                Text("In the list, switch DictateHub on. This row turns green within a second.")
+                Text("In the list, switch DictateHub on. This row turns green within a second. (Already on but still red? Remove it with − and add ~/Applications/DictateHub.app again with +.)")
                     .font(.caption).foregroundStyle(.secondary).padding(.leading, 30)
             }
 
@@ -235,6 +277,7 @@ struct OnboardingView: View {
             }
 
             HStack {
+                Button("Re-check permissions") { model.recheck() }
                 Spacer()
                 Button(model.checklist.isComplete ? "Done" : "Finish later") { model.done() }
                     .keyboardShortcut(.defaultAction)

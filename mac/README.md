@@ -25,6 +25,8 @@ Sources/DictateHubCore/     testable logic, no microphone or event taps
   LaunchOptions.swift       --smoke / --transcribe-file / --unregister-login-item;
                             the file-mode DICTATEHUB_RESULT line
   Onboarding.swift          permission states, launch checklist, Privacy pane links
+  PermissionDiagnosis.swift  which permissions are missing + the on-screen message with
+                            its System Settings paths; the AeroSpace alt-n check
 Sources/DictateHub/         the AppKit shell: status item, AVAudioEngine capture
                             (cold or warm), NSEvent hotkey monitor, Cmd+V via CGEvent,
                             Permissions and Settings windows, sounds + error bubble,
@@ -35,6 +37,8 @@ scripts/remote.sh           run from the hub: rsync to the Mac + every command b
 scripts/bundle.sh           on the Mac: release build → build/DictateHub.app, codesign
 scripts/signing-setup.sh    on the Mac: dedicated signing keychain + identity (idempotent)
 scripts/install.sh          on the Mac: → ~/Applications/DictateHub.app, launch once
+scripts/lib-signing.sh      shared ad-hoc guard (install, bundle, remote)
+scripts/test-install-guard.sh shell tests for the guard and launch hygiene (remote.sh test)
 scripts/uninstall.sh        on the Mac: login item + app (--purge: token, settings, logs)
 scripts/probe.sh            on the Mac: bundled app's Test connection against an nc stub
 scripts/file-probe.sh       on the Mac: file mode against a stub hub (synthetic `say` clip)
@@ -43,14 +47,15 @@ scripts/file-probe.sh       on the Mac: file mode against a stub hub (synthetic 
 ## Build, test, install (from the hub)
 
 ```bash
-mac/scripts/remote.sh test        # swift test on the Mac
+mac/scripts/remote.sh test        # swift test + shell guard tests on the Mac
 mac/scripts/remote.sh build       # swift build
 mac/scripts/remote.sh bundle      # build/DictateHub.app, signed (see Signing)
 mac/scripts/remote.sh dr-check    # two builds → same designated requirement
 mac/scripts/remote.sh run 4       # bundle, open it, smoke mode quits after 4 s
 mac/scripts/remote.sh probe       # bundled app → stub /v1/status over plain HTTP
 mac/scripts/remote.sh file-probe  # bundled app file mode → stub /v1/transcribe
-mac/scripts/remote.sh install     # bundle → ~/Applications/DictateHub.app, launch,
+mac/scripts/remote.sh install [--allow-adhoc]
+                                  # bundle → ~/Applications/DictateHub.app, launch,
                                   # Open at login on (first install)
 mac/scripts/remote.sh uninstall [--purge] [--remove-signing-keychain]
 mac/scripts/remote.sh clean       # delete this build dir on the Mac
@@ -59,8 +64,13 @@ mac/scripts/remote.sh clean       # delete this build dir on the Mac
 The package is synced to `mac-mini:~/dictate-mac-build/<id>/`. The id is
 `$DICTATE_MAC_BUILD_ID`, else `$RSI_SESSION_ID`, else `manual`; the host is
 `$DICTATE_MAC_HOST`. Only `install` (and `signing-setup`, run by `bundle`)
-writes outside that dir. Install needs no sudo. It refuses an ad-hoc bundle,
-because the grants would not survive the next install. A running copy is
+writes outside that dir. Install needs no sudo. It never installs an ad-hoc bundle silently: `remote.sh
+install` sets `DICTATEHUB_REQUIRE_SIGNED=1`, so `bundle.sh` fails instead of
+falling back to ad hoc, and `install.sh` refuses an ad-hoc bundle too. Pass
+`--allow-adhoc` to override both. The reason: an ad-hoc signature's
+requirement is its cdhash, so a grant made then is pinned to that one build
+and every later build is "not trusted" while System Settings still shows the
+switch on. A running copy is
 stopped and replaced, and the new copy is launched. Its stderr goes to
 `~/Library/Logs/DictateHub/launch.log`.
 
@@ -118,6 +128,34 @@ every second.
 5. **Hub connection.** Click **Test connection**. A working tunnel shows
    `Hub OK: dictated …`.
 6. Click **Done**.
+
+Permissions are re-read, with no relaunch, when the app becomes active (for
+example coming back from System Settings), every second while the Permissions
+window is open (every 3 s in the background), and on **Re-check permissions**
+in that window and in the menu. A permission that is missing is named on
+screen, in the Permissions window ("What is missing") and in the menu-bar
+error state (red triangle, the menu lists each one), each with its path:
+
+- Accessibility: System Settings → Privacy & Security → Accessibility
+- Input Monitoring: System Settings → Privacy & Security → Input Monitoring
+  (needed by the Option+N event tap; hold-to-talk keys need Accessibility only)
+- Microphone: System Settings → Privacy & Security → Microphone
+
+For Accessibility and Input Monitoring the text adds: if DictateHub already
+looks enabled there, remove it with − and add `~/Applications/DictateHub.app`
+again with + (a grant made for an older build does not carry over). With
+Option+N chosen and AeroSpace binding `alt-n` in
+`~/.config/aerospace/aerospace.toml` (read only, never edited), the window
+also warns that AeroSpace may take the key first.
+
+### Launch hygiene
+
+The app is only ever started through LaunchServices, so macOS attributes it
+(and its TCC grants) to DictateHub itself. A binary executed over SSH is
+attributed to sshd. Every launch path uses `open`: `remote.sh run`, `probe`,
+`file-probe`, `transcribe-file` (file mode, `open -W -n -g`), `install.sh`
+(`open`) and `uninstall.sh` (`open -W`). `scripts/test-install-guard.sh` fails
+if any script runs `Contents/MacOS/DictateHub` directly.
 
 Grants persist across `remote.sh install` / rebuilds because of the stable
 DR. To revoke them, use System Settings → Privacy & Security (select

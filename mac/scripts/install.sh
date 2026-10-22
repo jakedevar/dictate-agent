@@ -11,6 +11,7 @@
 # grants would be lost at the next install.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lib-signing.sh
 
 SRC=build/DictateHub.app
 DEST_DIR="$HOME/Applications"
@@ -31,7 +32,7 @@ done
 [[ -d $SRC ]] || { echo "no $SRC; run scripts/bundle.sh first" >&2; exit 1; }
 codesign --verify --strict "$SRC"
 dr=$(codesign -d -r- "$SRC" 2>&1 | grep designated || true)
-if [[ $dr != *"certificate leaf"* && $dr != *"anchor apple"* ]]; then
+if ! designated_is_stable "$dr"; then
     if [[ $allow_adhoc == 1 ]]; then
         echo "warning: installing an ad-hoc bundle; privacy grants will not survive the next install" >&2
     else
