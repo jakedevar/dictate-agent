@@ -821,12 +821,11 @@ fn mac_tunnel_verdict(api_enabled: bool, probe: TunnelProbe) -> DiagnosticCheck 
             DiagnosticCheck::ok(
                 ID,
                 TITLE,
-                format!("{MAC_TUNNEL_UNIT} is running (the API reaches the Mac's loopback)"),
+                format!("{MAC_TUNNEL_UNIT} is running (private Mac Unix-socket forward; use app Test connection)"),
             )
         }
-        // The wrapper's safety refusal (scripts/dictate-mac-tunnel): the Mac's
-        // sshd could publish the port beyond its loopback, or it could not be
-        // verified. The unit stays down on purpose (RestartPreventExitStatus).
+        // Unsafe socket path or extra SSH forwards: the wrapper refuses before
+        // forwarding. The unit stays down (RestartPreventExitStatus).
         TunnelProbe::State {
             active,
             exit_status: Some(MAC_TUNNEL_REFUSED),
@@ -835,10 +834,10 @@ fn mac_tunnel_verdict(api_enabled: bool, probe: TunnelProbe) -> DiagnosticCheck 
             ID,
             TITLE,
             format!(
-                "{MAC_TUNNEL_UNIT} refused to start: the Mac's sshd could publish the API beyond its loopback, or could not be checked"
+                "{MAC_TUNNEL_UNIT} refused to start: unsafe Mac socket path or extra forwards in the SSH alias"
             ),
             format!(
-                "`dictate-mac-tunnel --check` says why (journalctl --user -u {MAC_TUNNEL_UNIT}); fix the Mac (GatewayPorts no), then `systemctl --user restart {MAC_TUNNEL_UNIT}`"
+                "`dictate-mac-tunnel --check` says why (journalctl --user -u {MAC_TUNNEL_UNIT}); fix the socket path or SSH alias, then `systemctl --user restart {MAC_TUNNEL_UNIT}`"
             ),
         ),
         TunnelProbe::State { active, sub, .. } => DiagnosticCheck::warn(
@@ -1297,7 +1296,7 @@ mod tests {
         };
         let r = mac_tunnel_verdict(true, refused);
         assert_eq!(r.status, CheckStatus::Warn);
-        assert!(r.detail.contains("refused") && r.detail.contains("loopback"));
+        assert!(r.detail.contains("refused") && r.detail.contains("socket path"));
         assert!(r
             .fix
             .as_deref()

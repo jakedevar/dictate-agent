@@ -101,7 +101,7 @@ install-unit:
 MAC_TUNNEL_UNIT := dictate-mac-tunnel.service
 
 # The unit runs `dictate-mac-tunnel` (scripts/), which refuses to forward unless
-# the Mac's sshd keeps the port on its loopback.
+# the Mac socket path is private (0700 directory); no Mac TCP listener.
 MAC_TUNNEL_BIN := dictate-mac-tunnel
 
 install-mac-tunnel-unit:

@@ -19,7 +19,11 @@ public struct HubSettings: @unchecked Sendable {
         get {
             let s = defaults.string(forKey: Self.endpointKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return s.isEmpty ? HubRequestBuilder.defaultEndpoint : s
+            if s.isEmpty || s == HubRequestBuilder.legacyEndpoint || s == HubRequestBuilder.legacyEndpoint + "/" {
+                defaults.set(HubRequestBuilder.defaultEndpoint, forKey: Self.endpointKey)
+                return HubRequestBuilder.defaultEndpoint
+            }
+            return s
         }
         nonmutating set { defaults.set(newValue, forKey: Self.endpointKey) }
     }

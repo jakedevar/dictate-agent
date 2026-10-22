@@ -31,9 +31,10 @@ final class StubServer: @unchecked Sendable {
     var endpoint: String { "http://127.0.0.1:\(port)" }
     var requests: [Recorded] { lock.withLock { _requests } }
 
-    init(respond: @escaping @Sendable (Recorded) -> Response) throws {
+    init(socketPath: String? = nil, respond: @escaping @Sendable (Recorded) -> Response) throws {
         let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+        if let socketPath { params.requiredLocalEndpoint = .unix(path: socketPath) }
+        else { params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any) }
         params.allowLocalEndpointReuse = true
         listener = try NWListener(using: params)
         self.respond = respond

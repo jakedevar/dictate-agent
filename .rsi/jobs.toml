@@ -31,3 +31,15 @@ runner = "just"
 target = "cutover-test"
 timeout_minutes = 15
 cpu_quota_percent = 200
+
+[recipes.mac-test]
+runner = "just"
+target = "mac-test"
+timeout_minutes = 15
+cpu_quota_percent = 200
+
+[recipes.mac-transport-verify]
+runner = "just"
+target = "mac-transport-verify"
+timeout_minutes = 15
+cpu_quota_percent = 800

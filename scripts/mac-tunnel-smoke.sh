@@ -1,25 +1,8 @@
 #!/usr/bin/env bash
-# Throwaway end-to-end check of the Mac app's hub side (`just mac-tunnel-smoke`):
-#
-#   isolated dictated, API on 127.0.0.1:$PORT
-#     -> the unit's wrapper (scripts/dictate-mac-tunnel: sshd-policy preflight,
-#        ssh -R, lsof check on the Mac), run as a transient systemd --user unit
-#        with the ports overridden to $PORT
-#     -> scripts/mac-provision-token.sh into a temp dir on the Mac
-#     -> curl on the Mac: status 200, no/wrong token 401, a WAV -> transcript
-#     -> the Mac listens on loopback only
-#   plus: a second isolated dictated whose API port is taken keeps serving.
-#
-# ISOLATION: private XDG_RUNTIME_DIR/XDG_CONFIG_HOME/XDG_DATA_HOME/
-# DICTATE_SOCKET; [audio] capture = false; no display, no notifications; CPU
-# Whisper; port 7313 (the live API's) is refused. The real tunnel unit is never
-# installed or enabled: the transient unit has its own name and is stopped on
-# exit, as are both daemons. On the Mac only a mktemp directory under /tmp is
-# written, and it is removed on exit. Never prints a token.
-#
-# Usage: scripts/mac-tunnel-smoke.sh [--host mac-mini] [--port 17313]
-# Env:   DICTATED / DICTATE (default target/release/{dictated,dictate}),
-#        E2E_MODEL (default the installed large-v3-turbo; only read).
+# Isolated hub + Mac UDS end-to-end check. Private XDG paths, capture disabled,
+# alternate hub port, throwaway Mac socket/token/clip; cleanup on both hosts.
+# Never installs the real tunnel or touches the live daemon/config/token.
+# Env: DICTATED, DICTATE (CPU binaries), E2E_MODEL (read-only model path).
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 host="${DICTATE_MAC_HOST:-mac-mini}"
@@ -90,6 +73,7 @@ enabled = false
 [api]
 enabled = true
 bind = "127.0.0.1:$api_port"
+allowed_hosts = ["127.0.0.1:7313"]
 token_file = "$d/data/api-token"
 CFG
     (
@@ -131,48 +115,27 @@ b_text="$(cli b transcribe "$wav" 2>/dev/null)" || fail "B cannot transcribe wit
 [ -n "$b_text" ] || fail "B transcribed nothing"
 say "  B: socket ok, doctor 'Network API ... DOWN', local transcribe ok"
 
-# --- the tunnel: the unit's own wrapper, as a transient unit -----------------
-# The unit must run the loopback-enforcing wrapper and keep a refusal down.
-grep -qx 'ExecStart=%h/.local/bin/dictate-mac-tunnel' "$unit_file" || fail "the unit does not run dictate-mac-tunnel"
-grep -qx 'RestartPreventExitStatus=78' "$unit_file" || fail "the unit retries a safety refusal"
+# --- tunnel: same wrapper as the unit, throwaway Mac socket -----------------
+grep -qx 'ExecStart=%h/.local/bin/dictate-mac-tunnel' "$unit_file" || fail "unit wrapper missing"
+grep -qx 'RestartPreventExitStatus=78' "$unit_file" || fail "unit retries safety refusal"
+remote="$(ssh -o BatchMode=yes "$host" 'mktemp -d /tmp/dictatehub-smoke.XXXXXX')"
 wrapper="$repo/scripts/dictate-mac-tunnel"
-# Read-only preflight of the real Mac's sshd policy (nothing is forwarded).
-if ! DICTATE_MAC_HOST="$host" DICTATE_MAC_PORT="$port" DICTATE_HUB_API_PORT="$port" "$wrapper" --check 2>&1 \
-    | sed 's/^/mac-smoke|   /'; then
-    fail "the preflight refuses $host (see above)"
-fi
-say "transient unit $unit: $wrapper -> $host, port $port"
+DICTATE_MAC_HOST="$host" DICTATE_MAC_SOCKET="$remote/hub.sock" \
+    DICTATE_HUB_API_PORT="$port" "$wrapper" --check
 systemd-run --user --quiet --collect --unit="$unit" \
-    -p Restart=always -p RestartSec=10 -p RestartPreventExitStatus=78 \
+    -p Restart=always -p RestartSec=2 -p RestartPreventExitStatus=78 \
     --setenv=DICTATE_MAC_HOST="$host" \
     --setenv=DICTATE_HUB_API_PORT="$port" \
-    --setenv=DICTATE_MAC_PORT="$port" \
-    "$wrapper"
-# "tunnel up" is logged only after the wrapper's own lsof check on the Mac.
-wait_verified() { # $1 = how many "tunnel up" lines to wait for
-    local i
-    for i in $(seq 1 150); do
-        [ "$(journalctl --user -q -u "$unit" --since "@$t0" -o cat 2>/dev/null | grep -c 'tunnel up')" -ge "$1" ] && return 0
-        systemctl --user is-failed -q "$unit" && break
-        sleep 0.2
-    done
-    journalctl --user -q -u "$unit" --since "@$t0" -o cat | tail -5 >&2
-    return 1
-}
-for _ in $(seq 1 100); do
-    ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && break
+    --setenv=DICTATE_MAC_SOCKET="$remote/hub.sock" "$wrapper"
+for _ in {1..100}; do
+    timeout 5 ssh -o BatchMode=yes "$host" "test -S '$remote/hub.sock'" && break
     sleep 0.2
 done
-ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel never came up ($(systemctl --user is-active "$unit"))"
-wait_verified 1 || fail "the wrapper never reported a verified loopback-only tunnel"
-say "  wrapper: preflight ok, listener verified loopback-only"
-listen="$(ssh -o BatchMode=yes "$host" "lsof -nP -iTCP:$port -sTCP:LISTEN" | awk 'NR>1 {print $9}' | sort -u)"
-say "  Mac listens on: $(echo $listen)"
-[ -n "$listen" ] || fail "no listener seen on the Mac"
-printf '%s\n' "$listen" | grep -qvx "127.0.0.1:$port" && fail "the Mac listens beyond loopback: $listen"
+ssh -o BatchMode=yes "$host" "test -S '$remote/hub.sock' && test \"\$(stat -f %Lp '$remote')\" = 700" || fail 'private socket missing'
+if ssh -o BatchMode=yes "$host" "lsof -nP -iTCP:$port -sTCP:LISTEN"; then fail 'unexpected Mac TCP listener'; fi
+say 'Mac private UDS ready; no TCP listener on the test port'
 
 # --- token provisioning, then curl on the Mac --------------------------------
-remote="$(ssh -o BatchMode=yes "$host" 'mktemp -d /tmp/dictatehub-smoke.XXXXXX')"
 XDG_DATA_HOME="$root/a/data" XDG_CONFIG_HOME="$root/a/config" \
     DICTATED="$dictated" DICTATED_CONFIG="$root/a/config/dictate-agent/config.toml" \
     "$repo/scripts/mac-provision-token.sh" --host "$host" --remote-dir "$remote" \
@@ -189,7 +152,7 @@ remote_curl() { # $1 = token mode (good|none|wrong), rest = curl args
           wrong) printf 'Authorization: Bearer dct1_%s\n' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > hdr ;;
           none)  : > hdr ;;
         esac &&
-        curl -sS -H @hdr $args; rc=\$?; rm -f hdr; exit \$rc"
+        curl -sS --max-time 30 --unix-socket '$remote/hub.sock' -H @hdr $args; rc=\$?; rm -f hdr; exit \$rc"
 }
 
 status_json="$(remote_curl good "http://127.0.0.1:$port/v1/status")"
@@ -214,25 +177,28 @@ code="$(remote_curl none -o /dev/null -w '%{http_code}' -H 'Content-Type: audio/
 [ "$code" = 401 ] || fail "an unauthenticated upload got HTTP $code"
 say "  POST /v1/transcribe without a token: $code"
 
-# --- Restart=: a killed ssh comes back on its own -----------------------------
+# --- the installed app's file mode uses this same UDS client ----------------
+# Explicit test endpoint/token; never modifies saved settings or the real token.
+ssh -o BatchMode=yes "$host" "open -W -n -g --stdout '$remote/app.log' --stderr '$remote/app.log' \
+    \"\$HOME/Applications/DictateHub.app\" --args --transcribe-file '$remote/short.wav' \
+    --endpoint 'unix:$remote/hub.sock' --token-dir '$remote'"
+ssh -o BatchMode=yes "$host" "grep -q '^DICTATEHUB_RESULT .*\"ok\":true' '$remote/app.log'" || fail 'app UDS file mode failed'
+say 'installed app file mode over UDS: ok=true'
+
+# --- killed tunnel restarts and stale socket is removed --------------------
 systemctl --user kill --signal=KILL "$unit"
-sleep 2
-for _ in $(seq 1 60); do
-    ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && break
+sleep 1
+code=0
+for _ in {1..60}; do
+    code=$(remote_curl good -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/status" 2>/dev/null || true)
+    [[ $code = 200 ]] && break
     sleep 0.5
 done
-ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel did not come back after its ssh was killed"
-wait_verified 2 || fail "the restarted tunnel was not re-verified"
-code="$(remote_curl good -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/status")"
-[ "$code" = 200 ] || fail "status after the restart: HTTP $code"
-say "  killed the tunnel's ssh: restarted, status $code again"
+[[ $code = 200 ]] || fail 'tunnel did not recover after SIGKILL'
+say 'killed test tunnel: restarted, stale socket replaced, status 200 again'
 
-# --- teardown proves the port goes away --------------------------------------
+# --- stopping leaves no usable endpoint ------------------------------------
 systemctl --user stop "$unit"
-for _ in $(seq 1 50); do
-    ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || break
-    sleep 0.2
-done
-ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && fail "the Mac port outlived the tunnel"
-say "tunnel stopped; the Mac port is closed"
-say "PASS"
+if remote_curl good -o /dev/null "http://127.0.0.1:$port/v1/status" 2>/dev/null; then fail 'socket still serves after stop'; fi
+say 'tunnel stopped; socket cannot carry traffic'
+say 'PASS (cleanup removes both isolated daemons and all throwaway Mac files)'

@@ -66,7 +66,7 @@ install-unit:
     make install-unit
 
 # Mac app (docs/MAC-APP.md). Needs [api] enabled on this hub.
-# Install, enable and start the reverse SSH tunnel to the Mac (loopback only)
+# Install, enable and start the reverse SSH tunnel to the Mac (private Unix socket)
 install-mac-tunnel:
     make install-mac-tunnel
 
@@ -85,7 +85,7 @@ test-mac-hub:
     scripts/test-mac-hub.sh
 
 # The tunnel wrapper against a REAL isolated sshd on 127.0.0.1 (temp config,
-# keys and port), plus a private network namespace for the wildcard case
+# keys and port), with GatewayPorts yes (no forwarded TCP listener)
 mac-tunnel-sshd-test:
     scripts/mac-tunnel-sshd-test.sh
 
@@ -184,3 +184,14 @@ ui-test-x11:
 ui-screenshots:
     cargo build -p dictated -p dictate-cli
     ui/tests/x11/screenshots.sh
+
+# Swift transport and app tests on the Mac via the isolated per-session build.
+mac-test:
+    mac/scripts/remote.sh test
+
+# Stable signing + reinstall + isolated hub/UDS/app file-mode acceptance.
+# Requires the debug binaries built by check-cpu; never installs the tunnel unit.
+mac-transport-verify:
+    mac/scripts/remote.sh dr-check
+    mac/scripts/remote.sh install
+    DICTATED="${CARGO_TARGET_DIR:-target}/debug/dictated" DICTATE="${CARGO_TARGET_DIR:-target}/debug/dictate" scripts/mac-tunnel-smoke.sh

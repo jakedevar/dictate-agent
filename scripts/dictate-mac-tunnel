@@ -1,355 +1,85 @@
 #!/usr/bin/env bash
-# The Mac app's reverse SSH tunnel, fail-closed on loopback-only
-# (ExecStart of systemd/dictate-mac-tunnel.service; docs/MAC-APP.md).
-#
-#   dictate-mac-tunnel           preflight, then run the tunnel (the unit)
-#   dictate-mac-tunnel --check   preflight only: is the Mac's sshd safe?
-#
-# `ssh -R 127.0.0.1:P:...` is a REQUEST. The Mac's sshd decides where the port
-# really listens: `GatewayPorts yes` there binds every interface even for an
-# explicit 127.0.0.1, and the forward still "succeeds", so ExitOnForwardFailure
-# cannot catch it. This wrapper therefore never trusts the request:
-#
-#   1. Preflight, before any forward exists. Over a forward-less ssh session it
-#      reads the Mac's sshd configuration: `sshd -G` (the effective global
-#      value) and the text of sshd_config plus every file it Includes
-#      (recursively), so a `GatewayPorts` inside a `Match` block counts too.
-#      Any GatewayPorts value other than `no`, anywhere, or anything it cannot
-#      read or follow, is a refusal.
-#   2. Start `ssh -N -R 127.0.0.1:MAC_PORT:127.0.0.1:HUB_PORT`.
-#   3. Verify on the Mac with lsof that every listener on MAC_PORT is
-#      127.0.0.1 or ::1. Anything else (a wildcard or LAN address): kill the
-#      tunnel at once and refuse. No listener seen in time: kill and retry.
-#
-# Exit status: 78 (EX_CONFIG) = refused for safety; the unit sets
-# RestartPreventExitStatus=78 so it stays down (failed) until you fix the Mac
-# and `systemctl --user restart dictate-mac-tunnel`. Anything else (the Mac is
-# asleep, the link dropped) is 1 and Restart= tries again in 10 s.
-#
-# Environment (the unit sets the first three; override with a drop-in):
-#   DICTATE_MAC_HOST          ssh_config alias or user@host (default mac-mini)
-#   DICTATE_HUB_API_PORT      the hub's [api] port (default 7313)
-#   DICTATE_MAC_PORT          the port the Mac app connects to (default 7313)
-#   DICTATE_MAC_SSHD_CONFIG   the Mac's sshd_config (default /etc/ssh/sshd_config)
-#   DICTATE_MAC_VERIFY_SECS   how long to wait for the Mac listener (default 20)
-#   DICTATE_MAC_SSHD, DICTATE_MAC_LSOF   those tools on the Mac (default:
-#                             found on its PATH, then /usr/sbin, /usr/bin)
-#   DICTATE_MAC_SSH           the ssh client (default ssh; tests point it at a
-#                             wrapper that adds -F)
-# Internal (tests): --parse-sshd-dump CONFIG < dump   print the parser verdict.
+# Reverse Unix-socket SSH forward for DictateHub. No Mac TCP listener exists,
+# so GatewayPorts cannot widen its exposure. Exit 78 = unsafe local/socket
+# configuration (no restart); 1 = link/forward failure (retry).
+# --check prepares/checks the private directory, but does not unlink a socket.
+# Environment: DICTATE_MAC_HOST (mac-mini), DICTATE_HUB_API_PORT (7313),
+# DICTATE_MAC_SOCKET (absolute Mac path; default ~/Library/Application
+# Support/DictateHub/run/hub.sock), DICTATE_MAC_SSH (ssh),
+# DICTATE_MAC_PREPARE_SECS (20; local wall-clock deadline).
 set -uo pipefail
-
-EX_REFUSED=78
-host="${DICTATE_MAC_HOST:-mac-mini}"
-hub_port="${DICTATE_HUB_API_PORT:-7313}"
-mac_port="${DICTATE_MAC_PORT:-7313}"
-sshd_config="${DICTATE_MAC_SSHD_CONFIG:-/etc/ssh/sshd_config}"
-verify_secs="${DICTATE_MAC_VERIFY_SECS:-20}"
-ssh_bin="${DICTATE_MAC_SSH:-ssh}"
-mac_sshd="${DICTATE_MAC_SSHD:-auto}"
-mac_lsof="${DICTATE_MAC_LSOF:-auto}"
-
+host=${DICTATE_MAC_HOST:-mac-mini}
+port=${DICTATE_HUB_API_PORT:-7313}
+socket=${DICTATE_MAC_SOCKET:-}
+ssh_bin=${DICTATE_MAC_SSH:-ssh}
+secs=${DICTATE_MAC_PREPARE_SECS:-20}
 log() { printf 'dictate-mac-tunnel: %s\n' "$*" >&2; }
-refuse() { log "REFUSED: $*"; exit "$EX_REFUSED"; }
-retry() { log "$*; retrying later"; exit 1; }
-
-# --- the sshd-config dump parser (pure: stdin -> verdict lines) --------------
-# Input, produced by remote_policy below:
-#   @@G <sshd -G gatewayports line> | @@G! <why sshd -G failed>
-#   === <file>      the start of a file, each line then prefixed "| "
-#   !!! <path> <why>   a file that exists but cannot be read
-#   --- <pattern>   an Include pattern that matched nothing (sshd skips it)
-#   @@END           the remote side finished
-# Output: "REFUSE <why>", "INCLUDE <absolute pattern>", "FILE <path>",
-#         "G <value>", "END".
-# $1 = the main sshd_config path (relative Includes resolve against its dir,
-# as sshd resolves them against /etc/ssh).
-parse_dump() {
-    local base
-    base="$(dirname -- "$1")"
-    LC_ALL=C awk -v base="$base" '
-    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
-    function refuse(why) { print "REFUSE " why }
-    # Split sshd-style arguments: whitespace separated, "double quotes" group.
-    function split_args(s, out,    n, i, c, cur, inq, have) {
-        n = 0; cur = ""; inq = 0; have = 0
-        for (i = 1; i <= length(s); i++) {
-            c = substr(s, i, 1)
-            if (c == "\"") { inq = !inq; have = 1; continue }
-            if (!inq && (c == " " || c == "\t")) {
-                if (have) { out[++n] = cur; cur = ""; have = 0 }
-                continue
-            }
-            if (!inq && c == "#" && !have) break   # a trailing comment
-            cur = cur c; have = 1
-        }
-        if (inq) return -1
-        if (have) out[++n] = cur
-        return n
-    }
-    /^@@G! / { refuse("sshd -G could not report the effective policy: " substr($0, 5)); next }
-    /^@@G / {
-        g = tolower(trim(substr($0, 4)))
-        if (g ~ /^gatewayports[ \t]/) { v = trim(substr(g, 13)); print "G " v; seen_g = 1
-            if (v != "no") refuse("the effective GatewayPorts is \"" v "\" (sshd -G); it must be no")
-        } else refuse("sshd -G printed no gatewayports line")
-        next
-    }
-    /^=== / { file = substr($0, 5); inmatch = ""; print "FILE " file; next }
-    /^!!! / { refuse("cannot read " substr($0, 5)); next }
-    /^--- / { next }
-    /^@@END$/ { ended = 1; next }
-    /^\| / || /^\|$/ {
-        if (file == "") { refuse("config text outside a file marker"); next }
-        line = trim(substr($0, 3))
-        if (line == "" || substr(line, 1, 1) == "#") next
-        if (!match(line, /^[^ \t=]+/)) { refuse("unparsable line in " file ": " line); next }
-        kw = tolower(substr(line, 1, RLENGTH))
-        rest = substr(line, RLENGTH + 1)
-        sub(/^[ \t]*=?[ \t]*/, "", rest)
-        where = (inmatch == "") ? file : file " (inside \"Match " inmatch "\")"
-        if (kw == "match") { inmatch = trim(rest); next }
-        n = split_args(rest, a)
-        if (n < 0) { refuse("an unbalanced quote in " where ": " line); next }
-        if (kw == "gatewayports") {
-            v = (n >= 1) ? tolower(a[1]) : ""
-            if (n != 1 || v != "no")
-                refuse("GatewayPorts \"" trim(rest) "\" in " where "; only \"no\" keeps the tunnel on the Mac loopback")
-            next
-        }
-        if (kw == "include") {
-            if (n < 1) { refuse("an Include without a file in " where); next }
-            for (i = 1; i <= n; i++) {
-                p = a[i]
-                if (p ~ /'\''/ || p ~ /^~/) { refuse("cannot follow Include " p " in " where); continue }
-                if (substr(p, 1, 1) != "/") p = base "/" p
-                print "INCLUDE " p
-            }
-            next
-        }
-        next
-    }
-    /^$/ { next }
-    { refuse("unexpected line from the Mac: " $0) }
-    END {
-        if (!ended) refuse("the Mac did not send the whole configuration (truncated)")
-        else print "END"
-    }'
-}
-
-# --- remote halves (POSIX sh, run by the Mac's shell via `sh -c`) -----------
-# $1 = 1 to also run `sshd -G -f`, $2 = the sshd binary (auto = search),
-# $3 = the main config, $4.. = files/patterns to dump.
-# shellcheck disable=SC2016  # expanded by the remote shell, on purpose
-remote_policy='
-want_g=$1; sshd=$2; cfg=$3; shift 3
-if [ "$want_g" = 1 ]; then
-    if [ "$sshd" = auto ]; then
-        sshd=$(command -v sshd 2>/dev/null || true)
-        for s in /usr/sbin/sshd /usr/bin/sshd /usr/local/sbin/sshd; do
-            if [ -z "$sshd" ] && [ -x "$s" ]; then sshd=$s; fi
-        done
-    fi
-    if [ -z "$sshd" ] || [ ! -x "$sshd" ]; then
-        echo "@@G! no sshd binary found"
-    elif out=$("$sshd" -G -f "$cfg" 2>&1); then
-        g=$(printf "%s\n" "$out" | grep -i "^gatewayports[[:space:]]" | head -n 1)
-        if [ -n "$g" ]; then echo "@@G $g"; else echo "@@G! no gatewayports in its output"; fi
-    else
-        echo "@@G! $(printf "%s\n" "$out" | head -n 1)"
-    fi
+refuse() { log "REFUSED: $*"; exit 78; }
+case "$host" in ''|-*) refuse 'invalid host' ;; esac
+[[ $port =~ ^[0-9]{1,5}$ ]] && ((port > 0 && port <= 65535)) || refuse 'invalid hub port'
+[[ $secs =~ ^[0-9]{1,3}$ ]] && ((secs > 0)) || refuse 'invalid prepare deadline'
+case "$socket" in *"'"*|*:*|*$'\n'*|*$'\r'*) refuse 'invalid socket path' ;; esac
+[[ -z $socket || $socket = /* ]] || refuse 'socket path must be absolute'
+mode=${1:-run}
+case "$mode" in run|--check) ;; -h|--help) sed -n '2,10p' "$0"; exit 0 ;; *) refuse 'unknown argument' ;; esac
+opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15
+      -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no
+      -o ForwardX11=no -o PermitLocalCommand=no -o ForkAfterAuthentication=no)
+# A Host block must not sneak additional forwards into this transport. The
+# check session clears them; the tunnel must retain its own explicit -R.
+config=$(timeout --kill-after=2 "$secs" "$ssh_bin" "${opts[@]}" -G "$host") || { log 'ssh configuration unavailable'; exit 1; }
+if LC_ALL=C grep -qiE '^(localforward|remoteforward|dynamicforward) ' <<<"$config"; then
+    refuse 'remove configured forwards from the SSH host alias'
 fi
-IFS=""
-for p in "$@"; do
-    hit=0
-    for f in $p; do
-        if [ ! -e "$f" ] && [ ! -L "$f" ]; then continue; fi
-        hit=1
-        if [ -f "$f" ] && [ -r "$f" ]; then
-            echo "=== $f"
-            if ! sed "s/^/| /" "$f"; then echo "!!! $f (read failed)"; fi
-            echo
-        else
-            echo "!!! $f (not a readable regular file)"
-        fi
+# Shell arguments contain no single quote; everything else stays quoted on
+# the remote shell. Only owned, non-symlink directories may contain the UDS.
+# Do not inspect on-disk sshd policy: ExitOnForwardFailure tests the running
+# daemon's actual permission to create this Unix socket.
+remote='
+set -eu
+umask 077
+sock=$1; mode=$2
+if [ -z "$sock" ]; then
+    base="$HOME/Library/Application Support/DictateHub"
+    for d in "$base" "$base/run"; do
+        if [ -L "$d" ]; then echo "REFUSE symlinked socket directory"; exit 78; fi
+        if [ ! -e "$d" ]; then mkdir "$d"; fi
+        [ -d "$d" ] && [ -O "$d" ] || { echo "REFUSE unowned socket directory"; exit 78; }
+        chmod 700 "$d"
     done
-    if [ "$hit" = 0 ]; then echo "--- $p"; fi
-done
-echo "@@END"
-'
-
-# $1 = port, $2 = seconds, $3 = the lsof binary (auto = search). Prints every
-# lsof listener address on the port as "L <addr>", or "@@NOLSOF", or "@@NONE"
-# after $2 seconds with none.
-# shellcheck disable=SC2016
-remote_listeners='
-port=$1; secs=$2; lsof=$3
-if [ "$lsof" = auto ]; then
-    lsof=$(command -v lsof 2>/dev/null || true)
-    for l in /usr/sbin/lsof /usr/bin/lsof /sbin/lsof; do
-        if [ -z "$lsof" ] && [ -x "$l" ]; then lsof=$l; fi
-    done
+    sock="$base/run/hub.sock"
+else
+    d=${sock%/*}
+    [ ! -L "$d" ] && [ -d "$d" ] && [ -O "$d" ] || { echo "REFUSE socket parent must be an owned directory"; exit 78; }
+    chmod 700 "$d"
 fi
-if [ -z "$lsof" ] || [ ! -x "$lsof" ]; then echo "@@NOLSOF"; exit 0; fi
-i=0
-while [ "$i" -lt $((secs * 4)) ]; do
-    out=$("$lsof" -nP -iTCP:"$port" -sTCP:LISTEN -Fn 2>/dev/null | sed -n "s/^n/L /p")
-    if [ -n "$out" ]; then printf "%s\n" "$out"; exit 0; fi
-    sleep 0.25
-    i=$((i + 1))
-done
-echo "@@NONE"
+# Darwin sun_path holds 104 bytes, including the NUL. Reject all separators
+# understood by ssh forwarding syntax, and shell quotes in the returned HOME.
+case "$sock" in *:*|*\"* ) echo "REFUSE invalid resolved path"; exit 78 ;; esac
+bytes=$(LC_ALL=C printf %s "$sock" | wc -c | tr -d " ")
+[ "$bytes" -lt 104 ] || { echo "REFUSE socket path exceeds 103 bytes"; exit 78; }
+if [ -L "$sock" ] || { [ -e "$sock" ] && [ ! -S "$sock" ]; }; then
+    echo "REFUSE socket destination is not a socket"; exit 78
+fi
+if [ "$mode" = run ] && [ -S "$sock" ]; then rm -- "$sock"; fi
+printf "%s\n" "$sock"
 '
-
-# Options for every connection. The check connections also clear any
-# forwards an ssh_config Host block might add; the tunnel must not (that
-# would clear its own -R as well).
-base_opts=(
-    -o BatchMode=yes
-    -o StrictHostKeyChecking=yes
-    -o ConnectTimeout=15
-    -o ControlMaster=no
-    -o ControlPath=none
-    -o ForwardAgent=no
-    -o ForwardX11=no
-    -o PermitLocalCommand=no
-)
-
-# $1 = remote script, rest = its arguments (validated by the caller: no ').
-run_remote() {
-    local script="$1" q="" a
-    shift
-    for a in "$@"; do q+=" '$a'"; done
-    "$ssh_bin" "${base_opts[@]}" -T -o ClearAllForwardings=yes -o SessionType=default \
-        "$host" "sh -c '$script' dictate-mac-tunnel$q"
-}
-
-valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
-
-validate_args() {
-    valid_port "$hub_port" || refuse "DICTATE_HUB_API_PORT='$hub_port' is not a port"
-    valid_port "$mac_port" || refuse "DICTATE_MAC_PORT='$mac_port' is not a port"
-    [[ "$verify_secs" =~ ^[0-9]{1,3}$ ]] && [ "$verify_secs" -ge 1 ] \
-        || refuse "DICTATE_MAC_VERIFY_SECS='$verify_secs' is not a number of seconds"
-    case "$host" in "" | -*) refuse "DICTATE_MAC_HOST='$host' is not a host" ;; esac
-    case "$sshd_config" in
-        /*) ;;
-        *) refuse "DICTATE_MAC_SSHD_CONFIG must be an absolute path" ;;
-    esac
-    local v
-    for v in "$sshd_config" "$mac_sshd" "$mac_lsof"; do
-        case "$v" in *"'"*) refuse "DICTATE_MAC_SSHD_CONFIG/SSHD/LSOF must not contain a quote" ;; esac
-    done
-}
-
-# The preflight. Returns only if the Mac's sshd cannot widen the forward.
-preflight() {
-    local -a todo=("$sshd_config") done_list=()
-    local round=0 want_g=1 dump verdict line p seen main_seen=0 g_seen=0
-    local -a refusals=()
-    while [ "${#todo[@]}" -gt 0 ]; do
-        round=$((round + 1))
-        [ "$round" -le 8 ] || refuse "Includes on the Mac nest deeper than 8 levels; cannot verify"
-        if ! dump="$(run_remote "$remote_policy" "$want_g" "$mac_sshd" "$sshd_config" "${todo[@]}")"; then
-            retry "could not read the sshd configuration on $host (ssh failed)"
-        fi
-        done_list+=("${todo[@]}")
-        todo=()
-        verdict="$(printf '%s\n' "$dump" | parse_dump "$sshd_config")"
-        while IFS= read -r line; do
-            case "$line" in
-                "REFUSE "*) refusals+=("${line#REFUSE }") ;;
-                "G "*) g_seen=1 ;;
-                "FILE $sshd_config") main_seen=1 ;;
-                "INCLUDE "*)
-                    p="${line#INCLUDE }"
-                    seen=0
-                    for d in "${done_list[@]}" "${todo[@]}"; do [ "$d" = "$p" ] && seen=1; done
-                    [ "$seen" = 1 ] || todo+=("$p")
-                    ;;
-            esac
-        done <<<"$verdict"
-        want_g=0
-    done
-    [ "$main_seen" = 1 ] || refusals+=("cannot read $sshd_config on $host")
-    [ "$g_seen" = 1 ] || refusals+=("sshd -G gave no GatewayPorts value")
-    if [ "${#refusals[@]}" -gt 0 ]; then
-        for line in "${refusals[@]}"; do log "unsafe or unverifiable: $line"; done
-        refuse "$host's sshd could publish port $mac_port beyond its loopback (see above); fix the Mac, then restart the unit"
-    fi
-    log "preflight ok: $host's sshd keeps remote forwards on loopback (GatewayPorts no, ${#done_list[@]} config path(s) checked)"
-}
-
-tunnel_pid=""
-stop_tunnel() {
-    if [ -n "$tunnel_pid" ] && kill -0 "$tunnel_pid" 2>/dev/null; then
-        kill -TERM "$tunnel_pid" 2>/dev/null
-        wait "$tunnel_pid" 2>/dev/null
-    fi
-    tunnel_pid=""
-}
-
-run_tunnel() {
-    trap 'stop_tunnel; exit 0' TERM INT HUP
-    "$ssh_bin" "${base_opts[@]}" -N -T \
-        -o ExitOnForwardFailure=yes \
-        -o ServerAliveInterval=15 \
-        -o ServerAliveCountMax=3 \
-        -R "127.0.0.1:${mac_port}:127.0.0.1:${hub_port}" \
-        "$host" &
-    tunnel_pid=$!
-
-    local out line addr bad=() ok=0
-    if ! out="$(run_remote "$remote_listeners" "$mac_port" "$verify_secs" "$mac_lsof")"; then
-        stop_tunnel
-        retry "could not verify the listener on $host (ssh failed)"
-    fi
-    if ! kill -0 "$tunnel_pid" 2>/dev/null; then
-        wait "$tunnel_pid"
-        retry "the tunnel exited during startup (status $?)"
-    fi
-    while IFS= read -r line; do
-        case "$line" in
-            "@@NOLSOF") stop_tunnel; refuse "$host has no lsof: cannot verify the tunnel stays on its loopback" ;;
-            "@@NONE") stop_tunnel; retry "no listener on $host port $mac_port after ${verify_secs}s" ;;
-            "L "*)
-                addr="${line#L }"
-                case "$addr" in
-                    "127.0.0.1:$mac_port" | "[::1]:$mac_port") ok=1 ;;
-                    *) bad+=("$addr") ;;
-                esac
-                ;;
-            "") ;;
-            *) bad+=("unexpected: $line") ;;
-        esac
-    done <<<"$out"
-    if [ "${#bad[@]}" -gt 0 ] || [ "$ok" = 0 ]; then
-        stop_tunnel
-        refuse "$host listens on port $mac_port beyond its loopback (${bad[*]:-nothing on loopback}); tunnel killed"
-    fi
-    log "tunnel up: $host 127.0.0.1:$mac_port -> hub 127.0.0.1:$hub_port (verified loopback only)"
-    wait "$tunnel_pid"
-    local rc=$?
-    tunnel_pid=""
-    retry "the tunnel ended (ssh status $rc)"
-}
-
-case "${1:-}" in
-    --parse-sshd-dump)
-        [ $# -eq 2 ] || { log "usage: --parse-sshd-dump CONFIG < dump"; exit 2; }
-        parse_dump "$2"
-        exit 0
-        ;;
-    --check)
-        validate_args
-        preflight
-        exit 0
-        ;;
-    "")
-        validate_args
-        preflight
-        run_tunnel
-        ;;
-    -h | --help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) log "unknown argument: $1 (see --help)"; exit 2 ;;
-esac
+out=$(timeout --kill-after=2 "$secs" "$ssh_bin" "${opts[@]}" -T \
+    -o ClearAllForwardings=yes -o SessionType=default "$host" \
+    "sh -c '$remote' dictate-mac-tunnel '$socket' '$mode'")
+rc=$?
+if ((rc != 0)); then
+    if ((rc == 78)); then refuse "$out"; fi
+    log "socket preparation failed or timed out (status $rc)"; exit 1
+fi
+socket=$out
+case "$socket" in /*) ;; *) refuse 'invalid socket preparation reply' ;; esac
+case "$socket" in *:*|*"'"*|*$'\n'*|*$'\r'*) refuse 'invalid resolved socket path' ;; esac
+[[ ${#socket} -lt 104 ]] || refuse 'socket path too long'
+if [[ $mode = --check ]]; then log 'private socket directory ready (forward not started)'; exit 0; fi
+log "starting private Unix-socket tunnel to $host (no Mac TCP listener)"
+# exec gives systemd custody of the sole tunnel process: cancellation, link
+# loss and restart need no checker, background SSH process or polling loop.
+exec "$ssh_bin" "${opts[@]}" -N -T -o ClearAllForwardings=no -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    -R "$socket:127.0.0.1:$port" "$host"

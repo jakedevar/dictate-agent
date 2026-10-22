@@ -195,16 +195,21 @@ Rule 7 is checked when the listener starts.
 > dictation must never stop because a port was taken or a token file was
 > chmodded.
 >
-> **Amended 2026-10-21 (pre-land review #3553 of #3528).** The Mac app reaches
-> the loopback API through `ssh -R 127.0.0.1:P` from the hub. That bind address
-> is a request the Mac's sshd may override (`GatewayPorts yes` binds every
-> interface), so "the Mac side is loopback only" is enforced by the unit's
-> wrapper `scripts/dictate-mac-tunnel`, not assumed: an sshd-policy preflight
-> (`sshd -G` plus the full Include tree, Match blocks included) refuses any
-> GatewayPorts other than `no` or an unreadable policy, and a post-start
-> `lsof` check on the Mac kills any non-loopback listener. Refusal = exit 78,
-> not retried. Tokens never ride an argv (curl `-K -` on stdin), and the Mac
-> token file is written via `mktemp` + rename (#3555, #3556, #3557).
+> **Amended 2026-10-22 (#3600 after re-review #3553).** The Mac uses HTTP/1.1
+> over a reverse Unix-socket forward, `ssh -R <mac-socket>:127.0.0.1:7313`.
+> The socket lives in an owned 0700 directory; no Mac TCP listener exists,
+> so GatewayPorts cannot affect exposure (#3555). The previous on-disk
+> sshd-policy preflight could not prove the running daemon's policy and
+> post-start verification admitted an exposure window; both are removed.
+> Preparation has a local deadline and occurs before forwarding; there is no
+> post-start checker to hang (#3599). ExitOnForwardFailure enforces actual
+> stream-local forwarding permission. The wrapper removes stale sockets
+> before restart (StreamLocalBindUnlink=no), refuses symlinks/non-sockets,
+> and enforces Darwin's 103-byte path limit. The app uses Network.framework
+> UDS HTTP with bounded parsing, cancellation and a request deadline; custom
+> HTTP(S) URLSession endpoints remain supported. Bearer authentication and
+> hub loopback bind stay mandatory. Tokens never ride an argv (curl `-K -`
+> on stdin), and token provisioning uses `mktemp` + rename (#3556, #3557).
 
 ## 5. Authentication
 

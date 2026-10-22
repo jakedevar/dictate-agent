@@ -3,8 +3,8 @@
 # Merge this into ~/.config/dictate-agent/config.toml (replace any existing
 # [api] block), check it with `dictated --check-config`, then restart dictated.
 # The Mac reaches this listener only through the reverse SSH tunnel
-# (systemd/dictate-mac-tunnel.service), which puts it on the Mac's loopback
-# and refuses to run if the Mac's sshd would publish it any wider.
+# (systemd/dictate-mac-tunnel.service), which exposes a private Unix socket on the Mac
+# in an owned 0700 directory. No Mac TCP port is forwarded.
 #
 # What this deliberately does NOT do: listen beyond this host's loopback
 # (no allow_lan, no allow_plaintext_lan), accept browser origins, or expose
@@ -13,9 +13,9 @@
 
 [api]
 enabled = true
-# Loopback only. The tunnel's far end is 127.0.0.1:7313 on the Mac, so the Mac
+# Loopback only. The Mac's Unix-socket HTTP client sends this Host, so the Mac
 # app's `Host: 127.0.0.1:7313` is this listener's own spelling and passes the
-# Host check with nothing added below. Keep the Mac port equal to this one.
+# Host check with nothing added below. Custom hub ports need this Host in allowed_hosts.
 bind = "127.0.0.1:7313"
 allow_lan = false
 allow_plaintext_lan = false

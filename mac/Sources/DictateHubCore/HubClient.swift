@@ -78,7 +78,7 @@ public struct ProtoError: Decodable, Equatable, Sendable {
 public enum HubError: Error, Equatable, Sendable {
     /// No token file / token is empty.
     case missingToken
-    /// The endpoint setting is not an http(s) URL.
+    /// The endpoint is not the secure tunnel, a valid UDS path or an HTTP(S) URL.
     case invalidEndpoint(String)
     /// The clip was empty.
     case emptyAudio
@@ -126,21 +126,40 @@ public enum HubError: Error, Equatable, Sendable {
 /// Builds requests for the S33 network API and interprets the answers.
 /// Pure: no I/O, so it is tested directly.
 public struct HubRequestBuilder: Sendable {
-    public static let defaultEndpoint = "http://127.0.0.1:7313"
+    public static let defaultEndpoint = "tunnel"
+    public static let legacyEndpoint = "http://127.0.0.1:7313"
+    public static var defaultSocketPath: String {
+        TokenStore.defaultDirectory.appendingPathComponent("run/hub.sock").path
+    }
     public static let defaultTimeout: TimeInterval = 30
 
     public let endpoint: URL
+    public let unixSocketPath: String?
     public let token: String
     public let timeout: TimeInterval
 
     public init(endpoint: String, token: String, timeout: TimeInterval = HubRequestBuilder.defaultTimeout) throws {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed),
+        let socket: String?
+        let httpEndpoint: String
+        if trimmed == Self.defaultEndpoint || trimmed.hasPrefix("unix:") {
+            socket = trimmed == Self.defaultEndpoint ? Self.defaultSocketPath : String(trimmed.dropFirst(5))
+            guard let socket, socket.hasPrefix("/"), socket.utf8.count < 104,
+                  !socket.contains("\0"), !socket.contains("\n"), !socket.contains("\r")
+            else { throw HubError.invalidEndpoint(trimmed) }
+            httpEndpoint = Self.legacyEndpoint
+        } else {
+            socket = nil
+            httpEndpoint = trimmed
+        }
+        guard let url = URL(string: httpEndpoint),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host != nil
         else { throw HubError.invalidEndpoint(trimmed) }
+        self.unixSocketPath = socket
         let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tok.isEmpty else { throw HubError.missingToken }
+        guard !tok.contains("\r"), !tok.contains("\n") else { throw HubError.missingToken }
         self.endpoint = url
         self.token = tok
         self.timeout = timeout
@@ -265,7 +284,9 @@ public struct HubClient: Sendable {
 
     public init(builder: HubRequestBuilder, transport: HubTransport? = nil) {
         self.builder = builder
-        self.transport = transport ?? URLSessionTransport(timeout: builder.timeout)
+        if let transport { self.transport = transport }
+        else if let path = builder.unixSocketPath { self.transport = UnixSocketTransport(path: path) }
+        else { self.transport = URLSessionTransport(timeout: builder.timeout) }
     }
 
     public func transcribe(wav: Data, app: String?) async throws -> Transcript {
