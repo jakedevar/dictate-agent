@@ -362,9 +362,14 @@ fn scrub_for_network(status: &mut Status, owned: &VecDeque<SessionId>) {
 }
 
 async fn handle_connection(stream: UnixStream, id: ClientId, deps: Arc<ServerDeps>) -> Result<()> {
+    // The socket is 0600 inside a 0700 directory, so a foreign peer should never
+    // get here; if one does (a mode loosened behind our back, a root-owned
+    // bind mount) it is dropped before it can handshake: no capability at all,
+    // not merely no config. Unreadable credentials fail closed the same way.
     let owner = peer_is_owner(&stream);
     if !owner {
-        warn!(%id, "control connection from a different user (or unreadable credentials)");
+        warn!(%id, "rejecting control connection from a different user (or unreadable credentials)");
+        return Ok(());
     }
     info!(%id, "control connection opened");
     let (read_half, mut write_half) = stream.into_split();
@@ -1682,6 +1687,40 @@ mod tests {
         assert_eq!(mode, 0o600);
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1474: the modes must not depend on the process umask. 000 is the worst
+    /// case the review named (a shared `/tmp` fallback with a permissive umask).
+    #[tokio::test]
+    async fn runtime_dir_and_socket_stay_private_under_a_permissive_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::path::PathBuf::from(format!("/tmp/ds-umask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let runtime = crate::paths::RuntimePaths::under(&base.join("a/dictate-agent"));
+        // SAFETY: `umask` is process-global; it is restored before any await
+        // point can yield to another test on this thread, and the other tests
+        // that create files set their modes explicitly.
+        let old = unsafe { libc::umask(0) };
+        let ensured = runtime.ensure_dirs();
+        let bound = Server::bind(&runtime.socket).await;
+        unsafe { libc::umask(old) };
+        ensured.unwrap();
+        let server = bound.unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(runtime.socket.parent().unwrap()), 0o700);
+        assert_eq!(mode(server.path()), 0o600);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A peer that is not provably this user's is turned away before the
+    /// handshake, whatever it claims; only the owner is admitted.
+    #[test]
+    fn admission_is_decided_by_the_peer_uid_alone() {
+        assert!(is_owner(Some(1000), 1000));
+        for peer in [Some(0), Some(1001), None] {
+            assert!(!is_owner(peer, 1000), "peer {peer:?}");
+        }
     }
 
     fn network_conn(owned: &[&str]) -> Conn {
