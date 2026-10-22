@@ -16,9 +16,8 @@ DESTDIR ?=
 # `dictated` is what the systemd unit starts, `dictate` is what Jake types.
 #
 # The pre-S02 install target put the daemon at `$(BINDIR)/dictate-agent`. That
-# is deliberately left alone rather than overwritten — the Python reference
-# daemon and the old unit stay runnable until the v1.0 parity cutover, and
-# silently replacing a binary another unit still points at is how you get a
+# is deliberately left alone rather than overwritten — the old unit may
+# still point at it, and silently replacing a binary another unit still points at is how you get a
 # machine running two daemons that disagree. `make uninstall-legacy` removes it
 # when you are ready.
 DAEMON_BIN := dictated
@@ -83,7 +82,7 @@ install-files:
 	@echo "Next: make install-unit && systemctl --user enable --now dictated"
 
 # The unit is rewritten on the way in so ExecStart and Documentation follow
-# BINDIR/DATADIR. It never touches the Python daemon's dictate-agent.service.
+# BINDIR/DATADIR. It never touches a legacy dictate-agent.service.
 install-unit:
 	install -d "$(DESTDIR)$(SYSTEMD_USER_DIR)"
 	sed -e 's|^ExecStart=.*|ExecStart=$(call unit_path,$(BINDIR))/$(DAEMON_BIN)|' \

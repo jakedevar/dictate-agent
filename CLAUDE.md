@@ -13,17 +13,18 @@ current repo state, how to build/test, and where things live.
   v2, history v2, evdev hotkeys. 419+ tests pass, `clippy -D warnings` and
   `cargo fmt --check` are clean. `cargo build --release` produces `dictated`
   (daemon) and `dictate` (CLI).
-- **Jake's daily driver is `~/.local/bin/dictate-agent`** — a monolithic Rust
-  binary built 2026-06-18 from the pre-workspace port, launched by i3 through
-  `scripts/run.sh`. It shares `~/.config/dictate-agent/config.toml` (still in
-  the Python-era shape) with `dictated`, and writes
-  `~/.local/share/dictate-agent/history.db`. Never stop, signal, or
-  reconfigure it outside the cutover slice.
-- **Python reference daemon — retained, not running.** `dictate/` (13
-  modules) stays present and runnable until the v1.0 parity cutover gate
-  defined in
-  `thoughts/shared/plans/2026-08-07-wisprflow-parity-master-slice-map.md`.
-  Do not remove or modify it outside of a slice that explicitly says to.
+- **The live daemon is `dictated`** (systemd user unit `dictated.service`,
+  enabled; i3 binds `dictate toggle|cancel`). The v1.0 cutover is complete.
+  The old monolithic `~/.local/bin/dictate-agent` binary (built 2026-06-18) is
+  only a retained manual fallback; `scripts/run.sh` stays out of its way while
+  the unit is enabled. `dictated` shares `~/.config/dictate-agent/config.toml`
+  (still in the Python-era shape; the loader maps it). Never stop, signal, or
+  reconfigure the live daemon, `dictate-mac-tunnel.service`,
+  `~/.config/dictate-agent` or `~/.local/bin` from a worker slice.
+- **The Python reference daemon is gone.** `dictate/`, `pyproject.toml` and the
+  Python cutover scripts were deleted under Issue #3618; the last commit that
+  contains them is `b85e953`. `dictated`'s Python-DB import (dictate-history)
+  reads the old database *file format* and stays.
 - **The GitHub repo is public.** Never commit real transcripts, history rows,
   window titles, or personal vocabulary; fixtures are synthetic.
 - Active plan for Wave 2+:
@@ -38,9 +39,10 @@ There is no `src_rust_archive/` directory; notes claiming otherwise are stale.
 files, no `python`/`python3` calls, no one-liners, no Python test servers.
 New code and scripts are Rust; Go only where Rust is impractical; Swift for
 the Mac app (`mac/`); plain shell only for thin glue (`jq`, `grep`, `awk`).
-The existing tracked Python (`dictate/`, `scripts/*.py`,
-`transcribe_journal.py`) is being ported to Rust or deleted under its own
-Issue — do not extend it.
+No tracked `.py` file remains (removed under Issue #3618; the retired Python
+reference daemon is in git history at commit `b85e953`, `dictate/`). Inline
+`python3` snippets inside a few shell scripts are tracked for removal as a
+follow-up; do not add more.
 
 ## Workspace layout
 
@@ -78,7 +80,6 @@ crates/
                     config. Depends on dictate-proto only; commands run through
                     its `Backend` trait, which dictated implements over the
                     socket's own dispatch (dictated/src/network.rs)
-dictate/           Python reference daemon (retained until cutover)
 mac/               DictateHub macOS menu-bar client (SwiftPM; built on the Mac via mac/scripts/remote.sh; see mac/README.md)
 ```
 
@@ -203,10 +204,7 @@ dictate history         # past dictations from the interaction log
 still work: they signal whatever holds the legacy PID file at
 `${XDG_CONFIG_HOME:-$HOME/.config}/dictate-agent/dictate.pid`, and
 `dictated` claims that file **only when nothing live already holds it**
-(`crates/dictated/src/paths.rs`). So with the Python daemon running the
-scripts drive Python; with only `dictated` running they drive `dictated`.
-Neither ever overwrites a PID file a living process owns — which is the
-whole reason the two can stay installed side by side.
+(`crates/dictated/src/paths.rs`). Neither ever overwrites a PID file a living process owns.
 
 ### Network API (S33) — off by default
 
@@ -266,18 +264,18 @@ just smoke              # release binaries, isolated dictated, doctor + transcri
   or display. Real-hardware checks run against a private temp runtime and never
   touch the live daemon (see `scripts/smoke-real.sh` for the isolation rules).
 
-### Paths must never collide with the Python daemon
+### Paths must never collide with the legacy daemons
 
-The Python reference daemon owns `~/.config/dictate-agent/dictate.pid` and
-`~/.local/share/dictate-agent/history.db`. `dictated` deliberately uses
-different paths for all of socket, PID, and DB. If you add runtime state,
-keep it out of the Python daemon's namespace until the v1.0 cutover gate.
+The legacy daemons (the retained `dictate-agent` binary) own
+`~/.config/dictate-agent/dictate.pid` and `~/.local/share/dictate-agent/history.db`.
+`dictated` deliberately uses different paths for all of socket, PID, and DB.
+If you add runtime state, keep it out of that namespace.
 
 ## Where to look next
 
 - `docs/INSTALL.md` — install / upgrade / rollback (`just install`, `install-unit`,
   `install-ui`, `scripts/package.sh`, `packaging/aur/PKGBUILD`);
-  `docs/MIGRATION-FROM-PYTHON.md` — the cutover and its rollback;
+  `docs/MIGRATION-FROM-PYTHON.md` — what the cutover changed, and the manual rollback;
   `.github/workflows/ci.yml` — CPU-only CI (S42). `scripts/install-smoke.sh`
   tests the install targets in a temp HOME.
 - `AGENTS.md` — architecture, pipeline diagram, per-component design.

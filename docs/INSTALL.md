@@ -135,7 +135,8 @@ down (`DATADIR` is never removed wholesale because models live beside it).
 
 ## 6. Switching from the Python or monolithic daemon
 
-See [MIGRATION-FROM-PYTHON.md](MIGRATION-FROM-PYTHON.md). `just install` is
+The cutover is complete (the Python daemon was removed; see
+[MIGRATION-FROM-PYTHON.md](MIGRATION-FROM-PYTHON.md) for the shared/separate paths and the manual rollback). `just install` is
 safe to run beside the old daemon: it uses different binary names, socket, PID
 file and database, and never stops or replaces anything running.
 

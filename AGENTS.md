@@ -12,9 +12,10 @@ The daemon acts as an orchestrator, receiving signals from the window manager to
 files, no `python`/`python3` calls, no one-liners, no Python test servers.
 New code and scripts are Rust; Go only where Rust is impractical; Swift for
 the Mac app (`mac/`); plain shell only for thin glue (`jq`, `grep`, `awk`).
-The existing tracked Python (`dictate/`, `scripts/*.py`,
-`transcribe_journal.py`) is being ported to Rust or deleted under its own
-Issue — do not extend it.
+No tracked `.py` file remains (removed under Issue #3618; the retired Python
+reference daemon is in git history at commit `b85e953`, `dictate/`). Inline
+`python3` snippets inside a few shell scripts are tracked for removal as a
+follow-up; do not add more.
 
 
 ## System Architecture

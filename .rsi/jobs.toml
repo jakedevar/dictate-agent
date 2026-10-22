@@ -25,13 +25,6 @@ target = "e2e"
 timeout_minutes = 45
 cpu_quota_percent = 800
 
-# Cutover scripts in a temp HOME (never the real one).
-[recipes.cutover-test]
-runner = "just"
-target = "cutover-test"
-timeout_minutes = 15
-cpu_quota_percent = 200
-
 [recipes.mac-test]
 runner = "just"
 target = "mac-test"

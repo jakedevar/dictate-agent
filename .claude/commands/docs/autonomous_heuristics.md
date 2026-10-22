@@ -20,9 +20,9 @@ When operating autonomously, the agent must make decisions that would normally r
 | Context | Choice | Rationale |
 |---------|--------|-----------|
 | Existing repo (>70% one language) | Use dominant language | Consistency |
-| New repo, web backend | TypeScript/Node or Python | Most documented |
+| New repo, web backend | TypeScript/Node | Most documented |
 | New repo, CLI tool | Rust or Go | Performance + single binary |
-| New repo, scripts | Python | Simplicity |
+| New repo, scripts | Rust (thin shell glue only) | Python is forbidden (directive 2b22862d) |
 | New repo, systems | Rust | Safety + performance |
 
 ### Framework Selection
@@ -50,7 +50,6 @@ When operating autonomously, the agent must make decisions that would normally r
 | Language | Framework | Rationale |
 |----------|-----------|-----------|
 | TypeScript/JS | Vitest or existing | Fast, modern |
-| Python | pytest or existing | Standard |
 | Rust | built-in + existing | Integrated |
 | Go | built-in + existing | Integrated |
 

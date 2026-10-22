@@ -5,7 +5,7 @@ cleanup pass, and text injected into the focused window. A daemon (`dictated`),
 a control CLI (`dictate`) and an optional desktop UI (`dictate-ui`).
 
 - Install, upgrade, roll back: [docs/INSTALL.md](docs/INSTALL.md)
-- Coming from the Python or monolithic daemon: [docs/MIGRATION-FROM-PYTHON.md](docs/MIGRATION-FROM-PYTHON.md)
+- Coming from the old (monolithic or removed Python) daemon: [docs/MIGRATION-FROM-PYTHON.md](docs/MIGRATION-FROM-PYTHON.md)
 - Wire protocol: [docs/protocol.md](docs/protocol.md)
 - Contributing / architecture: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
 

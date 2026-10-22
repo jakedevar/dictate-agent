@@ -32,7 +32,6 @@ clippy:
 # Workers whose diff touches dictate-stt, the transcription path or the CUDA
 # config also run `just check-cuda`.
 check-cpu:
-    scripts/cutover-test.sh
     scripts/test-mac-hub.sh
     cargo test --workspace --all-targets
     cargo clippy --workspace --all-targets -- -D warnings
@@ -40,10 +39,6 @@ check-cpu:
     cargo clippy -p dictate-context --features x11-tests --all-targets -- -D warnings
     cargo fmt --all -- --check
     @! cargo tree -p dictate-cli -e normal | rg 'whisper|dictate-fmt'
-
-# Cutover/rollback integration harness: temporary HOME, stub service manager.
-cutover-test:
-    scripts/cutover-test.sh
 
 # The INTEGRATOR gate (once per integration, with `just e2e`): the CUDA
 # variants of clippy. First run compiles whisper.cpp CUDA for sm_120 only.

@@ -1,9 +1,5 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# Build artifacts (legacy generic rules kept as-is; no Python is tracked)
 *.so
-.Python
 build/
 develop-eggs/
 dist/
@@ -16,14 +12,7 @@ parts/
 sdist/
 var/
 wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Virtual environments
-.venv/
-venv/
-ENV/
 
 # IDE
 .idea/
@@ -40,7 +29,7 @@ models/*.onnx
 # Config with secrets
 config/config.toml
 
-# The Python `lib/` rule above must not swallow the UI's TypeScript modules (S32)
+# The `lib/` rule above must not swallow the UI's TypeScript modules (S32)
 !ui/src/lib/
 
 # Release tarballs staged by scripts/package.sh

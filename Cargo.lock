@@ -799,8 +799,14 @@ name = "dictate-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "dictate-core",
+ "dictate-dict",
+ "dictate-fmt",
+ "dictate-history",
  "dictate-proto",
  "dictate-stt",
+ "dictate-vad",
+ "dictated",
  "serde_json",
  "tokio",
 ]

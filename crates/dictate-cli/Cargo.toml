@@ -18,3 +18,15 @@ dictate-proto = { workspace = true }
 dictate-stt = { workspace = true, default-features = false }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+
+# Test-only: tests/dict_roundtrip.rs drives this binary against the real daemon
+# with mock hardware (port of the former scripts/test-dictionary-cli.py). These
+# are dev-dependencies, so `cargo tree -p dictate-cli -e normal` (the justfile's
+# whisper/dictate-fmt guard) is unaffected.
+[dev-dependencies]
+dictated = { workspace = true }
+dictate-core = { workspace = true, features = ["test-support"] }
+dictate-dict = { workspace = true }
+dictate-fmt = { workspace = true }
+dictate-history = { workspace = true }
+dictate-vad = { workspace = true }

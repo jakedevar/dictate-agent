@@ -4,8 +4,8 @@ Documentation=file:///%h/.local/share/dictate-agent/docs/protocol.md
 After=graphical-session.target
 Wants=pipewire.service
 
-# Deliberately NOT Conflicts=dictate-agent.service. The Python reference daemon
-# stays runnable alongside this one until the v1.0 parity cutover, and they no
+# Deliberately NOT Conflicts=dictate-agent.service. A retained legacy dictate-agent
+# fallback may stay installed alongside this one, and they no
 # longer share a socket, a PID file, or a database — see crates/dictated/src/paths.rs.
 
 [Service]

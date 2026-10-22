@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/run.sh must not start the June binary while the dictated unit is
-# enabled (post-cutover), and must start it otherwise (pre-cutover/rollback).
+# enabled (the normal state), and must start it otherwise (after a manual rollback).
 # Hermetic: temp HOME, stub systemctl and stub dictate-agent; never the real ones.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +16,6 @@ check() { # $1 = stub is-enabled exit code, $2 = expect started (yes|no)
     if [ "$2" = yes ]; then [ -f "$tmp/started" ] || { echo "FAIL: June binary not started (is-enabled=$1)"; exit 1; }
     else [ ! -f "$tmp/started" ] || { echo "FAIL: June binary started while dictated is enabled"; exit 1; }; fi
 }
-check 0 no    # cutover done: dictated enabled -> launcher stays out of the way
-check 1 yes   # pre-cutover or after rollback -> June binary starts as before
+check 0 no    # dictated enabled -> launcher stays out of the way
+check 1 yes   # after a manual rollback -> June binary starts as before
 echo "run.sh guard: OK"
