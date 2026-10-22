@@ -57,3 +57,10 @@ inference runs on the hub's local models. Plan Issue: #3527.
 ## Kaizen
 
 Filed or seen this session: #3551, #3575 (harness), #3690 (done), #3555–#3557/#3599 (done). Older open kaizen are untouched: #1430, #1436, #1472, #1481, #1489, #1505, #2484.
+
+## Update 17:45Z
+
+- The operator granted Accessibility (to-do closed). The done report was sent up and #3527 is closed.
+- No live Mac hotkey dictation has been observed yet. Watch the hub history for Mac app names arriving via the network API.
+- #1473, #1475 and #1476 were already fixed and are closed. #1474 is fixed by bc0606b, merged at master 3068cbf and deployed.
+- #3133 is still open until a real Ghostty dictation shows inject=Paste. No workers are running.
