@@ -2,6 +2,9 @@
 //! delivered to a requestor with the focused window's X11 client resource base.
 //! Clipboard managers use another client and cannot acknowledge delivery.
 //! Clients using a separate clipboard connection conservatively time out.
+//! A toolkit destination (GTK4 Ghostty) queries TARGETS right after the claim
+//! and treats the clipboard as empty until answered, so Ctrl+V waits for that
+//! query (`await_destination_formats`, issue #3133).
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -269,7 +272,45 @@ impl PasteSelection {
     /// Send Ctrl+V on the same connection under the server grab, so a
     /// queued focus change cannot land between validation and key delivery.
     pub(crate) fn send_paste(&self, destination: u32) -> Result<bool> {
+        self.await_destination_formats(destination)?;
         self.send_chord(destination, 0x76)
+    }
+
+    /// How long to wait for the destination to learn what the clipboard offers
+    /// before sending Ctrl+V.
+    const FORMATS_GRACE: Duration = Duration::from_millis(200);
+    /// Let the toolkit's main loop consume a TARGETS reply before the key.
+    const FORMATS_SETTLE: Duration = Duration::from_millis(40);
+
+    /// Ctrl+V is sent right after the claim. A GTK4 client (Ghostty) learns the
+    /// new owner's formats asynchronously, through a TARGETS request that the
+    /// transfer loop would only answer after the key was sent. Its paste action
+    /// then sees no text on the clipboard and forwards a raw 0x16 to the pty
+    /// (issue #3133). So answer the destination's format query first. Clients
+    /// that never query (xterm) cost at most `FORMATS_GRACE`; the guarded
+    /// serving rules and the no-retry policy are unchanged.
+    pub(crate) fn await_destination_formats(&self, destination: u32) -> Result<()> {
+        let deadline = Instant::now() + Self::FORMATS_GRACE;
+        while Instant::now() < deadline {
+            match self.conn.poll_for_event()? {
+                Some(Event::SelectionRequest(request)) if request.selection == self.selection => {
+                    if !self.same_client(request.requestor, destination) {
+                        self.refuse(request)?;
+                        continue;
+                    }
+                    let is_targets = request.target == self.targets;
+                    self.serve_guarded(request, destination)?;
+                    if is_targets {
+                        std::thread::sleep(Self::FORMATS_SETTLE);
+                    }
+                    return Ok(());
+                }
+                Some(Event::SelectionClear(_)) => bail!("paste selection ownership lost"),
+                Some(_) => {}
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn send_copy(&self, destination: u32) -> Result<bool> {
@@ -402,6 +443,24 @@ impl PasteSelection {
         Ok(())
     }
 
+    /// Validate ownership and focus, then answer, all under one server grab.
+    fn serve_guarded(&self, request: SelectionRequestEvent, destination: u32) -> Result<bool> {
+        self.conn.grab_server()?.check()?;
+        let delivered = (|| {
+            if self.owner()? != self.window {
+                self.refuse(request)?;
+                bail!("paste selection ownership lost");
+            }
+            if self.focus()? != Some(destination) {
+                self.refuse(request)?;
+                bail!("destination changed before paste transfer");
+            }
+            self.serve(request)
+        })();
+        self.conn.ungrab_server()?.check()?;
+        delivered
+    }
+
     /// One transfer path for dictation and EDIT. Only the destination's client
     /// receives the payload. Validate focus and deliver under the same grab.
     pub(crate) fn transfer_to(&self, destination: u32) -> Result<()> {
@@ -413,20 +472,7 @@ impl PasteSelection {
                         self.refuse(request)?;
                         continue;
                     }
-                    self.conn.grab_server()?.check()?;
-                    let delivered = (|| {
-                        if self.owner()? != self.window {
-                            self.refuse(request)?;
-                            bail!("paste selection ownership lost");
-                        }
-                        if self.focus()? != Some(destination) {
-                            self.refuse(request)?;
-                            bail!("destination changed before paste transfer");
-                        }
-                        self.serve(request)
-                    })();
-                    self.conn.ungrab_server()?.check()?;
-                    if delivered? {
+                    if self.serve_guarded(request, destination)? {
                         return Ok(());
                     }
                 }
@@ -952,6 +998,132 @@ mod tests {
             request(&client, window, atom(&client, b"TEXT"), false).data,
             "synthetic \u{03bb}".as_bytes()
         );
+    }
+
+    fn select_key_events(conn: &RustConnection, window: u32) {
+        use x11rb::protocol::xproto::ChangeWindowAttributesAux;
+        conn.change_window_attributes(
+            window,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::KEY_PRESS),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+
+    /// Wait for the first KeyPress; returns whether `known` was already set.
+    fn key_arrived_after(conn: &RustConnection, known: &std::sync::atomic::AtomicBool) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Some(Event::KeyPress(_)) = conn.poll_for_event().unwrap() {
+                return known.load(SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("no Ctrl+V reached the destination");
+    }
+
+    /// #3133: a GTK4 client (Ghostty) asks the new owner for TARGETS shortly
+    /// after the claim and forwards a raw ^V to the pty when the key beats the
+    /// answer. The destination here queries after a toolkit-sized delay.
+    #[test]
+    fn paste_key_waits_for_the_destinations_format_query() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        select_key_events(&destination, dest_window);
+        focus(&destination, dest_window);
+        let paste = server.paste("synthetic dictation");
+        paste.claim(NONE).unwrap();
+        let known = Arc::new(AtomicBool::new(false));
+        let gtk = {
+            let (destination, known) = (destination.clone(), known.clone());
+            let window = paste.window();
+            std::thread::spawn(move || {
+                // XFixes owner-change notice plus main-loop latency.
+                while destination
+                    .get_selection_owner(atom(&destination, b"CLIPBOARD"))
+                    .unwrap()
+                    .reply()
+                    .unwrap()
+                    .owner
+                    != window
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                std::thread::sleep(Duration::from_millis(30));
+                let (targets, property) = (
+                    atom(&destination, b"TARGETS"),
+                    atom(&destination, b"TEST_RESULT"),
+                );
+                destination
+                    .convert_selection(
+                        dest_window,
+                        atom(&destination, b"CLIPBOARD"),
+                        targets,
+                        property,
+                        CURRENT_TIME,
+                    )
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                // One event loop, like a toolkit: report what was known when
+                // the first key event was dispatched.
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    match destination.poll_for_event().unwrap() {
+                        Some(Event::SelectionNotify(event)) if event.property != NONE => {
+                            known.store(true, SeqCst);
+                        }
+                        Some(Event::KeyPress(_)) => return known.load(SeqCst),
+                        _ => std::thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+                panic!("no Ctrl+V reached the destination");
+            })
+        };
+        assert!(paste.send_paste(dest_window).unwrap());
+        assert!(
+            gtk.join().unwrap(),
+            "Ctrl+V reached the destination before its TARGETS answer"
+        );
+        assert!(known.load(SeqCst));
+    }
+
+    #[test]
+    fn format_wait_refuses_other_clients() {
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        let (manager, manager_window) = server.client();
+        select_key_events(&destination, dest_window);
+        focus(&destination, dest_window);
+        let paste = server.paste("synthetic dictation");
+        paste.claim(NONE).unwrap();
+        // The destination stays silent, so the wait runs its full grace and
+        // the manager's request lands inside it.
+        let sender = std::thread::spawn(move || paste.send_paste(dest_window).unwrap());
+        refused_request(&manager, manager_window, atom(&manager, b"TARGETS"));
+        assert!(sender.join().unwrap());
+    }
+
+    #[test]
+    fn silent_destination_gets_the_key_after_a_bounded_wait() {
+        let server = Server::start();
+        let (destination, dest_window) = server.client();
+        select_key_events(&destination, dest_window);
+        focus(&destination, dest_window);
+        let paste = server.paste("synthetic dictation");
+        paste.claim(NONE).unwrap();
+        let started = Instant::now();
+        assert!(paste.send_paste(dest_window).unwrap());
+        let waited = started.elapsed();
+        assert!(waited >= PasteSelection::FORMATS_GRACE, "{waited:?}");
+        assert!(waited < Duration::from_secs(1), "{waited:?}");
+        assert!(key_arrived_after(
+            &destination,
+            &std::sync::atomic::AtomicBool::new(true)
+        ));
     }
 
     #[test]
