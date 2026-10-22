@@ -7,7 +7,9 @@ import DictateHubCore
 /// frontmost app.
 @MainActor
 final class HotkeyMonitor {
-    var onPress: () -> Void = {}
+    /// `true` when the press came from the global monitor (another app was
+    /// frontmost), `false` from our own windows.
+    var onPress: (_ global: Bool) -> Void = { _ in }
     var onRelease: () -> Void = {}
     var onEscape: () -> Void = {}
 
@@ -32,13 +34,13 @@ final class HotkeyMonitor {
         stop()
         let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) }
+            MainActor.assumeIsolated { self?.handle(event, global: true) }
         }) {
             monitors.append(global)
         }
         // Our own windows (Settings) get events locally, not globally.
         if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.handle(event) }
+            MainActor.assumeIsolated { self?.handle(event, global: false) }
             return event
         }) {
             monitors.append(local)
@@ -51,11 +53,11 @@ final class HotkeyMonitor {
         detector.reset()
     }
 
-    private func handle(_ event: NSEvent) {
+    private func handle(_ event: NSEvent, global: Bool) {
         switch event.type {
         case .flagsChanged:
             switch detector.update(flags: UInt64(event.modifierFlags.rawValue)) {
-            case .pressed: onPress()
+            case .pressed: onPress(global)
             case .released: onRelease()
             case nil: break
             }

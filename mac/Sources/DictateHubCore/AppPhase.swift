@@ -17,6 +17,18 @@ public enum AppPhase: Equatable, Sendable {
         }
     }
 
+    /// Frames the status item cycles through while busy (one frame = static).
+    public var animationFrames: [String] {
+        switch self {
+        case .recording: return ["mic.fill", "mic"]
+        case .transcribing: return ["ellipsis.circle", "ellipsis.circle.fill"]
+        case .idle, .error: return [symbolName]
+        }
+    }
+
+    /// Seconds per animation frame.
+    public static let frameInterval: Double = 0.45
+
     /// The menu's first (disabled) line.
     public var statusLine: String {
         switch self {

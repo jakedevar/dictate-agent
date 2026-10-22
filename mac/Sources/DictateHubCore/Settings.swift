@@ -6,6 +6,10 @@ public struct HubSettings: @unchecked Sendable {
     // UserDefaults is documented thread-safe; the wrapper only reads/writes it.
     public static let endpointKey = "hubEndpoint"
     public static let hotkeyKey = "hotkey"
+    public static let playSoundsKey = "playSounds"
+    public static let keepMicWarmKey = "keepMicWarm"
+    public static let onboardingDoneKey = "onboardingDone"
+    public static let loginItemConfiguredKey = "loginItemConfigured"
 
     let defaults: UserDefaults
 
@@ -26,6 +30,39 @@ public struct HubSettings: @unchecked Sendable {
                 ?? .default
         }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Self.hotkeyKey) }
+    }
+
+    /// Start/stop/error sounds. Default on.
+    public var playSounds: Bool {
+        get { bool(Self.playSoundsKey, default: true) }
+        nonmutating set { defaults.set(newValue, forKey: Self.playSoundsKey) }
+    }
+
+    /// Keep the microphone open while idle, with a short pre-roll ring, so a
+    /// word spoken right at key-down is kept. Default off: an open microphone
+    /// shows the orange privacy indicator the whole time, and a Bluetooth
+    /// headset stays in its low-quality call profile.
+    public var keepMicWarm: Bool {
+        get { bool(Self.keepMicWarmKey, default: false) }
+        nonmutating set { defaults.set(newValue, forKey: Self.keepMicWarmKey) }
+    }
+
+    /// The permissions window has been shown once (first run).
+    public var onboardingDone: Bool {
+        get { bool(Self.onboardingDoneKey, default: false) }
+        nonmutating set { defaults.set(newValue, forKey: Self.onboardingDoneKey) }
+    }
+
+    /// The login item has been registered once (default on). After that the
+    /// system's own state is the truth: turning it off in System Settings is
+    /// respected and never undone at the next launch.
+    public var loginItemConfigured: Bool {
+        get { bool(Self.loginItemConfiguredKey, default: false) }
+        nonmutating set { defaults.set(newValue, forKey: Self.loginItemConfiguredKey) }
+    }
+
+    private func bool(_ key: String, default value: Bool) -> Bool {
+        defaults.object(forKey: key) == nil ? value : defaults.bool(forKey: key)
     }
 }
 
