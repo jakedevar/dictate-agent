@@ -210,7 +210,11 @@ dictated --rotate-api-token   # replace it; a running daemon honors it at once
 peer may only transcribe its own audio (no injection, mic, context, config,
 history, dictionary or diagnostics) and sees only its own sessions' events.
 A LAN bind needs `allow_lan` plus TLS or `allow_plaintext_lan` (tunnel only);
-anything less is refused at startup. Token file:
+anything less is a config error that stops startup. A failure when the
+listener starts (port taken, no token, bad TLS file) is not: dictated logs it,
+binds nothing, keeps dictating, and `dictate doctor` shows `network_api` down.
+Mac app hub side (reverse SSH tunnel, `just install-mac-tunnel`,
+`just mac-token`): `docs/MAC-APP.md`. Token file:
 `$XDG_DATA_HOME/dictated/api-token` (0600). Design and threat model:
 `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
 Tests bind ephemeral 127.0.0.1 ports only.

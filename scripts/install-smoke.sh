@@ -68,6 +68,13 @@ done
 make -C "$repo" install-files install-unit DESTDIR="$tmp/stage-make-usr" PREFIX=/usr \
     SYSTEMD_USER_DIR=/usr/lib/systemd/user TARGET_DIR="$bindir" >/dev/null
 grep -qx 'ExecStart=/usr/bin/dictated' "$tmp/stage-make-usr/usr/lib/systemd/user/dictated.service" || fail "make PREFIX=/usr unit wrong"
+# The Mac tunnel unit: under DESTDIR it is only written, never enabled.
+make -C "$repo" install-mac-tunnel DESTDIR="$mk" >/dev/null
+tunnel="$mk$HOME/.config/systemd/user/dictate-mac-tunnel.service"
+need "$tunnel"
+need "$mk$HOME/.local/share/dictate-agent/docs/MAC-APP.md"
+grep -q -- '-R 127.0.0.1:${DICTATE_MAC_PORT}:127.0.0.1:${DICTATE_HUB_API_PORT}' "$tunnel" \
+    || fail "the tunnel unit must forward to the Mac's loopback only"
 say "make install ok"
 
 # --- 3. uninstall leaves user data alone ----------------------------------
@@ -76,6 +83,8 @@ echo model >"$mk$HOME/.local/share/dictate-agent/models/ggml-x.bin"
 make -C "$repo" uninstall uninstall-unit DESTDIR="$mk" >/dev/null
 [ ! -e "$mk$HOME/.local/bin/dictated" ] || fail "uninstall left dictated"
 [ ! -e "$mk$HOME/.config/systemd/user/dictated.service" ] || fail "uninstall-unit left the unit"
+make -C "$repo" uninstall-mac-tunnel DESTDIR="$mk" >/dev/null
+[ ! -e "$tunnel" ] || fail "uninstall-mac-tunnel left the unit"
 need "$mk$HOME/.local/share/dictate-agent/models/ggml-x.bin"
 DESTDIR="$dest" "$root/install.sh" --uninstall >/dev/null
 [ ! -e "$dest$HOME/.local/bin/dictated" ] || fail "install.sh --uninstall left dictated"

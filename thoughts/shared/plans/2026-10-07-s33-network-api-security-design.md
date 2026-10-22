@@ -183,6 +183,18 @@ the reason. It does not silently run without the API. Rules 2–6 are also confi
 validation errors, so `dictated --check-config` reports them before a restart.
 Rule 7 is checked when the listener starts.
 
+> **Amended 2026-10-22 (Mac app hub slice, #3528).** Rules 1–6 stay fatal: they
+> are config validation errors, and an invalid config still stops `dictated`
+> before anything starts. What is no longer fatal is a failure **at listener
+> start**: rule 7 (token), an address that cannot be bound (port already
+> taken) and unusable TLS files. Those now log a warning, bind nothing
+> (fail-closed, so exposure never grows), and leave the daemon serving its
+> socket, hotkeys and dictation; `dictate doctor`'s `network_api` check reports
+> the API as down with the reason (`Daemon::serve_network_api`). Reason: the
+> API became an always-on dependency of the Mac app, and the operator's
+> dictation must never stop because a port was taken or a token file was
+> chmodded.
+
 ## 5. Authentication
 
 - **Token.** `dct1_` followed by 43 base64url characters: 32 bytes (256 bits)

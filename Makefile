@@ -45,7 +45,8 @@ export PATH := /opt/cuda/bin:$(PATH)
 
 .PHONY: release release-cpu ui-release test clippy install install-files \
 	install-unit install-ui install-ui-files install-all uninstall \
-	uninstall-unit uninstall-ui uninstall-legacy clean
+	uninstall-unit uninstall-ui uninstall-legacy clean \
+	install-mac-tunnel install-mac-tunnel-unit uninstall-mac-tunnel
 
 release:
 	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build --release --workspace --features dictated/cuda
@@ -76,7 +77,8 @@ install-files:
 	install -m 0755 "$(TARGET_DIR)/$(DAEMON_BIN)" "$(DESTDIR)$(BINDIR)/$(DAEMON_BIN)"
 	install -m 0755 "$(TARGET_DIR)/$(CLI_BIN)" "$(DESTDIR)$(BINDIR)/$(CLI_BIN)"
 	install -m 0644 config/config.example.toml "$(DESTDIR)$(DATADIR)/config.example.toml"
-	install -m 0644 docs/protocol.md docs/INSTALL.md docs/MIGRATION-FROM-PYTHON.md "$(DESTDIR)$(DATADIR)/docs/"
+	install -m 0644 config/mac-hub-api.toml "$(DESTDIR)$(DATADIR)/mac-hub-api.toml"
+	install -m 0644 docs/protocol.md docs/INSTALL.md docs/MIGRATION-FROM-PYTHON.md docs/MAC-APP.md "$(DESTDIR)$(DATADIR)/docs/"
 	@echo "Installed $(DESTDIR)$(BINDIR)/$(DAEMON_BIN) and $(DESTDIR)$(BINDIR)/$(CLI_BIN)"
 	@echo "Next: make install-unit && systemctl --user enable --now dictated"
 
@@ -91,6 +93,34 @@ install-unit:
 	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service.tmp"
 	@echo "Installed $(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service"
 	@echo "Run: systemctl --user daemon-reload && systemctl --user enable --now dictated"
+
+# The Mac app's reverse SSH tunnel (docs/MAC-APP.md). `install-mac-tunnel-unit`
+# only writes the file (safe under DESTDIR); `install-mac-tunnel` also enables
+# and starts it, except when staging into a DESTDIR. Point it at another host
+# with a drop-in (`systemctl --user edit dictate-mac-tunnel`), not by editing.
+MAC_TUNNEL_UNIT := dictate-mac-tunnel.service
+
+install-mac-tunnel-unit:
+	install -d "$(DESTDIR)$(SYSTEMD_USER_DIR)"
+	sed -e 's|^Documentation=.*|Documentation=file://$(call unit_path,$(DATADIR))/docs/MAC-APP.md|' \
+	    systemd/$(MAC_TUNNEL_UNIT) > "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp"
+	install -m 0644 "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp" "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)"
+	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp"
+	@echo "Installed $(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)"
+
+install-mac-tunnel: install-mac-tunnel-unit
+	@if [ -n "$(DESTDIR)" ]; then \
+	    echo "DESTDIR is set: not enabling. Run: systemctl --user daemon-reload && systemctl --user enable --now $(MAC_TUNNEL_UNIT)"; \
+	else \
+	    systemctl --user daemon-reload && \
+	    systemctl --user enable --now $(MAC_TUNNEL_UNIT) && \
+	    echo "Enabled $(MAC_TUNNEL_UNIT). Check: systemctl --user status $(MAC_TUNNEL_UNIT); dictate doctor"; \
+	fi
+
+uninstall-mac-tunnel:
+	@if [ -z "$(DESTDIR)" ]; then systemctl --user disable --now $(MAC_TUNNEL_UNIT) 2>/dev/null || true; fi
+	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)"
+	@if [ -z "$(DESTDIR)" ]; then systemctl --user daemon-reload; fi
 
 # The optional desktop UI: `dictate-ui` plus a desktop entry and icon.
 install-ui: ui-release install-ui-files
@@ -115,9 +145,9 @@ uninstall:
 	# DATADIR is ~/.local/share/dictate-agent by default, which also holds the
 	# models and history.db: remove only the files install-files put there,
 	# never the directory.
-	rm -f "$(DESTDIR)$(DATADIR)/config.example.toml" \
+	rm -f "$(DESTDIR)$(DATADIR)/config.example.toml" "$(DESTDIR)$(DATADIR)/mac-hub-api.toml" \
 	      "$(DESTDIR)$(DATADIR)/docs/protocol.md" "$(DESTDIR)$(DATADIR)/docs/INSTALL.md" \
-	      "$(DESTDIR)$(DATADIR)/docs/MIGRATION-FROM-PYTHON.md"
+	      "$(DESTDIR)$(DATADIR)/docs/MIGRATION-FROM-PYTHON.md" "$(DESTDIR)$(DATADIR)/docs/MAC-APP.md"
 	-rmdir "$(DESTDIR)$(DATADIR)/docs" 2>/dev/null
 
 uninstall-unit:

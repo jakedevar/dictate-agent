@@ -364,7 +364,12 @@ preview_only = false
 # Every request needs `Authorization: Bearer <token>`, loopback included. Create
 # the token with `dictated --api-token` (prints it, plus the URL and any TLS
 # fingerprint to pin); replace it with `dictated --rotate-api-token`. The daemon
-# never creates one on its own and refuses to start the API without one.
+# never creates one on its own and refuses to start the API without one. If the
+# API cannot start (no token, port taken) dictated logs a warning and keeps
+# dictating; `dictate doctor` shows the API as down.
+#
+# Mac app (docs/MAC-APP.md): config/mac-hub-api.toml is the block to use, with
+# the reverse SSH tunnel `just install-mac-tunnel` and `just mac-token`.
 #
 # A network peer may only transcribe audio it sends (POST /v1/transcribe, or
 # transcribe_audio over GET /v1/ws). It can never type into this desktop, switch

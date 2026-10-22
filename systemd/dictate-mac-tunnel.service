@@ -1,0 +1,57 @@
+[Unit]
+Description=dictated network API -> Mac app: reverse SSH tunnel (Mac loopback only)
+Documentation=file:///%h/.local/share/dictate-agent/docs/MAC-APP.md
+# Not Requires=/BindsTo=dictated.service: the tunnel only carries connections,
+# and a forward that finds no listener just fails that one request. Ordering
+# after dictated keeps the first Mac request from racing the API's bind.
+After=dictated.service
+# Never give up retrying (the Mac sleeps, Wi-Fi drops, the hub boots first).
+StartLimitIntervalSec=0
+
+# Install with `just install-mac-tunnel` (or `make install-mac-tunnel`).
+# Security model and setup: docs/MAC-APP.md. In short:
+#   * The hub dials out to the Mac; nothing new listens on the hub beyond
+#     dictated's own loopback API, and the hub firewall is untouched.
+#   * `-R 127.0.0.1:PORT:...` asks the Mac's sshd to listen on ITS loopback
+#     only. With macOS's default `GatewayPorts no` sshd forces loopback anyway;
+#     never set `GatewayPorts yes` on the Mac (that would bind every interface).
+#   * Every byte rides the SSH session; every request still needs the bearer
+#     token.
+#
+# Point it at another Mac, or other ports, with a drop-in instead of editing
+# this file (`systemctl --user edit dictate-mac-tunnel`):
+#   [Service]
+#   Environment=DICTATE_MAC_HOST=my-other-mac
+# Keep the two ports equal: the API accepts `Host: 127.0.0.1:<its own port>`
+# only, unless the Mac-side spelling is added to [api] allowed_hosts.
+
+[Service]
+Type=simple
+# An ssh_config Host alias (or user@host). It must work non-interactively:
+# key without a passphrase or a running agent, and the host key already in
+# ~/.ssh/known_hosts (BatchMode never prompts; StrictHostKeyChecking=yes never
+# accepts a new key on its own).
+Environment=DICTATE_MAC_HOST=mac-mini
+# The hub's [api] bind port, and the port the Mac app connects to.
+Environment=DICTATE_HUB_API_PORT=7313
+Environment=DICTATE_MAC_PORT=7313
+# -N: no remote command; -T: no tty. ExitOnForwardFailure: if the Mac port is
+# taken (e.g. a stale session still holds it), exit and let Restart= retry
+# instead of staying up with no tunnel. ServerAlive*: notice a dead link in
+# ~45 s. ControlPath=none: never ride, or become, a shared master connection.
+ExecStart=/usr/bin/ssh -N -T \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=3 \
+    -o ConnectTimeout=15 \
+    -o ControlMaster=no \
+    -o ControlPath=none \
+    -R 127.0.0.1:${DICTATE_MAC_PORT}:127.0.0.1:${DICTATE_HUB_API_PORT} \
+    ${DICTATE_MAC_HOST}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
