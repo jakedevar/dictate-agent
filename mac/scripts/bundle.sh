@@ -4,12 +4,19 @@
 #   mac/scripts/bundle.sh            # release build -> mac/build/DictateHub.app
 #   CONFIG=debug mac/scripts/bundle.sh
 #
-# Signing: the first "Apple Development" identity in the keychain (override
-# with DICTATEHUB_SIGN_IDENTITY=<SHA-1 or name>), so the designated
-# requirement is stable and TCC grants (Microphone, Accessibility) survive
-# rebuilds. If that fails (typically: the login keychain is locked in an SSH
-# session) the bundle is signed ad hoc instead, and the unlock step is printed.
-# DICTATEHUB_ADHOC=1 skips the identity attempt.
+# Signing, in order:
+#   DICTATEHUB_ADHOC=1               ad hoc (TCC grants do NOT survive a rebuild)
+#   DICTATEHUB_SIGN_IDENTITY=<sha1>  that identity from the default keychains
+#                                    (e.g. Apple Development; needs an unlocked
+#                                    login keychain, so not over SSH: #3541)
+#   default                          the dedicated "DictateHub Local Signing"
+#                                    identity, created on first use by
+#                                    scripts/signing-setup.sh and unlocked here
+#                                    without any prompt
+# The default gives a designated requirement that never changes between
+# builds (certificate leaf hash), so Microphone and Accessibility grants
+# survive rebuilds and reinstalls. If signing with an identity fails the
+# bundle is signed ad hoc and SIGNED=adhoc is printed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,7 +24,7 @@ CONFIG=${CONFIG:-release}
 APP=build/DictateHub.app
 BUNDLE_ID=dev.jakedevar.DictateHub
 VERSION=$(tr -d '[:space:]' < VERSION)
-BUILD=$(date -u +%Y%m%d%H%M)
+BUILD=${DICTATEHUB_BUILD:-$(date -u +%Y%m%d%H%M)}
 
 # Run a command with a time limit (macOS has no timeout(1)); a keychain
 # access prompt on the Mac's screen must not hang an SSH session forever.
@@ -35,30 +42,39 @@ sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" Resources/Info.plist >
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-identity=${DICTATEHUB_SIGN_IDENTITY:-}
-if [[ -z $identity && -z ${DICTATEHUB_ADHOC:-} ]]; then
-    # The SHA-1 column, not the name (the name embeds the account's email).
-    identity=$(security find-identity -v -p codesigning 2>/dev/null \
-        | awk '/"Apple Development/ { print $2; exit }')
-fi
-
+KC="$HOME/Library/Keychains/dictatehub-signing.keychain-db"
+PWFILE="$HOME/Library/Keychains/dictatehub-signing.password"
 signed=adhoc
-if [[ -n $identity && -z ${DICTATEHUB_ADHOC:-} ]]; then
-    echo "==> codesign with Apple Development identity ${identity:0:8}…"
+if [[ -n ${DICTATEHUB_ADHOC:-} ]]; then
+    :
+elif [[ -n ${DICTATEHUB_SIGN_IDENTITY:-} ]]; then
+    identity=$DICTATEHUB_SIGN_IDENTITY
+    echo "==> codesign with identity ${identity:0:8}… (default keychains)"
     if err=$(with_timeout 60 codesign --force --sign "$identity" --identifier "$BUNDLE_ID" \
             --timestamp=none "$APP" 2>&1); then
         signed=identity
     else
-        echo "codesign with the identity failed: $err" >&2
-        echo "    The login keychain is probably locked in this SSH session. To sign with" >&2
-        echo "    the identity over SSH, unlock it first (prompts for the login password):" >&2
-        echo "      security unlock-keychain ~/Library/Keychains/login.keychain-db" >&2
-        echo "    and, once, allow codesign to use the key without a GUI prompt:" >&2
-        echo "      security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db" >&2
-        echo "    Falling back to ad-hoc signing (TCC grants will NOT survive a rebuild)." >&2
+        echo "codesign with $identity failed: $err" >&2
+        echo "    (over SSH the login keychain is locked; unset DICTATEHUB_SIGN_IDENTITY" >&2
+        echo "    to use the dedicated DictateHub signing keychain instead)" >&2
+    fi
+else
+    if identity=$(scripts/signing-setup.sh --print); then
+        echo "==> codesign with \"DictateHub Local Signing\" ${identity:0:8}… ($KC)"
+        # signing-setup.sh --print left the keychain unlocked; --keychain keeps
+        # codesign to this keychain, which is not in the search list.
+        if err=$(with_timeout 60 codesign --force --sign "$identity" --keychain "$KC" \
+                --identifier "$BUNDLE_ID" --timestamp=none "$APP" 2>&1); then
+            signed=identity
+        else
+            echo "codesign with the DictateHub signing identity failed: $err" >&2
+        fi
+    else
+        echo "signing-setup.sh failed; see above" >&2
     fi
 fi
 if [[ $signed == adhoc ]]; then
+    [[ -n ${DICTATEHUB_ADHOC:-} ]] || echo "    Falling back to ad-hoc signing (TCC grants will NOT survive a rebuild)." >&2
     echo "==> codesign ad hoc"
     codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
