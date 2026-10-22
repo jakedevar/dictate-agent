@@ -64,3 +64,16 @@ Filed or seen this session: #3551, #3575 (harness), #3690 (done), #3555–#3557/
 - No live Mac hotkey dictation has been observed yet. Watch the hub history for Mac app names arriving via the network API.
 - #1473, #1475 and #1476 were already fixed and are closed. #1474 is fixed by bc0606b, merged at master 3068cbf and deployed.
 - #3133 is still open until a real Ghostty dictation shows inject=Paste. No workers are running.
+
+## Update 19:15Z (seat near rotation; read this first)
+
+- **#3762 Option+N:** master 9e37035, from the Mac lane's format-patch, which was reviewed and passes 97/97 Swift tests. Installed with remote.sh, and the operator's pref is `hotkey=option_n`.
+- **P1 operator bug:** the app shows Accessibility NOT granted, and its tracking Issue is **#3766**.
+  - Root cause (PM, verified read-only): the system TCC row csreq is `cdhash H"8e2ca256…"`, from an ad-hoc build granted at 04:47Z. The installed DR is the stable `certificate leaf = H"27a5d983…"`, which never matches.
+  - Operator to-do `dictatehub-option-n` (id 1389f351, P1) was updated with the steps: remove DictateHub with − and re-add it in Accessibility and Input Monitoring, relaunch, then Option+N.
+  - My `optn-todo` wake fires when that to-do closes.
+- **Worker 64c5e341** (Sonnet, on #3766): re-poll trust on activation, a Re-check button, a missing-permission diagnosis, launch only via `open`, refuse ad-hoc installs, and an optional AeroSpace `alt-n` warning. It must not run `remote.sh install`.
+  - When it lands, the PM `git am`s or merges it to master, pushes, runs `DICTATE_MAC_BUILD_ID=pm-e2e mac/scripts/remote.sh test`, then `install`.
+  - Confirm the launch line shows `accessibility=true` after the operator re-adds the grant.
+- **Close-out:** when a live Option+N dictation is in hub history (check with jq on app/route/timings, never text), close #3762 and #3766. Then send ONE AgentReportUp to the GM; it relays to the Mac via the Rsi PM.
+- **AeroSpace:** the Mac lane commented out AeroSpace's `alt-n` binding in ~/.config/aerospace/aerospace.toml on the Mac. Never edit it from here.
