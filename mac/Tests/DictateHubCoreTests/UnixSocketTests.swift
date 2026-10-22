@@ -97,6 +97,12 @@ import Testing
         #expect(throws: HubError.self) { try UnixHTTP.response(Data((header + "he").utf8), eof: true) }
     }
 
+    @Test func oversizedHeaderIsRejected() {
+        #expect(throws: HubError.self) {
+            try UnixHTTP.response(Data(repeating: 120, count: UnixHTTP.headerLimit + 1), eof: false)
+        }
+    }
+
     @Test(arguments: [
         "HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n",
         "HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n",
@@ -104,8 +110,7 @@ import Testing
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n",
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx!!",
-        "garbage\r\n\r\n",
-        String(repeating: "x", count: UnixHTTP.headerLimit + 1)
+        "garbage\r\n\r\n"
     ])
     func refusesMalformedOrOversizedResponses(_ wire: String) {
         #expect(throws: HubError.self) { try UnixHTTP.response(Data(wire.utf8), eof: true) }

@@ -113,7 +113,8 @@ enum UnixHTTP {
         head += "Host: 127.0.0.1:7313\r\nConnection: close\r\nContent-Length: \(body.count)\r\n"
         for (name, value) in request.allHTTPHeaderFields ?? [:] {
             if ["host", "connection", "content-length", "transfer-encoding"].contains(name.lowercased()) { continue }
-            guard !name.contains("\r"), !name.contains("\n"), !value.contains("\r"), !value.contains("\n")
+            guard !name.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }),
+                  !value.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f })
             else { throw malformed() }
             head += "\(name): \(value)\r\n"
         }

@@ -145,7 +145,7 @@ public struct HubRequestBuilder: Sendable {
         if trimmed == Self.defaultEndpoint || trimmed.hasPrefix("unix:") {
             socket = trimmed == Self.defaultEndpoint ? Self.defaultSocketPath : String(trimmed.dropFirst(5))
             guard let socket, socket.hasPrefix("/"), socket.utf8.count < 104,
-                  !socket.contains("\0"), !socket.contains("\n"), !socket.contains("\r")
+                  !socket.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f })
             else { throw HubError.invalidEndpoint(trimmed) }
             httpEndpoint = Self.legacyEndpoint
         } else {
@@ -159,7 +159,7 @@ public struct HubRequestBuilder: Sendable {
         self.unixSocketPath = socket
         let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tok.isEmpty else { throw HubError.missingToken }
-        guard !tok.contains("\r"), !tok.contains("\n") else { throw HubError.missingToken }
+        guard !tok.utf8.contains(where: { $0 < 0x20 || $0 == 0x7f }) else { throw HubError.missingToken }
         self.endpoint = url
         self.token = tok
         self.timeout = timeout
