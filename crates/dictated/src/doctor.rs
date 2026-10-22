@@ -27,6 +27,9 @@ use crate::server::DiagnosticsProvider;
 /// The hub-side reverse SSH tunnel that carries the network API to the Mac
 /// app (`systemd/dictate-mac-tunnel.service`, `docs/MAC-APP.md`).
 pub const MAC_TUNNEL_UNIT: &str = "dictate-mac-tunnel.service";
+/// The exit status `dictate-mac-tunnel` uses for a safety refusal (EX_CONFIG);
+/// the unit's `RestartPreventExitStatus` matches it.
+const MAC_TUNNEL_REFUSED: i32 = 78;
 
 /// How long to wait for a model that is still loading before calling it broken.
 const MODEL_LOAD_PATIENCE: Duration = Duration::from_secs(20);
@@ -746,8 +749,13 @@ enum TunnelProbe {
     NotAsked,
     /// The unit is not installed.
     NotInstalled,
-    /// Installed; its `ActiveState` and `SubState`.
-    State { active: String, sub: String },
+    /// Installed; its `ActiveState`, `SubState` and the main process's last
+    /// exit status (`ExecMainStatus`).
+    State {
+        active: String,
+        sub: String,
+        exit_status: Option<i32>,
+    },
     /// `systemctl` could not be asked.
     Unavailable(String),
 }
@@ -757,7 +765,7 @@ async fn probe_unit(unit: &str) -> TunnelProbe {
         .args([
             "--user",
             "show",
-            "--property=LoadState,ActiveState,SubState",
+            "--property=LoadState,ActiveState,SubState,ExecMainStatus",
             unit,
         ])
         .stdin(std::process::Stdio::null())
@@ -789,6 +797,7 @@ fn parse_unit_show(output: &str) -> TunnelProbe {
         _ => TunnelProbe::State {
             active: field("ActiveState"),
             sub: field("SubState"),
+            exit_status: field("ExecMainStatus").parse().ok(),
         },
     }
 }
@@ -808,14 +817,31 @@ fn mac_tunnel_verdict(api_enabled: bool, probe: TunnelProbe) -> DiagnosticCheck 
             TITLE,
             format!("{MAC_TUNNEL_UNIT} is not installed (only the Mac app needs it)"),
         ),
-        TunnelProbe::State { active, sub } if active == "active" && sub == "running" => {
+        TunnelProbe::State { active, sub, .. } if active == "active" && sub == "running" => {
             DiagnosticCheck::ok(
                 ID,
                 TITLE,
                 format!("{MAC_TUNNEL_UNIT} is running (the API reaches the Mac's loopback)"),
             )
         }
-        TunnelProbe::State { active, sub } => DiagnosticCheck::warn(
+        // The wrapper's safety refusal (scripts/dictate-mac-tunnel): the Mac's
+        // sshd could publish the port beyond its loopback, or it could not be
+        // verified. The unit stays down on purpose (RestartPreventExitStatus).
+        TunnelProbe::State {
+            active,
+            exit_status: Some(MAC_TUNNEL_REFUSED),
+            ..
+        } if active == "failed" => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!(
+                "{MAC_TUNNEL_UNIT} refused to start: the Mac's sshd could publish the API beyond its loopback, or could not be checked"
+            ),
+            format!(
+                "`dictate-mac-tunnel --check` says why (journalctl --user -u {MAC_TUNNEL_UNIT}); fix the Mac (GatewayPorts no), then `systemctl --user restart {MAC_TUNNEL_UNIT}`"
+            ),
+        ),
+        TunnelProbe::State { active, sub, .. } => DiagnosticCheck::warn(
             ID,
             TITLE,
             format!("{MAC_TUNNEL_UNIT} is {active} ({sub}): the Mac app cannot reach this hub"),
@@ -1229,7 +1255,18 @@ mod tests {
             parse_unit_show("LoadState=loaded\nActiveState=active\nSubState=running\n"),
             TunnelProbe::State {
                 active: "active".into(),
-                sub: "running".into()
+                sub: "running".into(),
+                exit_status: None,
+            }
+        );
+        assert_eq!(
+            parse_unit_show(
+                "LoadState=loaded\nActiveState=failed\nSubState=failed\nExecMainStatus=78\n"
+            ),
+            TunnelProbe::State {
+                active: "failed".into(),
+                sub: "failed".into(),
+                exit_status: Some(78),
             }
         );
         assert!(matches!(parse_unit_show(""), TunnelProbe::Unavailable(_)));
@@ -1241,15 +1278,38 @@ mod tests {
         let running = TunnelProbe::State {
             active: "active".into(),
             sub: "running".into(),
+            exit_status: Some(0),
         };
         assert_eq!(mac_tunnel_verdict(true, running).status, CheckStatus::Ok);
         let restarting = TunnelProbe::State {
             active: "activating".into(),
             sub: "auto-restart".into(),
+            exit_status: Some(1),
         };
         let w = mac_tunnel_verdict(true, restarting);
         assert_eq!(w.status, CheckStatus::Warn);
         assert!(w.detail.contains("auto-restart") && w.fix.is_some());
+        // A safety refusal names itself and how to see why.
+        let refused = TunnelProbe::State {
+            active: "failed".into(),
+            sub: "failed".into(),
+            exit_status: Some(78),
+        };
+        let r = mac_tunnel_verdict(true, refused);
+        assert_eq!(r.status, CheckStatus::Warn);
+        assert!(r.detail.contains("refused") && r.detail.contains("loopback"));
+        assert!(r
+            .fix
+            .as_deref()
+            .unwrap_or("")
+            .contains("dictate-mac-tunnel --check"));
+        // Any other failure keeps the generic message.
+        let failed = TunnelProbe::State {
+            active: "failed".into(),
+            sub: "failed".into(),
+            exit_status: Some(1),
+        };
+        assert!(!mac_tunnel_verdict(true, failed).detail.contains("refused"));
         assert_eq!(
             mac_tunnel_verdict(true, TunnelProbe::NotInstalled).status,
             CheckStatus::Skipped

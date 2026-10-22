@@ -12,9 +12,19 @@ StartLimitIntervalSec=0
 # Security model and setup: docs/MAC-APP.md. In short:
 #   * The hub dials out to the Mac; nothing new listens on the hub beyond
 #     dictated's own loopback API, and the hub firewall is untouched.
-#   * `-R 127.0.0.1:PORT:...` asks the Mac's sshd to listen on ITS loopback
-#     only. With macOS's default `GatewayPorts no` sshd forces loopback anyway;
-#     never set `GatewayPorts yes` on the Mac (that would bind every interface).
+#   * Loopback-only on the Mac is ENFORCED, not assumed. `-R 127.0.0.1:PORT`
+#     is only a request: the Mac's sshd decides, and `GatewayPorts yes` there
+#     binds every interface anyway. So ExecStart is a wrapper,
+#     dictate-mac-tunnel (scripts/dictate-mac-tunnel), that
+#       1. reads the Mac's sshd policy before any forward exists (`sshd -G` and
+#          sshd_config with every Include, Match blocks too) and refuses any
+#          GatewayPorts other than `no`, or a config it cannot read;
+#       2. starts the ssh -R;
+#       3. checks with lsof on the Mac that the port listens on 127.0.0.1/::1
+#          only, and kills the tunnel otherwise.
+#     A refusal exits 78 and RestartPreventExitStatus keeps the unit down
+#     (failed) until the Mac is fixed: `dictate-mac-tunnel --check`, then
+#     `systemctl --user restart dictate-mac-tunnel`.
 #   * Every byte rides the SSH session; every request still needs the bearer
 #     token.
 #
@@ -35,23 +45,16 @@ Environment=DICTATE_MAC_HOST=mac-mini
 # The hub's [api] bind port, and the port the Mac app connects to.
 Environment=DICTATE_HUB_API_PORT=7313
 Environment=DICTATE_MAC_PORT=7313
-# -N: no remote command; -T: no tty. ExitOnForwardFailure: if the Mac port is
-# taken (e.g. a stale session still holds it), exit and let Restart= retry
-# instead of staying up with no tunnel. ServerAlive*: notice a dead link in
-# ~45 s. ControlPath=none: never ride, or become, a shared master connection.
-ExecStart=/usr/bin/ssh -N -T \
-    -o BatchMode=yes \
-    -o StrictHostKeyChecking=yes \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=15 \
-    -o ServerAliveCountMax=3 \
-    -o ConnectTimeout=15 \
-    -o ControlMaster=no \
-    -o ControlPath=none \
-    -R 127.0.0.1:${DICTATE_MAC_PORT}:127.0.0.1:${DICTATE_HUB_API_PORT} \
-    ${DICTATE_MAC_HOST}
+# The wrapper's ssh options: BatchMode, StrictHostKeyChecking=yes, -N -T, no
+# agent or X11 forwarding, ExitOnForwardFailure (a port still held by a stale
+# session means exit and retry, not "up with no tunnel"), ServerAlive 15 s x 3,
+# ControlPath=none (never ride, or become, a shared master connection).
+# `make install-mac-tunnel` rewrites this path to its BINDIR.
+ExecStart=%h/.local/bin/dictate-mac-tunnel
 Restart=always
 RestartSec=10
+# 78 = refused for safety (see above): stay down instead of retrying.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

@@ -214,7 +214,11 @@ anything less is a config error that stops startup. A failure when the
 listener starts (port taken, no token, bad TLS file) is not: dictated logs it,
 binds nothing, keeps dictating, and `dictate doctor` shows `network_api` down.
 Mac app hub side (reverse SSH tunnel, `just install-mac-tunnel`,
-`just mac-token`): `docs/MAC-APP.md`. Token file:
+`just mac-token`): `docs/MAC-APP.md`. The unit runs `scripts/dictate-mac-tunnel`,
+which refuses to forward unless the Mac's sshd keeps the port on its loopback
+(GatewayPorts preflight + lsof check; exit 78 = refused, not retried); tests:
+`scripts/test-mac-hub.sh` (in check-cpu), `just mac-tunnel-sshd-test`. Never
+put the token on an argv (curl `-K -` from stdin, not `-H "Bearer $(…)"`). Token file:
 `$XDG_DATA_HOME/dictated/api-token` (0600). Design and threat model:
 `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
 Tests bind ephemeral 127.0.0.1 ports only.

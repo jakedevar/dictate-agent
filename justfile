@@ -33,6 +33,7 @@ clippy:
 # config also run `just check-cuda`.
 check-cpu:
     scripts/cutover-test.sh
+    scripts/test-mac-hub.sh
     cargo test --workspace --all-targets
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
@@ -77,6 +78,16 @@ uninstall-mac-tunnel:
 # Copy the API token to the Mac app's 0600 token file (never printed)
 mac-token *args="":
     scripts/mac-provision-token.sh {{args}}
+
+# Hermetic tests of the tunnel wrapper, token provisioning and the docs'
+# curl lines (stub ssh; no network). Part of check-cpu.
+test-mac-hub:
+    scripts/test-mac-hub.sh
+
+# The tunnel wrapper against a REAL isolated sshd on 127.0.0.1 (temp config,
+# keys and port), plus a private network namespace for the wildcard case
+mac-tunnel-sshd-test:
+    scripts/mac-tunnel-sshd-test.sh
 
 # Throwaway tunnel + API check against an isolated daemon on port 17313 (needs
 # release binaries and `ssh mac-mini`); installs nothing, cleans up after itself
