@@ -78,8 +78,27 @@ case "$socket" in *:*|*"'"*|*$'\n'*|*$'\r'*) refuse 'invalid resolved socket pat
 [[ ${#socket} -lt 104 ]] || refuse 'socket path too long'
 if [[ $mode = --check ]]; then log 'private socket directory ready (forward not started)'; exit 0; fi
 log "starting private Unix-socket tunnel to $host (no Mac TCP listener)"
-# exec gives systemd custody of the sole tunnel process: cancellation, link
-# loss and restart need no checker, background SSH process or polling loop.
-exec "$ssh_bin" "${opts[@]}" -N -T -o ClearAllForwardings=no -o ExitOnForwardFailure=yes \
+# Keep the original wrapper contract: 0 on stop, 1 on link/forward failure,
+# 78 on configuration refusal. There is no post-start checker. The wrapper
+# owns exactly one SSH child and reaps it on every normal/stop path.
+tunnel_pid=""
+stopping=0
+stop_tunnel() {
+    stopping=1
+    if [[ -n $tunnel_pid ]]; then kill -TERM "$tunnel_pid" 2>/dev/null || true; fi
+}
+trap stop_tunnel TERM INT HUP
+"$ssh_bin" "${opts[@]}" -n -N -T -o ClearAllForwardings=no -o ExitOnForwardFailure=yes \
     -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-    -R "$socket:127.0.0.1:$port" "$host"
+    -R "$socket:127.0.0.1:$port" "$host" &
+tunnel_pid=$!
+if ((stopping)); then stop_tunnel; fi
+wait "$tunnel_pid"
+rc=$?
+if ((stopping)); then
+    # A signal can interrupt wait before SSH has exited.
+    wait "$tunnel_pid" 2>/dev/null || true
+    exit 0
+fi
+log "tunnel ended (ssh status $rc); retrying later"
+exit 1

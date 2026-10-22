@@ -110,13 +110,14 @@ permissions provide isolation even if a server uses a looser socket mask.
 A stopped forward may leave a socket inode; it cannot carry traffic and the
 next start removes it.
 
-The wrapper then replaces itself with
+The wrapper then supervises
 `ssh -N -T -R <mac-socket>:127.0.0.1:7313 mac-mini`, with BatchMode,
 StrictHostKeyChecking, ExitOnForwardFailure, keepalives, no agent/X11
 forwarding and no shared control connection. SSH host aliases containing
 additional forwards are refused. There is no GatewayPorts preflight, no
 Mac TCP forward and no post-start checker that could stall while exposed.
-Configuration refusals exit 78 (not retried). SSH/link failures are retried.
+Configuration refusals exit 78 (not retried). SSH/link failures exit 1 and
+are retried. A stop signal terminates/reaps SSH and exits 0.
 
 The app defaults to **Hub (secure tunnel)**. Saved `http://127.0.0.1:7313`
 settings migrate to this default; custom HTTP(S) URLs remain available in

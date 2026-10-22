@@ -17,7 +17,11 @@ printf '%s\n' "$*" >> "$DMT_STUB_DIR/ssh.log"
 [ -n "${DMT_STUB_FAIL:-}" ] && exit 255
 for a in "$@"; do
     [ "$a" = -G ] && { printf '%s\n' "${DMT_CONFIG:-hostname stubmac}"; exit; }
-    [ "$a" = -N ] && { touch "$DMT_STUB_DIR/tunnel.started"; exit "${DMT_TUNNEL_RC:-0}"; }
+    [ "$a" = -N ] && {
+        touch "$DMT_STUB_DIR/tunnel.started"
+        if [[ -n ${DMT_HOLD:-} ]]; then echo $$ > "$DMT_STUB_DIR/tunnel.pid"; exec sleep 300; fi
+        exit "${DMT_TUNNEL_RC:-0}"
+    }
 done
 [ -n "${DMT_HANG:-}" ] && exec sleep 300
 exec sh -c "${!#}"
@@ -40,10 +44,10 @@ expect 'private directory check' 0 "$wrapper" --check
 [ ! -f "$t/stub/tunnel.started" ] && ok '--check never starts a forward' || bad '--check forwarded'
 [ "$(stat -c %a "$t/private run")" = 700 ] && ok 'socket directory secured 0700' || bad 'directory mode'
 mkdir -p "$t/home/Library/Application Support"
-expect 'default socket resolves Mac HOME' 0 HOME="$t/home" DICTATE_MAC_SOCKET= "$wrapper"
+expect 'default socket resolves Mac HOME' 1 HOME="$t/home" DICTATE_MAC_SOCKET= "$wrapper"
 grep -qF -- "-R $t/home/Library/Application Support/DictateHub/run/hub.sock:127.0.0.1:17998" "$t/stub/ssh.log" \
     && ok 'default socket path matches app default' || bad 'default path mismatch'
-expect 'Unix forward accepts spaces in socket path' 0 "$wrapper"
+expect 'Unix forward accepts spaces in socket path' 1 "$wrapper"
 grep -qF -- "-R $t/private run/hub.sock:127.0.0.1:17998" "$t/stub/ssh.log" \
     && ok 'only explicit UDS reverse forward requested' || bad 'forward shape'
 grep -qF -- 'ClearAllForwardings=yes' "$t/stub/ssh.log" && ok 'preparation is forward-free' || bad 'preparation options'
@@ -51,7 +55,7 @@ python3 - "$t/private run/hub.sock" <<'SOCKET'
 import socket, sys
 s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()
 SOCKET
-expect 'stale socket is removed before forwarding' 0 "$wrapper"
+expect 'stale socket is removed before forwarding' 1 "$wrapper"
 [ ! -e "$t/private run/hub.sock" ] && ok 'stale socket unlinked' || bad 'stale socket remains'
 printf sentinel > "$t/private run/hub.sock"
 expect 'regular file refused without clobbering' 78 "$wrapper"
@@ -72,7 +76,18 @@ expect 'configured TCP reverse forward refused' 78 DMT_CONFIG='remoteforward 0.0
 expect 'unreachable Mac retries' 1 DMT_STUB_FAIL=1 "$wrapper"
 expect 'hung authenticated preparation has local deadline' 1 DMT_HANG=1 "$wrapper"
 [ ! -f "$t/stub/tunnel.started" ] && ok 'hung preparation never starts a forward' || bad 'hung preparation forwarded'
-expect 'running sshd refusal exits for retry' 255 DMT_TUNNEL_RC=255 "$wrapper"
+expect 'running sshd refusal exits for retry' 1 DMT_TUNNEL_RC=255 "$wrapper"
+reset_stub
+env DICTATE_MAC_SSH="$t/bin/ssh" DICTATE_MAC_HOST=stubmac \
+    DICTATE_MAC_SOCKET="$t/private run/hub.sock" DMT_HOLD=1 "$wrapper" > "$t/lifecycle.log" 2>&1 &
+wrapper_pid=$!
+for _ in {1..100}; do [[ -f $t/stub/tunnel.pid ]] && break; sleep 0.02; done
+child_pid=$(cat "$t/stub/tunnel.pid")
+kill -TERM "$wrapper_pid"
+wait "$wrapper_pid"; rc=$?
+if [[ $rc = 0 ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+    ok 'SIGTERM stops and reaps SSH, wrapper exits 0'
+else bad 'SIGTERM failed to reap SSH or preserve stop exit code'; fi
 # Source must never request a remote TCP listener or invoke a post-start checker.
 if grep -qE -- '-R ["\x27]?127\.0\.0\.1:|remote_listeners|remote_policy|lsof' "$wrapper"; then
     bad 'legacy TCP/checker transport remains'

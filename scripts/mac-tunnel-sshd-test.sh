@@ -103,7 +103,7 @@ set +e
 timeout 10 "$repo/scripts/dictate-mac-tunnel" > "$t/tunnel.log" 2>&1
 rc=$?
 set -e
-[[ $rc = 255 ]]
+[[ $rc = 1 ]]
 ok 'running sshd denies stream-local forwarding: ExitOnForwardFailure exits'
 cat >> "$t/ssh_config" <<CFG
     ClearAllForwardings yes
