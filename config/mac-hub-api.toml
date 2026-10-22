@@ -3,7 +3,8 @@
 # Merge this into ~/.config/dictate-agent/config.toml (replace any existing
 # [api] block), check it with `dictated --check-config`, then restart dictated.
 # The Mac reaches this listener only through the reverse SSH tunnel
-# (systemd/dictate-mac-tunnel.service), which puts it on the Mac's loopback.
+# (systemd/dictate-mac-tunnel.service), which puts it on the Mac's loopback
+# and refuses to run if the Mac's sshd would publish it any wider.
 #
 # What this deliberately does NOT do: listen beyond this host's loopback
 # (no allow_lan, no allow_plaintext_lan), accept browser origins, or expose

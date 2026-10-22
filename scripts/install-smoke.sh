@@ -73,8 +73,14 @@ make -C "$repo" install-mac-tunnel DESTDIR="$mk" >/dev/null
 tunnel="$mk$HOME/.config/systemd/user/dictate-mac-tunnel.service"
 need "$tunnel"
 need "$mk$HOME/.local/share/dictate-agent/docs/MAC-APP.md"
-grep -q -- '-R 127.0.0.1:${DICTATE_MAC_PORT}:127.0.0.1:${DICTATE_HUB_API_PORT}' "$tunnel" \
-    || fail "the tunnel unit must forward to the Mac's loopback only"
+# The unit must run the fail-closed wrapper (it, not the unit, holds the -R).
+need "$mk$HOME/.local/bin/dictate-mac-tunnel"
+[ -x "$mk$HOME/.local/bin/dictate-mac-tunnel" ] || fail "dictate-mac-tunnel is not executable"
+grep -qx 'ExecStart=%h/.local/bin/dictate-mac-tunnel' "$tunnel" \
+    || fail "the tunnel unit must start the loopback-enforcing wrapper"
+grep -qx 'RestartPreventExitStatus=78' "$tunnel" || fail "a safety refusal must not be retried"
+grep -q -- '-R "127.0.0.1:${mac_port}:127.0.0.1:${hub_port}"' "$mk$HOME/.local/bin/dictate-mac-tunnel" \
+    || fail "the tunnel must forward to the Mac's loopback only"
 say "make install ok"
 
 # --- 3. uninstall leaves user data alone ----------------------------------
@@ -85,6 +91,7 @@ make -C "$repo" uninstall uninstall-unit DESTDIR="$mk" >/dev/null
 [ ! -e "$mk$HOME/.config/systemd/user/dictated.service" ] || fail "uninstall-unit left the unit"
 make -C "$repo" uninstall-mac-tunnel DESTDIR="$mk" >/dev/null
 [ ! -e "$tunnel" ] || fail "uninstall-mac-tunnel left the unit"
+[ ! -e "$mk$HOME/.local/bin/dictate-mac-tunnel" ] || fail "uninstall-mac-tunnel left the wrapper"
 need "$mk$HOME/.local/share/dictate-agent/models/ggml-x.bin"
 DESTDIR="$dest" "$root/install.sh" --uninstall >/dev/null
 [ ! -e "$dest$HOME/.local/bin/dictated" ] || fail "install.sh --uninstall left dictated"

@@ -100,9 +100,15 @@ install-unit:
 # with a drop-in (`systemctl --user edit dictate-mac-tunnel`), not by editing.
 MAC_TUNNEL_UNIT := dictate-mac-tunnel.service
 
+# The unit runs `dictate-mac-tunnel` (scripts/), which refuses to forward unless
+# the Mac's sshd keeps the port on its loopback.
+MAC_TUNNEL_BIN := dictate-mac-tunnel
+
 install-mac-tunnel-unit:
-	install -d "$(DESTDIR)$(SYSTEMD_USER_DIR)"
+	install -d "$(DESTDIR)$(SYSTEMD_USER_DIR)" "$(DESTDIR)$(BINDIR)"
+	install -m 0755 scripts/$(MAC_TUNNEL_BIN) "$(DESTDIR)$(BINDIR)/$(MAC_TUNNEL_BIN)"
 	sed -e 's|^Documentation=.*|Documentation=file://$(call unit_path,$(DATADIR))/docs/MAC-APP.md|' \
+	    -e 's|^ExecStart=.*|ExecStart=$(call unit_path,$(BINDIR))/$(MAC_TUNNEL_BIN)|' \
 	    systemd/$(MAC_TUNNEL_UNIT) > "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp"
 	install -m 0644 "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp" "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)"
 	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT).tmp"
@@ -119,7 +125,7 @@ install-mac-tunnel: install-mac-tunnel-unit
 
 uninstall-mac-tunnel:
 	@if [ -z "$(DESTDIR)" ]; then systemctl --user disable --now $(MAC_TUNNEL_UNIT) 2>/dev/null || true; fi
-	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)"
+	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/$(MAC_TUNNEL_UNIT)" "$(DESTDIR)$(BINDIR)/$(MAC_TUNNEL_BIN)"
 	@if [ -z "$(DESTDIR)" ]; then systemctl --user daemon-reload; fi
 
 # The optional desktop UI: `dictate-ui` plus a desktop entry and icon.

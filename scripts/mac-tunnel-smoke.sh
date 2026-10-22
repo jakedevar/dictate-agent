@@ -2,8 +2,9 @@
 # Throwaway end-to-end check of the Mac app's hub side (`just mac-tunnel-smoke`):
 #
 #   isolated dictated, API on 127.0.0.1:$PORT
-#     -> the REAL ExecStart of systemd/dictate-mac-tunnel.service, run as a
-#        transient systemd --user unit with the ports overridden to $PORT
+#     -> the unit's wrapper (scripts/dictate-mac-tunnel: sshd-policy preflight,
+#        ssh -R, lsof check on the Mac), run as a transient systemd --user unit
+#        with the ports overridden to $PORT
 #     -> scripts/mac-provision-token.sh into a temp dir on the Mac
 #     -> curl on the Mac: status 200, no/wrong token 401, a WAV -> transcript
 #     -> the Mac listens on loopback only
@@ -50,6 +51,7 @@ if ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null; then
 fi
 
 root="$(mktemp -d /tmp/dmt-smoke.XXXXXX)"
+t0="$(date +%s)"
 unit="dmt-smoke-$$"
 remote=""
 pids=()
@@ -129,34 +131,41 @@ b_text="$(cli b transcribe "$wav" 2>/dev/null)" || fail "B cannot transcribe wit
 [ -n "$b_text" ] || fail "B transcribed nothing"
 say "  B: socket ok, doctor 'Network API ... DOWN', local transcribe ok"
 
-# --- the tunnel: the unit file's own ExecStart, ports overridden ------------
-exec_start="$(python3 -I - "$unit_file" <<'PY'
-import sys
-lines, buf = [], ""
-for raw in open(sys.argv[1]):
-    line = raw.rstrip("\n")
-    if line.endswith("\\"):
-        buf += line[:-1] + " "
-        continue
-    lines.append(buf + line); buf = ""
-cmd = [l.split("=", 1)[1] for l in lines if l.startswith("ExecStart=")]
-assert len(cmd) == 1, cmd
-print(cmd[0])
-PY
-)"
-say "transient unit $unit: ${exec_start//\$\{DICTATE_MAC_HOST\}/$host}"
-# shellcheck disable=SC2086  # word-split the unit's command line, as systemd does
+# --- the tunnel: the unit's own wrapper, as a transient unit -----------------
+# The unit must run the loopback-enforcing wrapper and keep a refusal down.
+grep -qx 'ExecStart=%h/.local/bin/dictate-mac-tunnel' "$unit_file" || fail "the unit does not run dictate-mac-tunnel"
+grep -qx 'RestartPreventExitStatus=78' "$unit_file" || fail "the unit retries a safety refusal"
+wrapper="$repo/scripts/dictate-mac-tunnel"
+# Read-only preflight of the real Mac's sshd policy (nothing is forwarded).
+if ! DICTATE_MAC_HOST="$host" DICTATE_MAC_PORT="$port" DICTATE_HUB_API_PORT="$port" "$wrapper" --check 2>&1 \
+    | sed 's/^/mac-smoke|   /'; then
+    fail "the preflight refuses $host (see above)"
+fi
+say "transient unit $unit: $wrapper -> $host, port $port"
 systemd-run --user --quiet --collect --unit="$unit" \
-    -p Restart=always -p RestartSec=10 \
+    -p Restart=always -p RestartSec=10 -p RestartPreventExitStatus=78 \
     --setenv=DICTATE_MAC_HOST="$host" \
     --setenv=DICTATE_HUB_API_PORT="$port" \
     --setenv=DICTATE_MAC_PORT="$port" \
-    $exec_start
+    "$wrapper"
+# "tunnel up" is logged only after the wrapper's own lsof check on the Mac.
+wait_verified() { # $1 = how many "tunnel up" lines to wait for
+    local i
+    for i in $(seq 1 150); do
+        [ "$(journalctl --user -q -u "$unit" --since "@$t0" -o cat 2>/dev/null | grep -c 'tunnel up')" -ge "$1" ] && return 0
+        systemctl --user is-failed -q "$unit" && break
+        sleep 0.2
+    done
+    journalctl --user -q -u "$unit" --since "@$t0" -o cat | tail -5 >&2
+    return 1
+}
 for _ in $(seq 1 100); do
     ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && break
     sleep 0.2
 done
 ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel never came up ($(systemctl --user is-active "$unit"))"
+wait_verified 1 || fail "the wrapper never reported a verified loopback-only tunnel"
+say "  wrapper: preflight ok, listener verified loopback-only"
 listen="$(ssh -o BatchMode=yes "$host" "lsof -nP -iTCP:$port -sTCP:LISTEN" | awk 'NR>1 {print $9}' | sort -u)"
 say "  Mac listens on: $(echo $listen)"
 [ -n "$listen" ] || fail "no listener seen on the Mac"
@@ -213,6 +222,7 @@ for _ in $(seq 1 60); do
     sleep 0.5
 done
 ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel did not come back after its ssh was killed"
+wait_verified 2 || fail "the restarted tunnel was not re-verified"
 code="$(remote_curl good -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/status")"
 [ "$code" = 200 ] || fail "status after the restart: HTTP $code"
 say "  killed the tunnel's ssh: restarted, status $code again"
