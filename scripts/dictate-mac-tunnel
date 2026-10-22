@@ -27,7 +27,7 @@ opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15
       -o ForwardX11=no -o PermitLocalCommand=no -o ForkAfterAuthentication=no)
 # A Host block must not sneak additional forwards into this transport. The
 # check session clears them; the tunnel must retain its own explicit -R.
-config=$(timeout --kill-after=2 "$secs" "$ssh_bin" "${opts[@]}" -G "$host") || { log 'ssh configuration unavailable'; exit 1; }
+config=$(timeout --kill-after=2 "$secs" "$ssh_bin" "${opts[@]}" -o ClearAllForwardings=no -G "$host") || { log 'ssh configuration unavailable'; exit 1; }
 if LC_ALL=C grep -qiE '^(localforward|remoteforward|dynamicforward) ' <<<"$config"; then
     refuse 'remove configured forwards from the SSH host alias'
 fi

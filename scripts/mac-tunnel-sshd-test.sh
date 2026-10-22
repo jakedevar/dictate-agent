@@ -105,4 +105,14 @@ rc=$?
 set -e
 [[ $rc = 255 ]]
 ok 'running sshd denies stream-local forwarding: ExitOnForwardFailure exits'
+cat >> "$t/ssh_config" <<CFG
+    ClearAllForwardings yes
+    RemoteForward 127.0.0.1:17999 127.0.0.1:17998
+CFG
+set +e
+"$repo/scripts/dictate-mac-tunnel" --check > "$t/tunnel.log" 2>&1
+rc=$?
+set -e
+[[ $rc = 78 ]]
+ok 'configured TCP forward refused even when alias sets ClearAllForwardings yes'
 printf '\n%d passed, 0 failed\n' "$pass"
