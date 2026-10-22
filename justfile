@@ -192,6 +192,7 @@ mac-test:
 # Stable signing + reinstall + isolated hub/UDS/app file-mode acceptance.
 # Requires the debug binaries built by check-cpu; never installs the tunnel unit.
 mac-transport-verify:
+    scripts/install-smoke.sh --bindir "${CARGO_TARGET_DIR:-target}/debug"
     mac/scripts/remote.sh dr-check
     mac/scripts/remote.sh install
     DICTATED="${CARGO_TARGET_DIR:-target}/debug/dictated" DICTATE="${CARGO_TARGET_DIR:-target}/debug/dictate" scripts/mac-tunnel-smoke.sh
