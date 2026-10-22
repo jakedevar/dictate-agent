@@ -62,6 +62,7 @@ final class OnboardingModel {
     var tokenNote: String?
     var hubLine: String?
     var hotkeyName = ""
+    var hotkeyMode: HotkeyMode = .hold
     /// When the hotkey was last seen by the global monitor (another app frontmost).
     var lastGlobalPress: Date?
     var now = Date()
@@ -105,6 +106,7 @@ final class OnboardingModel {
         inputMonitoringGranted = CGPreflightListenEventAccess()
         tokenPresent = tokens.load() != nil
         hotkeyName = settings.hotkey.displayName
+        hotkeyMode = settings.hotkey.mode
         now = Date()
         if before != (microphone, accessibility) { permissionsChanged() }
     }
@@ -179,7 +181,7 @@ struct OnboardingView: View {
 
             PermissionRow(
                 title: "Microphone",
-                detail: "Records only while you hold the hotkey; the clip goes to your hub, nowhere else.",
+                detail: "Records only between the hotkey press and release (or its second press); the clip goes to your hub, nowhere else.",
                 state: model.microphone,
                 button: model.microphone == .notAsked ? "Allow…" : "Open Settings…",
                 showButton: model.microphone != .granted,
@@ -259,7 +261,7 @@ struct OnboardingView: View {
             }
             Text(seen
                  ? "\(model.hotkeyName) works in other apps."
-                 : "Click into another app (TextEdit, Notes), hold \(model.hotkeyName), speak, release. This row turns green when the key is seen.")
+                 : "Click into another app (TextEdit, Notes), \(model.hotkeyMode == .hold ? "hold" : "press") \(model.hotkeyName), speak, \(model.hotkeyMode == .hold ? "release" : "press it again"). This row turns green when the key is seen.")
                 .font(.caption).foregroundStyle(.secondary).padding(.leading, 30)
                 .fixedSize(horizontal: false, vertical: true)
             if model.accessibility == .granted && !seen && !model.inputMonitoringGranted {

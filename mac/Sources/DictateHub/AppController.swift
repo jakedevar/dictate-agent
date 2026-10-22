@@ -15,6 +15,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let tokens: TokenStore
     private let recorder = AudioRecorder()
     private var hold = HoldToTalk()
+    private var toggle = ToggleToTalk()
     private let hotkeys: HotkeyMonitor
     private var statusItem: NSStatusItem?
     private var settingsModel: SettingsModel?
@@ -73,6 +74,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         hotkeys.onPress = { [weak self] global in self?.hotkeyPressed(global: global) }
         hotkeys.onRelease = { [weak self] in self?.hotkeyReleased() }
         hotkeys.onEscape = { [weak self] in self?.escapePressed() }
+        hotkeys.isRecording = { [weak self] in self?.phase == .recording }
 
         checkTrust()
         // Accessibility can be granted while we run; global monitors only
@@ -84,7 +86,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         refresh()
         let checklist = currentChecklist()
         Log.info("started: status item installed=\(item.button != nil) visible=\(item.isVisible) "
-            + "hotkey=\(hotkeys.choice.rawValue) endpoint=\(endpoint) "
+            + "hotkey=\(hotkeys.choice.rawValue) (\(hotkeys.choice.mode)) endpoint=\(endpoint) "
             + "token=\(checklist.tokenPresent ? "present" : "missing") accessibility=\(trusted) "
             + "microphone=\(checklist.microphone) warm=\(recorder.isWarm) sounds=\(settings.playSounds)")
 
@@ -145,17 +147,52 @@ final class AppController: NSObject, NSApplicationDelegate {
                             tokenPresent: tokens.load() != nil)
     }
 
+    /// Shown in the menu bar when a chord hotkey's event tap is missing.
+    private var tapMissingMessage: String {
+        "\(hotkeys.choice.displayName) is off: the keyboard event tap is unavailable "
+            + "(allow Accessibility and Input Monitoring)"
+    }
+
     private func checkTrust() {
         let now = TextInserter.isTrusted()
-        guard now != trusted || statusItem?.menu == nil else { return }
+        // A chord hotkey whose tap was lost or never created is retried here.
+        let tapLost = trusted && now && hotkeys.needsTap && !hotkeys.tapActive
+        guard now != trusted || statusItem?.menu == nil || tapLost else { return }
         trusted = now
         if trusted {
             hotkeys.start()
-            if case .error = phase { phase = .idle } else { refresh() }
+            if hotkeys.needsTap && !hotkeys.tapActive {
+                showTapMissing()
+            } else if case .error = phase {
+                phase = .idle
+            } else {
+                refresh()
+            }
         } else {
             hotkeys.stop()
             phase = .error("Accessibility not granted: hotkey and paste are off")
         }
+    }
+
+    private func showTapMissing() {
+        let error = AppPhase.error(tapMissingMessage)
+        if phase != error {
+            Log.error("hotkey \(hotkeys.choice.rawValue): event tap not active")
+            phase = error
+        }
+    }
+
+    /// The hotkey choice changed: drop a toggle dictation that is running,
+    /// then show (or clear) the missing-tap status for the new choice.
+    private func hotkeyChoiceChanged(_ choice: HotkeyChoice) {
+        if toggle.isCapturing { handle(toggle.escape()) }
+        hotkeys.choice = choice
+        if trusted && hotkeys.needsTap && !hotkeys.tapActive {
+            showTapMissing()
+        } else if case .error(let message) = phase, message.hasSuffix("(allow Accessibility and Input Monitoring)") {
+            phase = .idle
+        }
+        refresh()
     }
 
     /// Microphone or Accessibility changed (seen by the permissions window).
@@ -170,6 +207,11 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func hotkeyPressed(global: Bool) {
         if global { onboarding?.model.hotkeySeen() }
+        // Toggle mode: a press while recording is the stop.
+        if hotkeys.choice.mode == .toggle, phase == .recording {
+            handle(toggle.press())
+            return
+        }
         // Our own window is frontmost (Settings, Permissions): nothing to
         // paste into, so a press there does not start a dictation.
         if !global { return }
@@ -197,7 +239,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         let keyDown = ProcessInfo.processInfo.systemUptime
-        guard hold.press(at: keyDown) == .start else { return }
+        let started = hotkeys.choice.mode == .toggle
+            ? toggle.press() == .start
+            : hold.press(at: keyDown) == .start
+        guard started else { return }
         targetApp = NSWorkspace.shared.frontmostApplication?.localizedName
         do {
             try recorder.start(
@@ -213,6 +258,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             phase = .recording
         } catch {
             _ = hold.release(at: ProcessInfo.processInfo.systemUptime)
+            toggle.reset()
             let message = (error as? RecorderError)?.message ?? "Microphone failed to start"
             Log.error("capture start: \(error)")
             fail(message)
@@ -224,16 +270,20 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func escapePressed() {
-        handle(hold.escape())
+        handle(hold.escape() ?? toggle.escape())
     }
 
     private func captureLimitReached() {
         Log.info("capture reached \(Int(AudioRecorder.maxSeconds)) s cap; sending")
-        handle(hold.limitReached())
+        handle(hold.limitReached() ?? toggle.limitReached())
     }
 
     private func handle(_ action: HoldToTalk.Action?) {
-        guard let action, recorder.isRecording else { return }
+        guard let action else { return }
+        guard recorder.isRecording else {
+            toggle.reset()  // the recorder is already stopped: no stale toggle state
+            return
+        }
         let samples = recorder.stop()
         switch action {
         case .start:
@@ -381,15 +431,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         updateIcon()
         updateAnimation()
         if let button = statusItem.button {
-            button.toolTip = "DictateHub: \(phase.statusLine)"
+            button.toolTip = "DictateHub: \(phase.statusLine(mode: hotkeys.choice.mode))"
         }
 
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let status = NSMenuItem(title: phase.statusLine, action: nil, keyEquivalent: "")
+        let status = NSMenuItem(title: phase.statusLine(mode: hotkeys.choice.mode), action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
-        let hint = NSMenuItem(title: "Hold \(hotkeys.choice.displayName) to dictate", action: nil, keyEquivalent: "")
+        let hint = NSMenuItem(title: hotkeys.choice.hint, action: nil, keyEquivalent: "")
         hint.isEnabled = false
         menu.addItem(hint)
         if let connectionLine {
@@ -445,8 +495,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             let model = SettingsModel(settings: settings, tokens: tokens)
             model.onHotkeyChange = { [weak self] choice in
-                self?.hotkeys.choice = choice
-                self?.refresh()
+                self?.hotkeyChoiceChanged(choice)
             }
             model.onTest = { [weak self] in self?.testConnection() }
             model.onKeepWarmChange = { [weak self] on in self?.recorder.keepWarm = on }

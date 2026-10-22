@@ -30,10 +30,16 @@ public enum AppPhase: Equatable, Sendable {
     public static let frameInterval: Double = 0.45
 
     /// The menu's first (disabled) line.
-    public var statusLine: String {
+    public var statusLine: String { statusLine(mode: .hold) }
+
+    /// The status line, with the recording hint for the active hotkey mode.
+    public func statusLine(mode: HotkeyMode) -> String {
         switch self {
         case .idle: return "Ready"
-        case .recording: return "Recording… (release to send, Esc to cancel)"
+        case .recording:
+            return mode == .hold
+                ? "Recording… (release to send, Esc to cancel)"
+                : "Recording… (press the hotkey to send, Esc to cancel)"
         case .transcribing: return "Transcribing on the hub…"
         case .error(let message): return message
         }

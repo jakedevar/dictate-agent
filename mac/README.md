@@ -129,7 +129,11 @@ DictateHub, then "−"). The scripts never touch TCC.
   to `~/Library/Application Support/DictateHub/run/hub.sock` over SSH. Old
   default loopback URLs migrate automatically; custom HTTP(S) URLs stay.
   `unix:/absolute/path` selects a custom socket for isolated checks. Hotkey: UserDefaults `hotkey`
-  (`right_option` | `fn` | `right_command` | `control_option`).
+  (`right_option` | `fn` | `right_command` | `control_option` | `option_n`).
+  The first four are hold-to-talk; `option_n` (Option+N, only Option held) toggles: press to start,
+  press again to send, Esc to cancel. It uses an active event tap that swallows the chord (and Esc
+  while recording) so no tilde or `n` reaches the focused app; if the tap or Accessibility is
+  missing the menu-bar status says so. The default stays `right_option`.
 - Token: `~/Library/Application Support/DictateHub/api-token` (0600, directory
   0700).
 - Settings… → **Start and stop sounds** (default on). These are quiet system

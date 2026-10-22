@@ -153,10 +153,10 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Hotkey") {
-                Picker("Hold to talk", selection: Binding(
+                Picker("Hotkey", selection: Binding(
                     get: { model.hotkey },
                     set: { model.hotkey = $0; model.saveHotkey($0) })) {
-                    ForEach(HotkeyChoice.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(HotkeyChoice.allCases, id: \.self) { Text($0.pickerLabel).tag($0) }
                 }
             }
             Section("API token") {
