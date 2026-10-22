@@ -6,6 +6,17 @@ The daemon acts as an orchestrator, receiving signals from the window manager to
 
 ---
 
+## Language rule (operator standing directive 2b22862d, 2026-10-22)
+
+**Python is forbidden for every agent.** Write and run no new Python: no `.py`
+files, no `python`/`python3` calls, no one-liners, no Python test servers.
+New code and scripts are Rust; Go only where Rust is impractical; Swift for
+the Mac app (`mac/`); plain shell only for thin glue (`jq`, `grep`, `awk`).
+The existing tracked Python (`dictate/`, `scripts/*.py`,
+`transcribe_journal.py`) is being ported to Rust or deleted under its own
+Issue — do not extend it.
+
+
 ## System Architecture
 
 The following diagram illustrates the lifecycle of a single dictation toggle. When the user hits the hotkey, audio is captured, processed, routed, and dispatched:

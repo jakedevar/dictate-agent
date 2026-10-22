@@ -122,3 +122,9 @@ see finish.
 - Weaken a test to make it pass, or mark a real failure `#[ignore]`.
 - Put credentials or `$RSI_SESSION_TOKEN` anywhere.
 - Delete user data, or touch Jake's live daemon, config, or databases.
+
+## Language rule (operator directive 2b22862d, 2026-10-22)
+
+Python is forbidden: write and run no Python (no .py files, python calls or
+one-liners). Rust for new code; Go only where Rust is impractical; Swift for
+`mac/`; plain shell only for thin glue. See CLAUDE.md "Language rule".
