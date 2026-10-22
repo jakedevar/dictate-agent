@@ -69,6 +69,7 @@ crates/
                     its `Backend` trait, which dictated implements over the
                     socket's own dispatch (dictated/src/network.rs)
 dictate/           Python reference daemon (retained until cutover)
+mac/               DictateHub macOS menu-bar client (SwiftPM; built on the Mac via mac/scripts/remote.sh; see mac/README.md)
 ```
 
 Crate dependency direction is one-way: `dictated` → `dictate-core` →
