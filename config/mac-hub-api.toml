@@ -1,0 +1,28 @@
+# The [api] block a hub needs to serve the Mac app (docs/MAC-APP.md).
+#
+# Merge this into ~/.config/dictate-agent/config.toml (replace any existing
+# [api] block), check it with `dictated --check-config`, then restart dictated.
+# The Mac reaches this listener only through the reverse SSH tunnel
+# (systemd/dictate-mac-tunnel.service), which puts it on the Mac's loopback.
+#
+# What this deliberately does NOT do: listen beyond this host's loopback
+# (no allow_lan, no allow_plaintext_lan), accept browser origins, or expose
+# raw recognizer text. A network peer may only transcribe its own audio; it
+# can never type, open the microphone, or read history, config or context.
+
+[api]
+enabled = true
+# Loopback only. The tunnel's far end is 127.0.0.1:7313 on the Mac, so the Mac
+# app's `Host: 127.0.0.1:7313` is this listener's own spelling and passes the
+# Host check with nothing added below. Keep the Mac port equal to this one.
+bind = "127.0.0.1:7313"
+allow_lan = false
+allow_plaintext_lan = false
+# Empty: $XDG_DATA_HOME/dictated/api-token (0600). Create it and copy it to the
+# Mac with `just mac-token`; rotate with `dictated --rotate-api-token`.
+token_file = ""
+# Nothing extra: 127.0.0.1:7313 and localhost:7313 are already accepted.
+allowed_hosts = []
+# The Mac app is a native client and sends no Origin; browsers stay refused.
+allowed_origins = []
+expose_raw_text = false

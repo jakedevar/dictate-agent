@@ -7,12 +7,50 @@
 //!
 //! See `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
 
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 
 use dictate_proto::{Capabilities, Command, CommandResult, Event, Message, ProtoError};
 use dictate_server::{ApiConfig, Backend, BoxFuture, Hangup, Session};
 
 use crate::server::{NetworkConnection, ServerDeps, PRE_HANDSHAKE_MAX_BYTES};
+
+/// What became of the network API at startup, for `dictate doctor`.
+///
+/// The API is an optional surface: when it cannot start (port taken, no
+/// token, a refused bind) the daemon keeps serving its socket, hotkeys and
+/// dictation and records why here instead of exiting.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ApiStatus {
+    /// `[api] enabled = false`, or the daemon has not tried yet.
+    #[default]
+    Disabled,
+    /// Listening on this address.
+    Listening(SocketAddr),
+    /// Enabled, but it did not start; the startup error, as logged.
+    Down(String),
+}
+
+/// The [`ApiStatus`] shared between the daemon (which writes it once, at
+/// startup) and the doctor (which reads it per `diagnose`).
+pub type ApiStatusCell = Arc<RwLock<ApiStatus>>;
+
+/// Read a cell, tolerating a poisoned lock (a writer cannot panic mid-write
+/// of a plain enum, but the doctor must never be the thing that panics).
+#[must_use]
+pub fn read_status(cell: &ApiStatusCell) -> ApiStatus {
+    match cell.read() {
+        Ok(status) => status.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+pub(crate) fn write_status(cell: &ApiStatusCell, status: ApiStatus) {
+    match cell.write() {
+        Ok(mut slot) => *slot = status,
+        Err(poisoned) => *poisoned.into_inner() = status,
+    }
+}
 
 /// What a network connection is offered (design §7.1).
 ///

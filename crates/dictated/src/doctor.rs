@@ -20,8 +20,13 @@ use dictate_core::ports::BoxFuture;
 use dictate_core::Pipeline;
 use dictate_proto::{DiagnosticCheck, DiagnosticsReport, FormatterHealth};
 
+use crate::network::{self, ApiStatus, ApiStatusCell};
 use crate::paths::{self, RuntimePaths};
 use crate::server::DiagnosticsProvider;
+
+/// The hub-side reverse SSH tunnel that carries the network API to the Mac
+/// app (`systemd/dictate-mac-tunnel.service`, `docs/MAC-APP.md`).
+pub const MAC_TUNNEL_UNIT: &str = "dictate-mac-tunnel.service";
 
 /// How long to wait for a model that is still loading before calling it broken.
 const MODEL_LOAD_PATIENCE: Duration = Duration::from_secs(20);
@@ -43,6 +48,9 @@ pub struct Doctor {
     report: ConfigReport,
     runtime: RuntimePaths,
     pipeline: Arc<Pipeline>,
+    /// What became of the network API at startup; `None` for a doctor whose
+    /// daemon never starts one (tests, and the API check then reads `[api]`).
+    api_status: Option<ApiStatusCell>,
 }
 
 impl Doctor {
@@ -59,18 +67,29 @@ impl Doctor {
             report,
             runtime,
             pipeline,
+            api_status: None,
         }
+    }
+
+    /// Report on the network API through `status`, which the daemon fills in
+    /// when it starts (or fails to start) the API.
+    #[must_use]
+    pub fn with_api_status(mut self, status: ApiStatusCell) -> Self {
+        self.api_status = Some(status);
+        self
     }
 
     /// Run every check, in the order a person should read them.
     pub async fn run(&self, quick: bool) -> DiagnosticsReport {
         // The slow, independent ones run concurrently: hashing a 1.6 GB model
         // and waiting on Ollama should overlap rather than add.
-        let (stt_model, backend, ollama_checks, tools) = tokio::join!(
+        let (stt_model, backend, ollama_checks, tools, network_api, mac_tunnel) = tokio::join!(
             self.check_stt_model(quick),
             self.check_stt_backend(),
             self.check_ollama(),
             check_tools(),
+            self.check_network_api(),
+            self.check_mac_tunnel(),
         );
 
         let mut checks = vec![
@@ -86,6 +105,8 @@ impl Doctor {
         checks.push(self.check_audio_input());
         checks.push(self.check_notifications());
         checks.push(tools);
+        checks.push(network_api);
+        checks.push(mac_tunnel);
         checks.push(self.check_legacy_pid());
         DiagnosticsReport { checks }
     }
@@ -649,6 +670,178 @@ impl Doctor {
     }
 }
 
+impl Doctor {
+    async fn check_network_api(&self) -> DiagnosticCheck {
+        let status = match &self.api_status {
+            Some(cell) => network::read_status(cell),
+            None => ApiStatus::Disabled,
+        };
+        let answering = match &status {
+            ApiStatus::Listening(addr) => Some(tcp_unreachable(*addr, PROBE_TIMEOUT).await),
+            _ => None,
+        };
+        network_api_verdict(self.config.api.enabled, &status, answering.flatten())
+    }
+
+    async fn check_mac_tunnel(&self) -> DiagnosticCheck {
+        if !self.config.api.enabled {
+            return mac_tunnel_verdict(false, TunnelProbe::NotAsked);
+        }
+        mac_tunnel_verdict(true, probe_unit(MAC_TUNNEL_UNIT).await)
+    }
+}
+
+/// The `network_api` verdict. `unreachable` is why a TCP connect to the
+/// listening address failed, if it did.
+fn network_api_verdict(
+    enabled: bool,
+    status: &ApiStatus,
+    unreachable: Option<String>,
+) -> DiagnosticCheck {
+    const ID: &str = "network_api";
+    const TITLE: &str = "Network API";
+    match (enabled, status) {
+        (_, ApiStatus::Listening(addr)) => match unreachable {
+            None => DiagnosticCheck::ok(
+                ID,
+                TITLE,
+                format!(
+                    "listening on {addr}{}",
+                    if addr.ip().is_loopback() {
+                        " (loopback only)"
+                    } else {
+                        ""
+                    }
+                ),
+            ),
+            Some(why) => DiagnosticCheck::fail(
+                ID,
+                TITLE,
+                format!("started on {addr} but a connection to it fails: {why}"),
+                "restart dictated; if it persists, check `journalctl --user -u dictated`",
+            ),
+        },
+        (_, ApiStatus::Down(why)) => DiagnosticCheck::fail(
+            ID,
+            TITLE,
+            format!("enabled but DOWN: {why} (dictation is unaffected)"),
+            "free the port or fix [api] (a token needs `dictated --api-token`), then restart dictated",
+        ),
+        (false, ApiStatus::Disabled) => {
+            DiagnosticCheck::skipped(ID, TITLE, "disabled ([api] enabled = false)")
+        }
+        (true, ApiStatus::Disabled) => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            "enabled in the config, but this daemon did not start it",
+            "restart dictated to pick up the [api] change",
+        ),
+    }
+}
+
+/// What `systemctl --user show` says about a unit.
+#[derive(Debug, PartialEq, Eq)]
+enum TunnelProbe {
+    /// Not probed (the API is off, so the tunnel is moot).
+    NotAsked,
+    /// The unit is not installed.
+    NotInstalled,
+    /// Installed; its `ActiveState` and `SubState`.
+    State { active: String, sub: String },
+    /// `systemctl` could not be asked.
+    Unavailable(String),
+}
+
+async fn probe_unit(unit: &str) -> TunnelProbe {
+    let run = tokio::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "--property=LoadState,ActiveState,SubState",
+            unit,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(PROBE_TIMEOUT, run).await {
+        Ok(Ok(out)) if out.status.success() => {
+            parse_unit_show(&String::from_utf8_lossy(&out.stdout))
+        }
+        Ok(Ok(out)) => TunnelProbe::Unavailable(format!("systemctl exited with {}", out.status)),
+        Ok(Err(e)) => TunnelProbe::Unavailable(short_io_error(&e)),
+        Err(_) => TunnelProbe::Unavailable("systemctl did not answer".into()),
+    }
+}
+
+fn parse_unit_show(output: &str) -> TunnelProbe {
+    let field = |name: &str| {
+        output
+            .lines()
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix('='))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    match field("LoadState").as_str() {
+        "" => TunnelProbe::Unavailable("systemctl printed no LoadState".into()),
+        "not-found" => TunnelProbe::NotInstalled,
+        _ => TunnelProbe::State {
+            active: field("ActiveState"),
+            sub: field("SubState"),
+        },
+    }
+}
+
+/// The `mac_tunnel` verdict. Only a warning at worst: the tunnel is one way
+/// to reach the API, and its absence never affects dictation on this host.
+fn mac_tunnel_verdict(api_enabled: bool, probe: TunnelProbe) -> DiagnosticCheck {
+    const ID: &str = "mac_tunnel";
+    const TITLE: &str = "Mac app tunnel";
+    if !api_enabled {
+        return DiagnosticCheck::skipped(ID, TITLE, "the network API is disabled");
+    }
+    match probe {
+        TunnelProbe::NotAsked => DiagnosticCheck::skipped(ID, TITLE, "not checked"),
+        TunnelProbe::NotInstalled => DiagnosticCheck::skipped(
+            ID,
+            TITLE,
+            format!("{MAC_TUNNEL_UNIT} is not installed (only the Mac app needs it)"),
+        ),
+        TunnelProbe::State { active, sub } if active == "active" && sub == "running" => {
+            DiagnosticCheck::ok(
+                ID,
+                TITLE,
+                format!("{MAC_TUNNEL_UNIT} is running (the API reaches the Mac's loopback)"),
+            )
+        }
+        TunnelProbe::State { active, sub } => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!("{MAC_TUNNEL_UNIT} is {active} ({sub}): the Mac app cannot reach this hub"),
+            format!(
+                "`systemctl --user status {MAC_TUNNEL_UNIT}`; check `ssh -o BatchMode=yes <mac> true` works"
+            ),
+        ),
+        TunnelProbe::Unavailable(why) => DiagnosticCheck::warn(
+            ID,
+            TITLE,
+            format!("could not ask systemd about {MAC_TUNNEL_UNIT}: {why}"),
+            format!("run `systemctl --user status {MAC_TUNNEL_UNIT}` yourself"),
+        ),
+    }
+}
+
+/// Why a TCP connection to `addr` fails within `deadline`, or `None` if it
+/// connects.
+async fn tcp_unreachable(addr: std::net::SocketAddr, deadline: Duration) -> Option<String> {
+    match tokio::time::timeout(deadline, tokio::net::TcpStream::connect(addr)).await {
+        Ok(Ok(_)) => None,
+        Ok(Err(e)) => Some(short_io_error(&e)),
+        Err(_) => Some("timed out".into()),
+    }
+}
+
 impl DiagnosticsProvider for Doctor {
     fn diagnose(&self, quick: bool) -> BoxFuture<'_, DiagnosticsReport> {
         Box::pin(self.run(quick))
@@ -997,5 +1190,77 @@ mod tests {
     fn a_program_on_path_is_found_and_a_made_up_one_is_not() {
         assert!(on_path("sh"));
         assert!(!on_path("definitely-not-a-real-program-xyz"));
+    }
+
+    #[test]
+    fn the_network_api_check_names_a_down_api_and_never_skips_an_enabled_one() {
+        use dictate_proto::CheckStatus;
+        let addr: std::net::SocketAddr = "127.0.0.1:7313".parse().unwrap();
+        let up = network_api_verdict(true, &ApiStatus::Listening(addr), None);
+        assert_eq!(up.status, CheckStatus::Ok);
+        assert!(up.detail.contains("127.0.0.1:7313") && up.detail.contains("loopback"));
+
+        let down = network_api_verdict(
+            true,
+            &ApiStatus::Down("network API could not bind 127.0.0.1:7313: Address in use".into()),
+            None,
+        );
+        assert_eq!(down.status, CheckStatus::Fail);
+        assert!(down.detail.contains("DOWN") && down.detail.contains("Address in use"));
+        assert!(down.fix.is_some());
+
+        let dead = network_api_verdict(true, &ApiStatus::Listening(addr), Some("refused".into()));
+        assert_eq!(dead.status, CheckStatus::Fail);
+
+        let off = network_api_verdict(false, &ApiStatus::Disabled, None);
+        assert_eq!(off.status, CheckStatus::Skipped);
+        let stale = network_api_verdict(true, &ApiStatus::Disabled, None);
+        assert_eq!(stale.status, CheckStatus::Warn);
+        assert!(stale.fix.is_some());
+    }
+
+    #[test]
+    fn systemctl_show_output_is_parsed_into_a_tunnel_probe() {
+        assert_eq!(
+            parse_unit_show("LoadState=not-found\nActiveState=inactive\nSubState=dead\n"),
+            TunnelProbe::NotInstalled
+        );
+        assert_eq!(
+            parse_unit_show("LoadState=loaded\nActiveState=active\nSubState=running\n"),
+            TunnelProbe::State {
+                active: "active".into(),
+                sub: "running".into()
+            }
+        );
+        assert!(matches!(parse_unit_show(""), TunnelProbe::Unavailable(_)));
+    }
+
+    #[test]
+    fn the_tunnel_check_warns_at_worst_and_is_skipped_without_the_api() {
+        use dictate_proto::CheckStatus;
+        let running = TunnelProbe::State {
+            active: "active".into(),
+            sub: "running".into(),
+        };
+        assert_eq!(mac_tunnel_verdict(true, running).status, CheckStatus::Ok);
+        let restarting = TunnelProbe::State {
+            active: "activating".into(),
+            sub: "auto-restart".into(),
+        };
+        let w = mac_tunnel_verdict(true, restarting);
+        assert_eq!(w.status, CheckStatus::Warn);
+        assert!(w.detail.contains("auto-restart") && w.fix.is_some());
+        assert_eq!(
+            mac_tunnel_verdict(true, TunnelProbe::NotInstalled).status,
+            CheckStatus::Skipped
+        );
+        assert_eq!(
+            mac_tunnel_verdict(true, TunnelProbe::Unavailable("x".into())).status,
+            CheckStatus::Warn
+        );
+        assert_eq!(
+            mac_tunnel_verdict(false, TunnelProbe::NotAsked).status,
+            CheckStatus::Skipped
+        );
     }
 }

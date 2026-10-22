@@ -1097,6 +1097,24 @@ mod api_tests {
         assert!(report.errors.is_empty());
     }
 
+    /// The Mac app hub block (#3528): enabled, loopback-only, nothing extra
+    /// exposed, and it loads without a warning.
+    #[test]
+    fn the_mac_hub_api_example_is_loopback_only_and_loads_clean() {
+        let (config, report) =
+            parse_config(include_str!("../../../config/mac-hub-api.toml")).unwrap();
+        assert!(report.errors.is_empty(), "{:#?}", report.errors);
+        assert!(report.warnings.is_empty(), "{:#?}", report.warnings);
+        let api = &config.api;
+        assert!(api.enabled);
+        assert_eq!(api.bind, "127.0.0.1:7313");
+        assert!(!api.allow_lan && !api.allow_plaintext_lan);
+        assert!(api.allowed_origins.is_empty() && api.allowed_hosts.is_empty());
+        assert!(!api.expose_raw_text);
+        let plan = api.bind_plan().unwrap().expect("enabled");
+        assert!(plan.loopback, "the hub API never listens beyond loopback");
+    }
+
     #[test]
     fn an_enabled_lan_bind_without_the_opt_in_is_a_config_error() {
         let (_, report) =

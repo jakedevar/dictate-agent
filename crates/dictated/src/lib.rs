@@ -212,7 +212,8 @@ impl Daemon {
     /// Every refusal in the security design (§4): a bind beyond loopback
     /// without `allow_lan` and TLS or the tunnel acknowledgment, an
     /// every-interface bind, a missing or insecure token, unusable TLS, or a
-    /// failed bind. The caller treats each as fatal.
+    /// failed bind. The daemon's own startup does not treat these as fatal:
+    /// it goes through [`Daemon::serve_network_api`].
     pub async fn start_network_api(
         &mut self,
         api: &dictate_server::ApiConfig,
@@ -223,6 +224,31 @@ impl Daemon {
         let backend = Arc::new(network::NetworkBackend::new(self.deps.clone(), api));
         self.api = dictate_server::ApiServer::start(api, backend).await?;
         Ok(self.api.as_ref().map(dictate_server::ApiServer::local_addr))
+    }
+
+    /// Start the network API the way the daemon does at startup: a failure
+    /// of any kind (the port is taken, no token, a refused bind, bad TLS)
+    /// is logged and recorded in `status` and the daemon carries on, because
+    /// the API is an optional surface and must never take dictation down
+    /// with it. A failure is still fail-closed: nothing listens.
+    pub async fn serve_network_api(
+        &mut self,
+        api: &dictate_server::ApiConfig,
+        status: &network::ApiStatusCell,
+    ) -> network::ApiStatus {
+        let outcome = match self.start_network_api(api).await {
+            Ok(Some(addr)) => network::ApiStatus::Listening(addr),
+            Ok(None) => network::ApiStatus::Disabled,
+            Err(e) => {
+                warn!(
+                    "{e}; the network API is DOWN, dictation and the local socket \
+                     are unaffected (see `dictate doctor`)"
+                );
+                network::ApiStatus::Down(e.to_string())
+            }
+        };
+        network::write_status(status, outcome.clone());
+        outcome
     }
 
     /// The network API's address, while it is running.
@@ -437,12 +463,11 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     let config_service = Arc::new(
         config_rpc::ConfigService::new(report.path.clone(), &config).with_history(history.clone()),
     );
-    let doctor = Arc::new(doctor::Doctor::new(
-        config.clone(),
-        report,
-        runtime.clone(),
-        pipeline.clone(),
-    ));
+    let api_status = network::ApiStatusCell::default();
+    let doctor = Arc::new(
+        doctor::Doctor::new(config.clone(), report, runtime.clone(), pipeline.clone())
+            .with_api_status(api_status.clone()),
+    );
     let mut daemon = Daemon::start_with(
         pipeline,
         history,
@@ -455,13 +480,10 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         },
     )
     .await?;
-    // S33. A refusal is fatal: an operator who enabled the API is told why
-    // there is none, rather than finding the port silently closed.
-    if let Err(e) = daemon.start_network_api(&config.api).await {
-        error!("{e}");
-        daemon.shutdown().await;
-        return Err(anyhow::anyhow!(e));
-    }
+    // S33. The API is optional and must never take dictation down: a
+    // refusal or a failed bind is logged as a warning, nothing listens, and
+    // `dictate doctor` reports the API as down with the reason.
+    daemon.serve_network_api(&config.api, &api_status).await;
     info!(
         socket = %daemon.socket().display(),
         pid = std::process::id(),

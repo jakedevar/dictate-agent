@@ -64,6 +64,25 @@ install: release
 install-unit:
     make install-unit
 
+# Mac app (docs/MAC-APP.md). Needs [api] enabled on this hub.
+# Install, enable and start the reverse SSH tunnel to the Mac (loopback only)
+install-mac-tunnel:
+    make install-mac-tunnel
+
+# Disable and remove the Mac tunnel unit
+uninstall-mac-tunnel:
+    make uninstall-mac-tunnel
+
+# Usage: `just mac-token` (mac-mini) or `just mac-token --host other-mac`.
+# Copy the API token to the Mac app's 0600 token file (never printed)
+mac-token *args="":
+    scripts/mac-provision-token.sh {{args}}
+
+# Throwaway tunnel + API check against an isolated daemon on port 17313 (needs
+# release binaries and `ssh mac-mini`); installs nothing, cleans up after itself
+mac-tunnel-smoke *args="":
+    scripts/mac-tunnel-smoke.sh {{args}}
+
 # Optional desktop UI: dictate-ui + desktop entry + icon (needs bun, cargo tauri)
 install-ui:
     make install-ui

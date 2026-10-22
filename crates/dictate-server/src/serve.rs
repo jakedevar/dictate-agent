@@ -27,8 +27,10 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// The TLS handshake must finish within this.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Why the API did not start. Each is fatal to the daemon's startup: an
-/// operator who asked for a listener is told why there is none.
+/// Why the API did not start. Nothing listens after any of these. The
+/// daemon's startup logs it and keeps dictating (`dictated`'s
+/// `serve_network_api`); an unsafe *configuration* is refused earlier, as a
+/// config validation error.
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
     /// The configuration asks for more exposure than it opted into.

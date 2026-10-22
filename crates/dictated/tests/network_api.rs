@@ -643,6 +643,71 @@ async fn the_api_refuses_to_start_beyond_loopback_or_without_a_token() {
     h.stop().await;
 }
 
+/// Mac app hub slice (#3528): the API is optional and must never take
+/// dictation down. With its port already taken (or any other startup
+/// failure) the daemon's startup path records the API as down, binds
+/// nothing, and keeps serving its socket and dictation.
+#[tokio::test]
+async fn a_taken_port_or_a_refused_api_leaves_the_daemon_serving() {
+    let mut h = Harness::start().await;
+    // Something else already holds the API's port.
+    let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = squatter.local_addr().unwrap();
+    let config = api_config(&h, |c| c.bind = taken.to_string());
+    dictate_server::token::ensure(&config.token_path()).unwrap();
+
+    let status = dictated::network::ApiStatusCell::default();
+    let outcome = h.daemon.serve_network_api(&config, &status).await;
+    match &outcome {
+        dictated::network::ApiStatus::Down(why) => {
+            assert!(why.contains(&taken.to_string()), "names the address: {why}");
+        }
+        other => panic!("expected the API down, got {other:?}"),
+    }
+    assert_eq!(dictated::network::read_status(&status), outcome);
+    assert!(
+        h.daemon.network_api_addr().is_none(),
+        "nothing is listening"
+    );
+
+    // A missing token is the same story, not a crash.
+    let no_token = api_config(&h, |c| {
+        c.token_file = h.dir().join("absent-token").to_string_lossy().into_owned();
+    });
+    assert!(matches!(
+        h.daemon.serve_network_api(&no_token, &status).await,
+        dictated::network::ApiStatus::Down(_)
+    ));
+
+    // The local socket still answers and still dictates.
+    let mut desk = h.client().await;
+    assert!(matches!(
+        desk.request(Command::GetStatus).await.unwrap(),
+        CommandResult::Status(_)
+    ));
+    match desk
+        .request(Command::TranscribeAudio {
+            audio: inline_wav(1.0),
+            options: None,
+        })
+        .await
+        .unwrap()
+    {
+        CommandResult::Transcript(t) => assert_eq!(t.text.as_str(), "Hello there"),
+        other => panic!("expected a transcript, got {other:?}"),
+    }
+
+    // Once the port is free the same call brings the API up.
+    drop(squatter);
+    let up = api_config(&h, |c| c.bind = "127.0.0.1:0".into());
+    dictate_server::token::ensure(&up.token_path()).unwrap();
+    assert!(matches!(
+        h.daemon.serve_network_api(&up, &status).await,
+        dictated::network::ApiStatus::Listening(_)
+    ));
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn an_inline_upload_over_the_websocket_honors_the_network_limits() {
     let mut h = Harness::start().await;
