@@ -7,14 +7,10 @@ chain, the optional Ollama pass). The Mac pastes the text at your cursor. No
 cloud service is involved.
 
 ```
-Mac                                               Hub (this machine)
-DictateHub.app                                    dictated
-  POST http://127.0.0.1:7313/v1/transcribe          network API on 127.0.0.1:7313
-  Authorization: Bearer <token>                       (loopback only, token required)
-          |                                               ^
-          +--- Mac loopback 127.0.0.1:7313 ===== ssh -R ==+
-                (sshd listens here)          dictate-mac-tunnel.service (hub dials out;
-                                             verifies loopback-only, else refuses)
+Mac                                             Hub (this machine)
+DictateHub.app -- HTTP/1.1 over private UDS        dictated
+  run/hub.sock ======== reverse SSH -R =======>  127.0.0.1:7313 API
+  (0700 directory, no TCP listener)               bearer token required
 ```
 
 This page covers the **hub side**. The Mac app's own build, install and
@@ -22,14 +18,11 @@ permission notes live with it under `mac/`.
 
 ## Security model
 
-- **Loopback on both ends, enforced.** `dictated` listens on `127.0.0.1:7313`
-  only. The tunnel asks the Mac's sshd for `-R 127.0.0.1:7313:...`, but that
-  is only a request: the Mac's sshd decides where the port listens, and
-  `GatewayPorts yes` there binds every interface even for an explicit
-  `127.0.0.1` (the forward still "succeeds"). So the unit runs
-  `dictate-mac-tunnel`, which makes loopback-only a checked condition, not an
-  assumption (see [The loopback guard](#the-loopback-guard)). No other machine
-  on either network can reach the port.
+- **Hub loopback, Mac private socket.** `dictated` listens on `127.0.0.1:7313`
+  only. SSH creates `~/Library/Application Support/DictateHub/run/hub.sock`
+  on the Mac in an owned 0700 directory. No Mac TCP listener is requested,
+  so `GatewayPorts` cannot widen exposure. Other local users cannot traverse
+  the socket directory; same-user processes still need the bearer token.
 - **The hub dials out.** The tunnel is an ordinary outbound SSH connection from
   the hub to the Mac, using the hub's existing key for the Mac. The hub's
   firewall is not changed and the hub opens no new listener.
@@ -44,9 +37,10 @@ permission notes live with it under `mac/`.
   config, the dictionary or window context. The route is forced to `type` and
   nothing is injected on the hub. See
   `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
-- **The Mac must keep `GatewayPorts no`** (macOS's default; no file sets it).
-  `yes` or `clientspecified`, anywhere in its sshd config, including inside a
-  `Match` block, makes the tunnel refuse to start.
+- **Stream-local forwarding must be allowed.** The running Mac sshd must allow
+  remote Unix-socket forwards (`AllowStreamLocalForwarding yes` or `remote`).
+  `ExitOnForwardFailure` fails the actual request if it is forbidden. No
+  on-disk sshd policy is treated as proof of the running daemon's policy.
 - **Rotation.** `dictated --rotate-api-token >/dev/null && just mac-token`
   issues a new token, copies it to the Mac, and makes a running `dictated`
   refuse the old one from its next request on.
@@ -80,10 +74,9 @@ permission notes live with it under `mac/`.
    `make install-mac-tunnel`). This installs `~/.local/bin/dictate-mac-tunnel`
    and `~/.config/systemd/user/dictate-mac-tunnel.service`, then enables and
    starts it. `dictate doctor` then shows `Mac app tunnel: … is running`, and
-   `journalctl --user -u dictate-mac-tunnel` shows `preflight ok` and
-   `tunnel up: … (verified loopback only)`. To check the Mac's sshd policy
-   first, without forwarding anything: `dictate-mac-tunnel --check` (after
-   the install) or `scripts/dictate-mac-tunnel --check` (before).
+   `journalctl --user -u dictate-mac-tunnel` shows `starting private Unix-socket tunnel`. To check directory preparation without
+   forwarding: `dictate-mac-tunnel --check`. Confirm connectivity with the
+   authenticated check below or the app's **Test connection**.
 
 4. **Copy the token to the Mac:** `just mac-token` (`--host other-mac` for
    another host). It prints where it wrote the token and that the Mac's copy
@@ -95,8 +88,8 @@ permission notes live with it under `mac/`.
 5. **Check from the Mac** (prints the daemon's status JSON, then `401`):
 
    ```bash
-   ssh mac-mini 'printf "header = \"Authorization: Bearer %s\"\n" "$(cat ~/Library/Application\ Support/DictateHub/api-token)" | curl -s -K - http://127.0.0.1:7313/v1/status'
-   ssh mac-mini 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:7313/v1/status'
+   ssh mac-mini 'printf "header = \"Authorization: Bearer %s\"\n" "$(cat ~/Library/Application\ Support/DictateHub/api-token)" | curl -s --unix-socket "$HOME/Library/Application Support/DictateHub/run/hub.sock" -K - http://127.0.0.1:7313/v1/status'
+   ssh mac-mini 'curl -s --unix-socket "$HOME/Library/Application Support/DictateHub/run/hub.sock" -o /dev/null -w "%{http_code}\n" http://127.0.0.1:7313/v1/status'
    ```
 
    The token goes to curl as a config file on its stdin (`-K -`), written by
@@ -105,62 +98,56 @@ permission notes live with it under `mac/`.
    can read with `ps`. `scripts/test-mac-hub.sh` runs these two lines with a
    fake curl and fails if the token reaches an argv.
 
-## The loopback guard
+## Private socket lifecycle
 
-`dictate-mac-tunnel` (`scripts/dictate-mac-tunnel`) is the unit's ExecStart. On
-every start it:
+The wrapper prepares the owned 0700 socket directory over a forward-free SSH
+session with a local 20-second deadline (`DICTATE_MAC_PREPARE_SECS`). It
+refuses symlinked directories and non-socket destination entries, enforces
+Darwin's 103-byte path limit, and removes the stale socket before each start.
+This supports the Mac's `StreamLocalBindUnlink no` without changing sshd.
+The default sshd `StreamLocalBindMask 0177` produces a 0600 socket; directory
+permissions provide isolation even if a server uses a looser socket mask.
+A stopped forward may leave a socket inode; it cannot carry traffic and the
+next start removes it.
 
-1. **Preflight, before any forward exists.** Over a forward-less ssh session
-   (`ClearAllForwardings=yes`) it reads the Mac's sshd policy two ways:
-   `sshd -G` (the effective global value; works without root on macOS) and
-   the text of `/etc/ssh/sshd_config` plus every file it `Include`s,
-   recursively (macOS: `sshd_config.d/*`, which includes `crypto.conf`). The
-   text scan is what sees a `GatewayPorts` inside a `Match` block, which
-   `sshd -G` cannot evaluate without root. It refuses if any `GatewayPorts`
-   value anywhere is not `no`, if a file exists but cannot be read, if an
-   `Include` cannot be followed, if `sshd -G` fails, or if the reply is
-   truncated.
-2. **Starts** `ssh -N -T -R 127.0.0.1:MAC_PORT:127.0.0.1:HUB_PORT` with
-   BatchMode, StrictHostKeyChecking=yes, ExitOnForwardFailure, no agent or X11
-   forwarding and no shared control connection.
-3. **Verifies on the Mac** with `lsof -nP -iTCP:MAC_PORT -sTCP:LISTEN` that
-   every listener is `127.0.0.1` or `[::1]`. Anything else (`*`, a LAN
-   address) kills the tunnel at once. No lsof on the Mac is also a refusal;
-   no listener within 20 s is a retry.
+The wrapper then supervises
+`ssh -N -T -R <mac-socket>:127.0.0.1:7313 mac-mini`, with BatchMode,
+StrictHostKeyChecking, ExitOnForwardFailure, keepalives, no agent/X11
+forwarding and no shared control connection. SSH host aliases containing
+additional forwards are refused. There is no GatewayPorts preflight, no
+Mac TCP forward and no post-start checker that could stall while exposed.
+Configuration refusals exit 78 (not retried). SSH/link failures exit 1 and
+are retried. A stop signal terminates/reaps SSH and exits 0.
 
-A refusal exits 78 and the unit's `RestartPreventExitStatus=78` keeps it down
-(`failed`) rather than retrying every 10 s; `dictate doctor` says
-`refused to start`. `dictate-mac-tunnel --check` prints the reason. Fix the Mac,
-then `systemctl --user restart dictate-mac-tunnel`. Network trouble (the Mac
-asleep, no route) is exit 1, which `Restart=` retries as before.
+The app defaults to **Hub (secure tunnel)**. Saved `http://127.0.0.1:7313`
+settings migrate to this default; custom HTTP(S) URLs remain available in
+Settings. File mode, onboarding and Test connection share `HubClient`.
+HTTP over UDS sends `Host: 127.0.0.1:7313` with a per-request deadline.
+For isolated tests, `--endpoint unix:/absolute/path/hub.sock` selects another
+socket without changing saved settings.
 
-Limits, stated plainly: the preflight reads the configuration sshd *would*
-use. If the Mac's sshd were started some other way (its own `-f` file, or a
-changed config it has not reloaded), the post-start lsof check is the backstop,
-and between the forward appearing and that check (about a second: the
-check polls every 0.25 s) the port could be reachable on the Mac's network. Every request still
-needs the bearer token.
+Tests: `scripts/test-mac-hub.sh`, `just mac-tunnel-sshd-test` (real isolated
+sshd with `GatewayPorts yes`, no TCP listener), `just mac-test` (Swift UDS
+stub and URLSession tests), and `just mac-tunnel-smoke` (isolated hub + Mac).
 
-Tests: `scripts/test-mac-hub.sh` (part of `just check-cpu`; stub ssh, every
-refusal path) and `just mac-tunnel-sshd-test` (a real isolated sshd on
-127.0.0.1, plus a private network namespace in which sshd really runs
-`GatewayPorts yes` and the post-start check kills the wildcard forward).
+## Another Mac, socket or hub port
 
-## Another Mac, or other ports
-
-Use a drop-in, not an edit to the unit (`systemctl --user edit dictate-mac-tunnel`):
+Use a drop-in (`systemctl --user edit dictate-mac-tunnel`):
 
 ```ini
 [Service]
 Environment=DICTATE_MAC_HOST=my-other-mac
-# Environment=DICTATE_HUB_API_PORT=7313   the hub's [api] bind port
-# Environment=DICTATE_MAC_PORT=7313       what the Mac app connects to
+Environment=DICTATE_HUB_API_PORT=7313
+# Environment="DICTATE_MAC_SOCKET=/absolute/private/run/hub.sock"
 ```
 
-Keep the two ports equal. The API accepts `Host: 127.0.0.1:<its own port>`
-(and `localhost:<port>`). A different Mac-side port means the Mac app sends a
-`Host` the API refuses with `421`, unless you add that spelling, for example
-`"127.0.0.1:17313"`, to `[api] allowed_hosts`.
+A custom socket's parent must already be owned by the Mac user and must not
+be a symlink; the wrapper tightens it to 0700. For a custom socket select
+`unix:/absolute/private/run/hub.sock` as the app endpoint. If the hub API uses
+another port, add `"127.0.0.1:7313"` to `[api] allowed_hosts`, because the UDS
+client always sends that Host spelling. Remove old `DICTATE_MAC_PORT` and
+sshd/lsof override variables from existing drop-ins; they no longer apply.
+Upgrade the app with `mac/scripts/remote.sh install` alongside the tunnel.
 
 ## When something is down
 
@@ -171,7 +158,7 @@ Keep the two ports equal. The API accepts `Host: 127.0.0.1:<its own port>`
 | `network_api` ok | listening on loopback |
 | `network_api` FAIL "enabled but DOWN: …" | it did not start (port taken, no token, bad TLS file). Dictation on the hub is **unaffected**: the API is optional and its failure never stops `dictated`. Fix the cause and restart `dictated`. |
 | `mac_tunnel` ok | the tunnel unit is running |
-| `mac_tunnel` warn "refused to start" | the loopback guard refused: the Mac's sshd could publish the port beyond its loopback, or could not be checked. `dictate-mac-tunnel --check` says why |
+| `mac_tunnel` warn "refused to start" | the socket path or SSH alias configuration was refused. `dictate-mac-tunnel --check` says why |
 | `mac_tunnel` warn | the unit is restarting or failed: `systemctl --user status dictate-mac-tunnel`, `journalctl --user -u dictate-mac-tunnel` |
 
 Tunnel behaviour:
@@ -179,11 +166,8 @@ Tunnel behaviour:
 - The tunnel retries every 10 s, forever, while the Mac sleeps, is offline or
   reboots. `ServerAliveInterval=15`/`CountMax=3` notices a dead link in about
   45 s.
-- `ExitOnForwardFailure=yes`: if the Mac's port is still held, for example by
-  the sshd of a session that died without a FIN, ssh exits and retries rather
-  than staying up with no tunnel. macOS's sshd drops such a session once TCP
-  gives up on it. Setting `ClientAliveInterval 30` on the Mac shortens that
-  wait, but it is optional.
+- `ExitOnForwardFailure=yes`: if the running sshd refuses stream-local
+  forwarding or cannot bind the socket, SSH exits and systemd retries.
 - An invalid `[api]` (for example a LAN bind without `allow_lan`) is a config
   error and stops `dictated` at startup like any other config error. Run
   `dictated --check-config` before restarting.

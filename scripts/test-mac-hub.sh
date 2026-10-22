@@ -1,235 +1,97 @@
 #!/usr/bin/env bash
-# Hermetic regression tests for the Mac app's hub side (part of `just
-# check-cpu`; `just test-mac-hub` alone). No network, no real Mac, no real
-# sshd, no real token:
-#
-#   * scripts/dictate-mac-tunnel  (#3555) the sshd-policy preflight refuses
-#     every unsafe or unverifiable GatewayPorts, Match blocks and nested
-#     Includes included, and the post-start listener check kills a tunnel the
-#     Mac publishes beyond loopback. A stub `ssh` runs the "remote" half
-#     locally, against fixture configs, a fake `sshd -G` and a fake `lsof`.
-#   * scripts/mac-provision-token.sh  (#3557) never follows or clobbers a
-#     pre-planted symlink, and leaves no temp file behind.
-#   * docs/MAC-APP.md  (#3556) the documented check command keeps the token
-#     off every argv (run with a fake curl that records its argv).
-#
-# The real-sshd counterpart (an isolated sshd on 127.0.0.1, plus a private
-# network namespace for the wildcard case) is scripts/mac-tunnel-sshd-test.sh.
+# Hermetic tunnel, token and documentation checks; no real Mac or credentials.
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 wrapper="$repo/scripts/dictate-mac-tunnel"
 provision="$repo/scripts/mac-provision-token.sh"
-
 t="$(mktemp -d /tmp/dmt-test.XXXXXX)"
-wrapper_pid=""
-cleanup() {
-    [ -n "$wrapper_pid" ] && kill "$wrapper_pid" 2>/dev/null
-    chmod -R u+rwx "$t" 2>/dev/null
-    rm -rf "$t"
-}
-trap cleanup EXIT
-
-pass=0
-failures=0
+trap 'rm -rf "$t"' EXIT
+pass=0; failures=0
 ok() { pass=$((pass + 1)); printf 'ok   %s\n' "$*"; }
 bad() { failures=$((failures + 1)); printf 'FAIL %s\n' "$*" >&2; }
-
-mkdir -p "$t/bin" "$t/stub"
+mkdir -p "$t/bin" "$t/stub" "$t/private run"
 export DMT_STUB_DIR="$t/stub"
-
-# --- stubs -------------------------------------------------------------------
-# ssh: with -N it is the tunnel (records itself, sleeps until killed);
-# otherwise it runs its last argument locally, as the remote login shell would.
 cat > "$t/bin/ssh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DMT_STUB_DIR/ssh.log"
 [ -n "${DMT_STUB_FAIL:-}" ] && exit 255
 for a in "$@"; do
-    if [ "$a" = -N ]; then
-        [ -n "${DMT_STUB_TUNNEL_EXIT:-}" ] && exit "$DMT_STUB_TUNNEL_EXIT"
-        echo $$ > "$DMT_STUB_DIR/tunnel.pid"
-        trap 'touch "$DMT_STUB_DIR/tunnel.killed"; exit 0' TERM
-        sleep 300 & wait
-        exit 0
-    fi
+    [ "$a" = -G ] && { printf '%s\n' "${DMT_CONFIG:-hostname stubmac}"; exit; }
+    [ "$a" = -N ] && {
+        touch "$DMT_STUB_DIR/tunnel.started"
+        if [[ -n ${DMT_HOLD:-} ]]; then echo $$ > "$DMT_STUB_DIR/tunnel.pid"; exec sleep 300; fi
+        exit "${DMT_TUNNEL_RC:-0}"
+    }
 done
+[ -n "${DMT_HANG:-}" ] && exec sleep 300
 exec sh -c "${!#}"
 SH
-# sshd -G: reports DMT_FAKE_G (default no); "fail" = sshd -G errors out.
-cat > "$t/bin/sshd" <<'SH'
-#!/bin/sh
-[ "${DMT_FAKE_G:-no}" = fail ] && { echo "sshd: config error: bad thing" >&2; exit 255; }
-printf 'port 22\ngatewayports %s\nx11forwarding no\n' "${DMT_FAKE_G:-no}"
-SH
-# lsof: once the tunnel stub runs, lists DMT_FAKE_LISTEN's addresses.
-cat > "$t/bin/lsof" <<'SH'
-#!/bin/sh
-[ -f "$DMT_STUB_DIR/tunnel.pid" ] || exit 1
-[ -n "${DMT_FAKE_LISTEN:-}" ] || exit 1
-for a in $DMT_FAKE_LISTEN; do printf 'p4242\nf7\nn%s\n' "$a"; done
-SH
-chmod +x "$t/bin/ssh" "$t/bin/sshd" "$t/bin/lsof"
-
-etc="$t/etc/ssh"
+chmod +x "$t/bin/ssh"
 reset_stub() { rm -f "$t/stub/"*; }
-# Write the macOS-shaped fixture: sshd_config Includes sshd_config.d/* (as a
-# relative path here, to cover that too), 100-macos.conf Includes a file
-# outside that directory (as macOS does with crypto.conf).
-fixture() {
-    chmod -R u+rwx "$t/etc" 2>/dev/null
-    rm -rf "$t/etc"
-    mkdir -p "$etc/sshd_config.d" "$etc/crypto"
-    cat > "$etc/sshd_config" <<'CFG'
-# a comment
-#GatewayPorts yes
-Include sshd_config.d/*
-AuthorizedKeysFile	.ssh/authorized_keys
-CFG
-    printf 'UsePAM yes\nInclude %s/crypto.conf\n' "$etc" > "$etc/sshd_config.d/100-macos.conf"
-    printf 'Ciphers ^aes128-gcm@openssh.com\n' > "$etc/crypto/apple.conf"
-    ln -s crypto/apple.conf "$etc/crypto.conf"
-}
-
-run() { # env... -- runs the wrapper; sets rc and out
-    out="$(env DICTATE_MAC_SSH="$t/bin/ssh" DICTATE_MAC_SSHD="$t/bin/sshd" \
-        DICTATE_MAC_LSOF="$t/bin/lsof" DICTATE_MAC_SSHD_CONFIG="$etc/sshd_config" \
-        DICTATE_MAC_HOST=stubmac DICTATE_MAC_PORT=17999 DICTATE_HUB_API_PORT=17998 \
-        DICTATE_MAC_VERIFY_SECS=2 "$@" 2>&1)"
+run() {
+    reset_stub
+    out=$(env DICTATE_MAC_SSH="$t/bin/ssh" DICTATE_MAC_HOST=stubmac \
+        DICTATE_MAC_SOCKET="$t/private run/hub.sock" DICTATE_HUB_API_PORT=17998 \
+        DICTATE_MAC_PREPARE_SECS=1 "$@" 2>&1)
     rc=$?
 }
-expect_check() { # name, expected rc, grep pattern for output ("" = none), env...
-    local name="$1" want="$2" pat="$3"
-    shift 3
-    reset_stub
-    run "$@" "$wrapper" --check
-    if [ "$rc" != "$want" ]; then bad "$name: exit $rc, expected $want: $out"; return; fi
-    if [ -n "$pat" ] && ! grep -qE -- "$pat" <<<"$out"; then bad "$name: output lacks /$pat/: $out"; return; fi
-    if [ -f "$t/stub/tunnel.pid" ]; then bad "$name: a tunnel was started by --check"; return; fi
-    ok "$name"
+expect() {
+    local name=$1 want=$2; shift 2
+    run "$@"
+    [ "$rc" = "$want" ] && ok "$name" || bad "$name: rc=$rc $out"
 }
-
-# --- preflight: safe policies pass -------------------------------------------
-fixture
-expect_check "macOS-shaped default config passes" 0 "preflight ok.*3 config path"
-grep -q -- '-o ClearAllForwardings=yes' "$t/stub/ssh.log" && grep -q -- '-o BatchMode=yes' "$t/stub/ssh.log" \
-    && ok "check connections run with BatchMode and no forwards" || bad "check connection options: $(cat "$t/stub/ssh.log")"
-
-fixture; printf 'GatewayPorts no # never yes here\n' >> "$etc/sshd_config"
-expect_check "explicit 'GatewayPorts no' with a trailing comment passes" 0 "preflight ok"
-
-# --- preflight: every unsafe or unverifiable policy is refused (78) ----------
-fixture; printf 'GatewayPorts yes\n' >> "$etc/sshd_config"
-expect_check "GatewayPorts yes in sshd_config" 78 'GatewayPorts "yes" in .*/sshd_config'
-fixture; printf 'gatewayports=Yes\n' >> "$etc/sshd_config"
-expect_check "gatewayports=Yes (case, '=' separator)" 78 'GatewayPorts "Yes"'
-fixture; printf 'GatewayPorts "yes"\n' >> "$etc/sshd_config"
-expect_check "quoted \"yes\"" 78 'GatewayPorts'
-fixture; printf '  GatewayPorts clientspecified\n' >> "$etc/sshd_config.d/100-macos.conf"
-expect_check "clientspecified in an included file" 78 'clientspecified.*100-macos.conf'
-fixture; printf 'Match User someone\n    GatewayPorts yes\n' >> "$etc/sshd_config.d/100-macos.conf"
-expect_check "GatewayPorts yes inside a Match block" 78 'inside "Match User someone"'
-fixture; printf 'Include %s/deeper.conf\n' "$etc" >> "$etc/crypto/apple.conf"
-printf 'Match Address 10.0.0.0/8\n\tGatewayPorts yes\n' > "$etc/deeper.conf"
-expect_check "yes three Includes deep, inside Match" 78 'deeper.conf \(inside "Match Address'
-fixture; printf 'GatewayPorts\n' >> "$etc/sshd_config"
-expect_check "GatewayPorts with no value" 78 'GatewayPorts ""'
-fixture; printf 'GatewayPorts no yes\n' >> "$etc/sshd_config"
-expect_check "GatewayPorts with two values" 78 'GatewayPorts "no yes"'
-fixture; printf 'Include ~/x.conf\n' >> "$etc/sshd_config"
-expect_check "an Include it cannot follow (~)" 78 'cannot follow Include'
-fixture; printf 'Include "%s/unterminated\n' "$etc" >> "$etc/sshd_config"
-expect_check "an unterminated quote" 78 'unbalanced quote'
-if [ "$(id -u)" != 0 ]; then
-    fixture; chmod 000 "$etc/crypto/apple.conf"
-    expect_check "an unreadable included file" 78 'cannot read .*crypto.conf'
-    fixture; chmod 000 "$etc/sshd_config"
-    expect_check "an unreadable sshd_config" 78 'cannot read'
-else
-    ok "(skipped unreadable-file cases: running as root)"
-fi
-fixture; rm "$etc/sshd_config"
-expect_check "a missing sshd_config" 78 'cannot read .*sshd_config'
-fixture
-expect_check "sshd -G reports yes (files say no)" 78 'effective GatewayPorts is "yes"' DMT_FAKE_G=yes
-expect_check "sshd -G fails" 78 'sshd -G could not report' DMT_FAKE_G=fail
-expect_check "no sshd binary on the Mac" 78 'no sshd binary' DICTATE_MAC_SSHD=/nonexistent/sshd
-expect_check "the Mac is unreachable: retry, not refuse" 1 'ssh failed' DMT_STUB_FAIL=1
-expect_check "a non-numeric port" 78 'is not a port' DICTATE_MAC_PORT=7313x
-expect_check "a host that looks like an option" 78 'is not a host' DICTATE_MAC_HOST=-oProxyCommand=x
-
-# --- the parser alone: truncation and garbage --------------------------------
-v="$(printf '@@G gatewayports no\n=== /e/sshd_config\n| Port 22\n' | "$wrapper" --parse-sshd-dump /e/sshd_config)"
-grep -q '^REFUSE .*truncated' <<<"$v" && ok "a dump without @@END is refused" || bad "truncated dump: $v"
-v="$(printf '@@G gatewayports no\nsurprise\n@@END\n' | "$wrapper" --parse-sshd-dump /e/sshd_config)"
-grep -q '^REFUSE unexpected line' <<<"$v" && ok "an unexpected line is refused" || bad "garbage dump: $v"
-v="$(printf '@@G gatewayports no\n=== /e/sshd_config\n| Include a/*.conf "/b c/d"\n@@END\n' | "$wrapper" --parse-sshd-dump /e/sshd_config)"
-grep -qx 'INCLUDE /e/a/\*.conf' <<<"$v" && grep -qx 'INCLUDE /b c/d' <<<"$v" && ! grep -q REFUSE <<<"$v" \
-    && ok "Include patterns: relative resolved, quotes grouped" || bad "include parsing: $v"
-
-# --- the full run: post-start listener verification --------------------------
-start_wrapper() { # env...
-    reset_stub
-    env DICTATE_MAC_SSH="$t/bin/ssh" DICTATE_MAC_SSHD="$t/bin/sshd" \
-        DICTATE_MAC_LSOF="$t/bin/lsof" DICTATE_MAC_SSHD_CONFIG="$etc/sshd_config" \
-        DICTATE_MAC_HOST=stubmac DICTATE_MAC_PORT=17999 DICTATE_HUB_API_PORT=17998 \
-        DICTATE_MAC_VERIFY_SECS=2 "$@" "$wrapper" > "$t/wrapper.log" 2>&1 &
-    wrapper_pid=$!
-}
-finish_wrapper() { # waits up to 10 s; sets rc
-    local i
-    for i in $(seq 1 100); do kill -0 "$wrapper_pid" 2>/dev/null || break; sleep 0.1; done
-    if kill -0 "$wrapper_pid" 2>/dev/null; then rc=running; else wait "$wrapper_pid"; rc=$?; fi
-    wrapper_pid=""
-}
-tunnel_alive() { [ -f "$t/stub/tunnel.pid" ] && kill -0 "$(cat "$t/stub/tunnel.pid")" 2>/dev/null; }
-
-fixture
-for listen in "127.0.0.1:17999" "[::1]:17999" "127.0.0.1:17999 [::1]:17999"; do
-    start_wrapper DMT_FAKE_LISTEN="$listen"
-    for _ in $(seq 1 50); do grep -q "tunnel up" "$t/wrapper.log" && break; sleep 0.1; done
-    if grep -q "tunnel up" "$t/wrapper.log" && tunnel_alive && kill -0 "$wrapper_pid" 2>/dev/null; then
-        kill -TERM "$wrapper_pid"
-        finish_wrapper
-        [ "$rc" = 0 ] && [ -f "$t/stub/tunnel.killed" ] \
-            && ok "loopback listener ($listen): tunnel stays up; SIGTERM stops it (exit 0)" \
-            || bad "stop after '$listen': rc=$rc killed=$([ -f "$t/stub/tunnel.killed" ] && echo y)"
-    else
-        bad "loopback listener ($listen) did not come up: $(cat "$t/wrapper.log")"
-        kill "$wrapper_pid" 2>/dev/null; finish_wrapper
-    fi
-done
-grep -qx -- '.*-N -T -o ExitOnForwardFailure=yes .* -R 127.0.0.1:17999:127.0.0.1:17998 stubmac' "$t/stub/ssh.log" \
-    && ok "the tunnel requests -R 127.0.0.1:MAC_PORT:127.0.0.1:HUB_PORT" || bad "tunnel argv: $(grep -- -N "$t/stub/ssh.log")"
-grep -- ' -N ' "$t/stub/ssh.log" | grep -q ClearAllForwardings && bad "the tunnel must not clear its own forward" \
-    || ok "the tunnel does not clear its own -R"
-
-expect_run() { # name, expected rc, pattern, env...
-    local name="$1" want="$2" pat="$3"
-    shift 3
-    start_wrapper "$@"
-    finish_wrapper
-    local log
-    log="$(cat "$t/wrapper.log")"
-    if [ "$rc" != "$want" ]; then bad "$name: exit $rc, expected $want: $log"; return; fi
-    if ! grep -qE -- "$pat" <<<"$log"; then bad "$name: log lacks /$pat/: $log"; return; fi
-    if tunnel_alive; then bad "$name: the tunnel is still running"; return; fi
-    ok "$name"
-}
-expect_run "wildcard listener on the Mac: tunnel killed, refused" 78 'beyond its loopback \(\*:17999\); tunnel killed' \
-    DMT_FAKE_LISTEN='*:17999'
-[ -f "$t/stub/tunnel.killed" ] && ok "  ... and the tunnel process got SIGTERM" || bad "wildcard: tunnel not killed"
-expect_run "loopback plus a LAN address: refused" 78 '192.168.1.20:17999' \
-    DMT_FAKE_LISTEN='127.0.0.1:17999 192.168.1.20:17999'
-expect_run "IPv6 wildcard: refused" 78 '\[::\]:17999' DMT_FAKE_LISTEN='[::]:17999'
-expect_run "no listener appears: killed, retry (1)" 1 'no listener' DMT_FAKE_LISTEN=
-expect_run "no lsof on the Mac: killed, refused" 78 'no lsof' DMT_FAKE_LISTEN=127.0.0.1:17999 \
-    DICTATE_MAC_LSOF=/nonexistent/lsof
-expect_run "the tunnel's ssh dies at once: retry (1)" 1 'exited during startup \(status 255\)' \
-    DMT_FAKE_LISTEN= DMT_STUB_TUNNEL_EXIT=255
-printf 'GatewayPorts yes\n' >> "$etc/sshd_config"
-expect_run "unsafe policy, full run: refused before any forward" 78 'REFUSED' DMT_FAKE_LISTEN=127.0.0.1:17999
-[ ! -f "$t/stub/tunnel.pid" ] && ! grep -q -- ' -N ' "$t/stub/ssh.log" \
-    && ok "  ... and ssh -R was never run" || bad "unsafe policy still started a tunnel"
+expect 'private directory check' 0 "$wrapper" --check
+[ ! -f "$t/stub/tunnel.started" ] && ok '--check never starts a forward' || bad '--check forwarded'
+[ "$(stat -c %a "$t/private run")" = 700 ] && ok 'socket directory secured 0700' || bad 'directory mode'
+mkdir -p "$t/home/Library/Application Support"
+expect 'default socket resolves Mac HOME' 1 HOME="$t/home" DICTATE_MAC_SOCKET= "$wrapper"
+grep -qF -- "-R $t/home/Library/Application Support/DictateHub/run/hub.sock:127.0.0.1:17998" "$t/stub/ssh.log" \
+    && ok 'default socket path matches app default' || bad 'default path mismatch'
+expect 'Unix forward accepts spaces in socket path' 1 "$wrapper"
+grep -qF -- "-R $t/private run/hub.sock:127.0.0.1:17998" "$t/stub/ssh.log" \
+    && ok 'only explicit UDS reverse forward requested' || bad 'forward shape'
+grep -qF -- 'ClearAllForwardings=yes' "$t/stub/ssh.log" && ok 'preparation is forward-free' || bad 'preparation options'
+python3 - "$t/private run/hub.sock" <<'SOCKET'
+import socket, sys
+s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()
+SOCKET
+expect 'stale socket is removed before forwarding' 1 "$wrapper"
+[ ! -e "$t/private run/hub.sock" ] && ok 'stale socket unlinked' || bad 'stale socket remains'
+printf sentinel > "$t/private run/hub.sock"
+expect 'regular file refused without clobbering' 78 "$wrapper"
+[ "$(cat "$t/private run/hub.sock")" = sentinel ] && ok 'regular destination untouched' || bad 'file clobbered'
+rm "$t/private run/hub.sock"
+ln -s "$t/victim" "$t/private run/hub.sock"
+expect 'destination symlink refused' 78 "$wrapper"
+rm "$t/private run/hub.sock"
+ln -s "$t/private run" "$t/link"
+expect 'directory symlink refused' 78 DICTATE_MAC_SOCKET="$t/link/hub.sock" "$wrapper"
+expect 'relative socket refused' 78 DICTATE_MAC_SOCKET=relative/hub.sock "$wrapper"
+expect 'long Darwin path refused' 78 DICTATE_MAC_SOCKET="$t/private run/$(printf 's%.0s' {1..105})" "$wrapper"
+expect 'colon refused' 78 DICTATE_MAC_SOCKET=/tmp/a:b "$wrapper"
+expect 'bad port refused' 78 DICTATE_HUB_API_PORT=7313x "$wrapper"
+expect 'option-like host refused' 78 DICTATE_MAC_HOST=-oProxyCommand=x "$wrapper"
+expect 'configured TCP reverse forward refused' 78 DMT_CONFIG='remoteforward 0.0.0.0:99 127.0.0.1:88' "$wrapper"
+[ ! -f "$t/stub/tunnel.started" ] && ok 'configured forward refused before SSH connection' || bad 'configured TCP forward started'
+expect 'unreachable Mac retries' 1 DMT_STUB_FAIL=1 "$wrapper"
+expect 'hung authenticated preparation has local deadline' 1 DMT_HANG=1 "$wrapper"
+[ ! -f "$t/stub/tunnel.started" ] && ok 'hung preparation never starts a forward' || bad 'hung preparation forwarded'
+expect 'running sshd refusal exits for retry' 1 DMT_TUNNEL_RC=255 "$wrapper"
+reset_stub
+env DICTATE_MAC_SSH="$t/bin/ssh" DICTATE_MAC_HOST=stubmac \
+    DICTATE_MAC_SOCKET="$t/private run/hub.sock" DMT_HOLD=1 "$wrapper" > "$t/lifecycle.log" 2>&1 &
+wrapper_pid=$!
+for _ in {1..100}; do [[ -f $t/stub/tunnel.pid ]] && break; sleep 0.02; done
+child_pid=$(cat "$t/stub/tunnel.pid")
+kill -TERM "$wrapper_pid"
+wait "$wrapper_pid"; rc=$?
+if [[ $rc = 0 ]] && ! kill -0 "$child_pid" 2>/dev/null; then
+    ok 'SIGTERM stops and reaps SSH, wrapper exits 0'
+else bad 'SIGTERM failed to reap SSH or preserve stop exit code'; fi
+# Source must never request a remote TCP listener or invoke a post-start checker.
+if grep -qE -- '-R ["\x27]?127\.0\.0\.1:|remote_listeners|remote_policy|lsof' "$wrapper"; then
+    bad 'legacy TCP/checker transport remains'
+else ok 'no TCP -R or post-start checker in wrapper'; fi
 
 # --- token provisioning (#3557) ----------------------------------------------
 token="dct1_$(printf 'Z%.0s' $(seq 1 43))"

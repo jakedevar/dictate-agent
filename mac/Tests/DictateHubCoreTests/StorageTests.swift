@@ -58,13 +58,23 @@ import Testing
     @Test func defaultsAndPersistence() {
         let d = defaults()
         let s = HubSettings(defaults: d)
-        #expect(s.endpoint == "http://127.0.0.1:7313")
+        #expect(s.endpoint == HubRequestBuilder.defaultEndpoint)
         #expect(s.hotkey == .rightOption)
         s.endpoint = "http://hub.example.test:7313"
         s.hotkey = .fn
         let again = HubSettings(defaults: d)
         #expect(again.endpoint == "http://hub.example.test:7313")
         #expect(again.hotkey == .fn)
+    }
+
+    @Test func oldDefaultMigratesButCustomURLStays() {
+        let d = defaults()
+        let s = HubSettings(defaults: d)
+        d.set("http://127.0.0.1:7313", forKey: HubSettings.endpointKey)
+        #expect(s.endpoint == HubRequestBuilder.defaultEndpoint)
+        #expect(d.string(forKey: HubSettings.endpointKey) == "tunnel")
+        s.endpoint = "https://custom.example.test"
+        #expect(s.endpoint == "https://custom.example.test")
     }
 
     @Test func blankOrUnknownValuesFallBack() {

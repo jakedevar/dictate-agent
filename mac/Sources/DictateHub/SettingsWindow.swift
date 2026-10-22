@@ -139,9 +139,17 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Hub") {
-                TextField("Endpoint", text: $model.endpoint, prompt: Text(HubRequestBuilder.defaultEndpoint))
-                    .onSubmit { model.saveEndpoint() }
-                Text("Default \(HubRequestBuilder.defaultEndpoint) is the hub's API through the SSH tunnel.")
+                Picker("Connection", selection: Binding(
+                    get: { model.endpoint == HubRequestBuilder.defaultEndpoint },
+                    set: { model.endpoint = $0 ? HubRequestBuilder.defaultEndpoint : "https://"; model.saveEndpoint() })) {
+                    Text("Hub (secure tunnel)").tag(true)
+                    Text("Custom HTTP(S) URL").tag(false)
+                }
+                if model.endpoint != HubRequestBuilder.defaultEndpoint {
+                    TextField("Endpoint", text: $model.endpoint)
+                        .onSubmit { model.saveEndpoint() }
+                }
+                Text("The secure tunnel connects to the hub through SSH.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Hotkey") {

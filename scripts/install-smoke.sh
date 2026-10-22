@@ -77,10 +77,10 @@ need "$mk$HOME/.local/share/dictate-agent/docs/MAC-APP.md"
 need "$mk$HOME/.local/bin/dictate-mac-tunnel"
 [ -x "$mk$HOME/.local/bin/dictate-mac-tunnel" ] || fail "dictate-mac-tunnel is not executable"
 grep -qx 'ExecStart=%h/.local/bin/dictate-mac-tunnel' "$tunnel" \
-    || fail "the tunnel unit must start the loopback-enforcing wrapper"
+    || fail "the tunnel unit must start the private-socket wrapper"
 grep -qx 'RestartPreventExitStatus=78' "$tunnel" || fail "a safety refusal must not be retried"
-grep -q -- '-R "127.0.0.1:${mac_port}:127.0.0.1:${hub_port}"' "$mk$HOME/.local/bin/dictate-mac-tunnel" \
-    || fail "the tunnel must forward to the Mac's loopback only"
+grep -qF -- '-R "$socket:127.0.0.1:$port"' "$mk$HOME/.local/bin/dictate-mac-tunnel" \
+    || fail "the tunnel must forward to a private Mac Unix socket"
 say "make install ok"
 
 # --- 3. uninstall leaves user data alone ----------------------------------

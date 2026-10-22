@@ -13,7 +13,8 @@ Package.swift               SwiftPM, Swift 6 language mode, arm64
 Sources/DictateHubCore/     testable logic, no microphone or event taps
   WAV.swift                 Float32 → Int16, 16 kHz mono WAV encoder
   HubClient.swift           request builder, transcript/status/ProtoError parsing,
-                            HubError → menu text, URLSession transport (30 s)
+                            HubError → menu text, HTTP(S) URLSession transport (30 s)
+  UnixSocketTransport.swift Network.framework UDS HTTP/1.1, deadline, bounded parser
   Hotkey.swift              hotkey choices (right-hand device bits), edge detector,
                             hold-to-talk state machine (250 ms minimum, Esc, 120 s cap)
   Settings.swift            UserDefaults settings; 0600 token file
@@ -124,8 +125,10 @@ DictateHub, then "−"). The scripts never touch TCC.
 
 ## Runtime
 
-- Endpoint: UserDefaults `hubEndpoint`, default `http://127.0.0.1:7313` (the
-  hub API through the reverse SSH tunnel). Hotkey: UserDefaults `hotkey`
+- Endpoint: UserDefaults `hubEndpoint`, default `tunnel` (**Hub (secure tunnel)**), connecting
+  to `~/Library/Application Support/DictateHub/run/hub.sock` over SSH. Old
+  default loopback URLs migrate automatically; custom HTTP(S) URLs stay.
+  `unix:/absolute/path` selects a custom socket for isolated checks. Hotkey: UserDefaults `hotkey`
   (`right_option` | `fn` | `right_command` | `control_option`).
 - Token: `~/Library/Application Support/DictateHub/api-token` (0600, directory
   0700).

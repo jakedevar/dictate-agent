@@ -226,9 +226,12 @@ listener starts (port taken, no token, bad TLS file) is not: dictated logs it,
 binds nothing, keeps dictating, and `dictate doctor` shows `network_api` down.
 Mac app hub side (reverse SSH tunnel, `just install-mac-tunnel`,
 `just mac-token`): `docs/MAC-APP.md`. The unit runs `scripts/dictate-mac-tunnel`,
-which refuses to forward unless the Mac's sshd keeps the port on its loopback
-(GatewayPorts preflight + lsof check; exit 78 = refused, not retried); tests:
-`scripts/test-mac-hub.sh` (in check-cpu), `just mac-tunnel-sshd-test`. Never
+which prepares a private 0700 Mac socket directory and requests only a reverse
+Unix-socket forward (no Mac TCP listener, immune to GatewayPorts). Exit 78
+refuses unsafe paths/extra SSH forwards; link failures retry. The app uses
+Network.framework HTTP over that socket by default, with custom HTTP(S)
+URLs supported. Tests: `scripts/test-mac-hub.sh` (check-cpu),
+`just mac-tunnel-sshd-test`, `just mac-test`. Never
 put the token on an argv (curl `-K -` from stdin, not `-H "Bearer $(…)"`). Token file:
 `$XDG_DATA_HOME/dictated/api-token` (0600). Design and threat model:
 `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.

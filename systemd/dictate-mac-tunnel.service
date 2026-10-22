@@ -1,5 +1,5 @@
 [Unit]
-Description=dictated network API -> Mac app: reverse SSH tunnel (Mac loopback only)
+Description=dictated network API -> Mac app: reverse SSH tunnel (Mac private Unix socket)
 Documentation=file:///%h/.local/share/dictate-agent/docs/MAC-APP.md
 # Not Requires=/BindsTo=dictated.service: the tunnel only carries connections,
 # and a forward that finds no listener just fails that one request. Ordering
@@ -12,19 +12,11 @@ StartLimitIntervalSec=0
 # Security model and setup: docs/MAC-APP.md. In short:
 #   * The hub dials out to the Mac; nothing new listens on the hub beyond
 #     dictated's own loopback API, and the hub firewall is untouched.
-#   * Loopback-only on the Mac is ENFORCED, not assumed. `-R 127.0.0.1:PORT`
-#     is only a request: the Mac's sshd decides, and `GatewayPorts yes` there
-#     binds every interface anyway. So ExecStart is a wrapper,
-#     dictate-mac-tunnel (scripts/dictate-mac-tunnel), that
-#       1. reads the Mac's sshd policy before any forward exists (`sshd -G` and
-#          sshd_config with every Include, Match blocks too) and refuses any
-#          GatewayPorts other than `no`, or a config it cannot read;
-#       2. starts the ssh -R;
-#       3. checks with lsof on the Mac that the port listens on 127.0.0.1/::1
-#          only, and kills the tunnel otherwise.
-#     A refusal exits 78 and RestartPreventExitStatus keeps the unit down
-#     (failed) until the Mac is fixed: `dictate-mac-tunnel --check`, then
-#     `systemctl --user restart dictate-mac-tunnel`.
+#   * The Mac listens only on a Unix socket in its user's 0700 directory.
+#     GatewayPorts affects TCP forwards only; no Mac TCP port is requested.
+#     The wrapper prepares the directory and removes a stale socket before
+#     each start (StreamLocalBindUnlink=no is supported). Exit 78 refuses an
+#     unsafe path; link/forward failures are retried.
 #   * Every byte rides the SSH session; every request still needs the bearer
 #     token.
 #
@@ -32,8 +24,9 @@ StartLimitIntervalSec=0
 # this file (`systemctl --user edit dictate-mac-tunnel`):
 #   [Service]
 #   Environment=DICTATE_MAC_HOST=my-other-mac
-# Keep the two ports equal: the API accepts `Host: 127.0.0.1:<its own port>`
-# only, unless the Mac-side spelling is added to [api] allowed_hosts.
+# Optional: Environment="DICTATE_MAC_SOCKET=/absolute/private/run/hub.sock"
+# The socket path must fit Darwin's 103-byte limit. Custom hub ports also
+# need that Host spelling in [api] allowed_hosts (the app sends 127.0.0.1:7313).
 
 [Service]
 Type=simple
@@ -42,11 +35,10 @@ Type=simple
 # ~/.ssh/known_hosts (BatchMode never prompts; StrictHostKeyChecking=yes never
 # accepts a new key on its own).
 Environment=DICTATE_MAC_HOST=mac-mini
-# The hub's [api] bind port, and the port the Mac app connects to.
+# The hub's [api] loopback bind port.
 Environment=DICTATE_HUB_API_PORT=7313
-Environment=DICTATE_MAC_PORT=7313
 # The wrapper's ssh options: BatchMode, StrictHostKeyChecking=yes, -N -T, no
-# agent or X11 forwarding, ExitOnForwardFailure (a port still held by a stale
+# agent or X11 forwarding, ExitOnForwardFailure (a socket still held by a stale
 # session means exit and retry, not "up with no tunnel"), ServerAlive 15 s x 3,
 # ControlPath=none (never ride, or become, a shared master connection).
 # `make install-mac-tunnel` rewrites this path to its BINDIR.
