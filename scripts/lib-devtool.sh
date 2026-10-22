@@ -1,5 +1,5 @@
 # Sourced by repo shell scripts: `devtool SUBCOMMAND ...` runs the dev-only
-# helper binary (crates/dictate-devtools) in place of the inline python3
+# helper binary (crates/dictate-devtools) in place of the inline interpreter
 # snippets operator directive 2b22862d forbids. Std-only crate: the build is
 # a couple of seconds and needs no network.
 _devtool_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
