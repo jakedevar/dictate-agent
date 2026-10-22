@@ -41,7 +41,7 @@ New code and scripts are Rust; Go only where Rust is impractical; Swift for
 the Mac app (`mac/`); plain shell only for thin glue (`jq`, `grep`, `awk`).
 No tracked `.py` file remains (removed under Issue #3618; the retired Python
 reference daemon is in git history at commit `b85e953`, `dictate/`). Inline
-`python3` snippets inside a few shell scripts are tracked for removal as a
+`python3` snippets inside a few shell scripts are tracked for removal in #3690 as a
 follow-up; do not add more.
 
 ## Workspace layout
