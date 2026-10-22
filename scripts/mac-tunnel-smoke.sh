@@ -36,6 +36,8 @@ model="${E2E_MODEL:-$HOME/.local/share/dictate-agent/models/ggml-large-v3-turbo.
 wav="$repo/crates/dictated/tests/fixtures/e2e/short.wav"
 unit_file="$repo/systemd/dictate-mac-tunnel.service"
 
+# The hub may have no nc; bash's /dev/tcp is enough for "is it listening".
+local_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 say()  { printf 'mac-smoke| %s\n' "$*"; }
 fail() { printf 'mac-smoke| FAIL: %s\n' "$*" >&2; exit 1; }
 
@@ -110,8 +112,8 @@ cli() { # $1 = daemon name, rest = dictate args
 
 say "starting isolated dictated A (API 127.0.0.1:$port)"
 start_daemon a "$port"
-for _ in $(seq 1 50); do nc -z 127.0.0.1 "$port" 2>/dev/null && break; sleep 0.1; done
-nc -z 127.0.0.1 "$port" || fail "A's API is not listening"
+for _ in $(seq 1 50); do local_open "$port" && break; sleep 0.1; done
+local_open "$port" || fail "A's API is not listening"
 ss -Hltn "sport = :$port" | awk '{print $4}' | grep -qvx "127.0.0.1:$port" \
     && fail "A listens beyond loopback: $(ss -Hltn "sport = :$port")"
 
@@ -154,7 +156,7 @@ for _ in $(seq 1 100); do
     ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && break
     sleep 0.2
 done
-ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" || fail "the tunnel never came up ($(systemctl --user is-active "$unit"))"
+ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel never came up ($(systemctl --user is-active "$unit"))"
 listen="$(ssh -o BatchMode=yes "$host" "lsof -nP -iTCP:$port -sTCP:LISTEN" | awk 'NR>1 {print $9}' | sort -u)"
 say "  Mac listens on: $(echo $listen)"
 [ -n "$listen" ] || fail "no listener seen on the Mac"
@@ -202,6 +204,18 @@ print("mac-smoke|   POST /v1/transcribe: type=transcript, route=type, %d chars" 
 code="$(remote_curl none -o /dev/null -w '%{http_code}' -H 'Content-Type: audio/wav' --data-binary @short.wav "http://127.0.0.1:$port/v1/transcribe")"
 [ "$code" = 401 ] || fail "an unauthenticated upload got HTTP $code"
 say "  POST /v1/transcribe without a token: $code"
+
+# --- Restart=: a killed ssh comes back on its own -----------------------------
+systemctl --user kill --signal=KILL "$unit"
+sleep 2
+for _ in $(seq 1 60); do
+    ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null && break
+    sleep 0.5
+done
+ssh -o BatchMode=yes "$host" "nc -z 127.0.0.1 $port" 2>/dev/null || fail "the tunnel did not come back after its ssh was killed"
+code="$(remote_curl good -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/status")"
+[ "$code" = 200 ] || fail "status after the restart: HTTP $code"
+say "  killed the tunnel's ssh: restarted, status $code again"
 
 # --- teardown proves the port goes away --------------------------------------
 systemctl --user stop "$unit"

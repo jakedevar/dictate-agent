@@ -52,7 +52,8 @@ args=(--api-token)
 # stdout carries only the token; dictated's notes on stderr are kept out of the
 # terminal too, since they are not needed here.
 token="$("$dictated" "${args[@]}" 2>/dev/null)" || die "dictated --api-token failed (run it yourself to see why)"
-token="${token%%[[:space:]]*}"
+# Only the dct1_ line: never mistake anything else on stdout for the token.
+token="$(printf '%s\n' "$token" | grep -m1 -E '^dct1_[A-Za-z0-9_-]{43}$' || true)"
 case "$token" in
     dct1_*) ;;
     *) unset token; die "dictated --api-token did not print a token" ;;

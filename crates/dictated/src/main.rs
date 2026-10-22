@@ -73,7 +73,13 @@ fn init_tracing() -> Result<()> {
     ] {
         filter = filter.add_directive(format!("{target}=info").parse()?);
     }
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs go to stderr: stdout is reserved for what a flag prints for a
+    // script to read, above all `--api-token` (piped by
+    // scripts/mac-provision-token.sh; a log line there once read as the token).
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
     Ok(())
 }
 
