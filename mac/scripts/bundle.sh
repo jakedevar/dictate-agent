@@ -16,10 +16,13 @@
 # The default gives a designated requirement that never changes between
 # builds (certificate leaf hash), so Microphone and Accessibility grants
 # survive rebuilds and reinstalls. If signing with an identity fails the
-# bundle is signed ad hoc and SIGNED=adhoc is printed.
+# bundle is signed ad hoc and SIGNED=adhoc is printed, unless
+# DICTATEHUB_REQUIRE_SIGNED=1 (set by `remote.sh install`), which makes that an
+# error: an install never ends up ad hoc silently (#3766).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/lib-signing.sh
 CONFIG=${CONFIG:-release}
 APP=build/DictateHub.app
 BUNDLE_ID=dev.jakedevar.DictateHub
@@ -74,6 +77,7 @@ else
     fi
 fi
 if [[ $signed == adhoc ]]; then
+    bundle_signing_guard adhoc || { rm -rf "$APP"; exit 1; }
     [[ -n ${DICTATEHUB_ADHOC:-} ]] || echo "    Falling back to ad-hoc signing (TCC grants will NOT survive a rebuild)." >&2
     echo "==> codesign ad hoc"
     codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"

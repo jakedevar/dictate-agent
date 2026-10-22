@@ -12,9 +12,10 @@
 #   mac/scripts/remote.sh signing-setup    # create/verify the dedicated signing keychain
 #   mac/scripts/remote.sh dr-check         # bundle twice; the designated requirement
 #                                          # must match while the cdhash differs
-#   mac/scripts/remote.sh install [--no-launch]
+#   mac/scripts/remote.sh install [--no-launch] [--allow-adhoc]
 #                                          # bundle + ~/Applications/DictateHub.app,
 #                                          # launched once (turns on Open at login)
+#                                          # refuses an ad-hoc bundle unless --allow-adhoc
 #   mac/scripts/remote.sh uninstall [--purge] [--remove-signing-keychain]
 #   mac/scripts/remote.sh file-probe       # bundle, file mode against a stub hub
 #   mac/scripts/remote.sh transcribe-file WAV [--insert] [--app NAME]
@@ -29,6 +30,7 @@
 # writes outside that dir. Host: $DICTATE_MAC_HOST (default mac-mini).
 set -euo pipefail
 
+source "$(dirname "$0")/lib-signing.sh"
 HOST=${DICTATE_MAC_HOST:-mac-mini}
 ID=${DICTATE_MAC_BUILD_ID:-${RSI_SESSION_ID:-manual}}
 [[ $ID =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad build id: $ID" >&2; exit 2; }
@@ -61,6 +63,9 @@ build)
 test)
     sync
     remote swift test "$@"
+    # Shell tests: install ad-hoc guard, launch hygiene (run on the Mac, which
+    # has codesign; they touch only temp dirs).
+    remote scripts/test-install-guard.sh
     ;;
 bundle)
     sync
@@ -121,7 +126,13 @@ dr-check)
     ;;
 install)
     sync
-    remote scripts/bundle.sh
+    # An install never falls back to an ad-hoc bundle silently: bundle.sh
+    # fails unless --allow-adhoc is passed (install.sh refuses it too).
+    if args_allow_adhoc "$@"; then
+        remote scripts/bundle.sh
+    else
+        remote DICTATEHUB_REQUIRE_SIGNED=1 scripts/bundle.sh
+    fi
     remote scripts/install.sh "$@"
     ;;
 uninstall)

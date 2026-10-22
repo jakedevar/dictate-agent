@@ -27,6 +27,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var animationFrame = 0
     private var trusted = false
     private var micDenied = false
+    /// The diagnosis shown in the menu-bar error state (headline is the phase's
+    /// message, `permissionLines` the detail lines under it); nil when none.
+    private var permissionHeadline: String?
+    private var permissionLines: [String] = []
+    private var activationObserver: NSObjectProtocol?
     /// Name of the app that was frontmost when the hotkey went down; sent as
     /// `?app=` so the hub applies that app's profile.
     private var targetApp: String?
@@ -81,6 +86,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         // start delivering after they are (re)installed, so poll and rearm.
         trustTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkTrust() }
+        }
+        // Coming back from System Settings: re-read trust at once instead of
+        // waiting for the 3 s timer, so a new grant takes effect with no relaunch.
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recheckPermissions(reason: "app activated") }
         }
         recorder.keepWarm = settings.keepMicWarm
         refresh()
@@ -147,38 +159,77 @@ final class AppController: NSObject, NSApplicationDelegate {
                             tokenPresent: tokens.load() != nil)
     }
 
-    /// Shown in the menu bar when a chord hotkey's event tap is missing.
-    private var tapMissingMessage: String {
-        "\(hotkeys.choice.displayName) is off: the keyboard event tap is unavailable "
-            + "(allow Accessibility and Input Monitoring)"
+    /// What the app can see about its own trust right now.
+    private func permissionSnapshot() -> PermissionSnapshot {
+        PermissionSnapshot(
+            accessibility: TextInserter.isTrusted(),
+            inputMonitoring: CGPreflightListenEventAccess(),
+            microphone: OnboardingModel.microphoneState(),
+            hotkeyNeedsInputMonitoring: hotkeys.needsTap)
     }
 
-    private func checkTrust() {
+    /// The diagnosis for the menu-bar error state. A microphone that was never
+    /// asked is normal until the first dictation, so only a denial counts here;
+    /// a chord hotkey whose tap is not active counts Input Monitoring as
+    /// missing whatever the preflight says (the tap is the proof).
+    private func menuDiagnosis(tapFailed: Bool = false) -> PermissionDiagnosis {
+        var snapshot = permissionSnapshot()
+        if snapshot.microphone == .notAsked { snapshot.microphone = .granted }
+        if tapFailed { snapshot.inputMonitoring = false }
+        return PermissionDiagnosis(snapshot)
+    }
+
+    private func showPermissionError(_ diagnosis: PermissionDiagnosis) {
+        guard let headline = diagnosis.headline else { return }
+        let lines = diagnosis.lines()
+        if permissionHeadline != headline || permissionLines != lines || phase != .error(headline) {
+            Log.error("permissions missing: \(headline) | \(lines.joined(separator: " | "))")
+        }
+        permissionHeadline = headline
+        permissionLines = lines
+        phase = .error(headline)
+    }
+
+    private func clearPermissionError() {
+        let headline = permissionHeadline
+        permissionHeadline = nil
+        permissionLines = []
+        if let headline, case .error(let message) = phase, message == headline { phase = .idle }
+    }
+
+    /// Re-read Accessibility, Input Monitoring and Microphone, re-arm the
+    /// hotkey and redraw. Called on app activation, from the Permissions
+    /// window's poll and "Re-check permissions" button, and from the menu.
+    private func recheckPermissions(reason: String) {
+        Log.info("re-checking permissions (\(reason))")
+        checkTrust(force: true)
+        recorder.reconcileWarm()
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { micDenied = false }
+        onboarding?.model.refresh()
+        refresh()
+    }
+
+    @objc private func recheckFromMenu() {
+        recheckPermissions(reason: "menu")
+    }
+
+    private func checkTrust(force: Bool = false) {
         let now = TextInserter.isTrusted()
         // A chord hotkey whose tap was lost or never created is retried here.
         let tapLost = trusted && now && hotkeys.needsTap && !hotkeys.tapActive
-        guard now != trusted || statusItem?.menu == nil || tapLost else { return }
+        guard force || now != trusted || statusItem?.menu == nil || tapLost else { return }
         trusted = now
         if trusted {
             hotkeys.start()
             if hotkeys.needsTap && !hotkeys.tapActive {
-                showTapMissing()
-            } else if case .error = phase {
-                phase = .idle
+                showPermissionError(menuDiagnosis(tapFailed: true))
             } else {
-                refresh()
+                clearPermissionError()
+                if case .error = phase { phase = .idle } else { refresh() }
             }
         } else {
             hotkeys.stop()
-            phase = .error("Accessibility not granted: hotkey and paste are off")
-        }
-    }
-
-    private func showTapMissing() {
-        let error = AppPhase.error(tapMissingMessage)
-        if phase != error {
-            Log.error("hotkey \(hotkeys.choice.rawValue): event tap not active")
-            phase = error
+            showPermissionError(menuDiagnosis())
         }
     }
 
@@ -188,16 +239,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         if toggle.isCapturing { handle(toggle.escape()) }
         hotkeys.choice = choice
         if trusted && hotkeys.needsTap && !hotkeys.tapActive {
-            showTapMissing()
-        } else if case .error(let message) = phase, message.hasSuffix("(allow Accessibility and Input Monitoring)") {
-            phase = .idle
+            showPermissionError(menuDiagnosis(tapFailed: true))
+        } else if trusted {
+            clearPermissionError()
         }
         refresh()
     }
 
-    /// Microphone or Accessibility changed (seen by the permissions window).
+    /// Microphone, Accessibility or Input Monitoring changed (seen by the permissions window).
     private func permissionsChanged() {
-        checkTrust()
+        checkTrust(force: true)
         recorder.reconcileWarm()
         if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { micDenied = false }
         refresh()
@@ -439,6 +490,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: phase.statusLine(mode: hotkeys.choice.mode), action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        if permissionHeadline != nil, case .error(let message) = phase, message == permissionHeadline {
+            for line in permissionLines.flatMap({ wrapForMenu($0) }) {
+                let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+        }
         let hint = NSMenuItem(title: hotkeys.choice.hint, action: nil, keyEquivalent: "")
         hint.isEnabled = false
         menu.addItem(hint)
@@ -450,6 +508,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(item("Test connection", #selector(testConnection)))
         menu.addItem(item("Permissions…", #selector(openPermissions)))
+        menu.addItem(item("Re-check permissions", #selector(recheckFromMenu)))
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         if micDenied {
             menu.addItem(item("Open Microphone Settings…", #selector(openMicrophonePane)))
@@ -512,6 +571,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 tokens: tokens, settings: settings,
                 testConnection: { [weak self] in self?.testConnection() },
                 permissionsChanged: { [weak self] in self?.permissionsChanged() })
+            model.onRecheck = { [weak self] in self?.recheckPermissions(reason: "button") }
             onboarding = OnboardingWindowController(model: model)
         }
         onboarding?.show()
