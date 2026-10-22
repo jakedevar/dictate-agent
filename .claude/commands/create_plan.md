@@ -422,7 +422,7 @@ When spawning research sub-tasks:
    - Don't accept results that seem incorrect
 
 Example of spawning multiple tasks:
-```python
+```text
 # Spawn these tasks concurrently:
 tasks = [
     Task("Research database schema", db_research_prompt),

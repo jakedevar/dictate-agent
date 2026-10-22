@@ -19,30 +19,29 @@ mkdir -m 700 -p "$work/token"
 say -o "$work/clip.wav" --data-format=LEI16@16000 "Synthetic file mode probe, one two three."
 afinfo "$work/clip.wav" | grep -E 'Data format|estimated duration' | sed 's/^/clip: /'
 
+# le FILE OFFSET LEN: little-endian unsigned integer of LEN bytes at OFFSET.
+le() {
+    local v=0 i b
+    local -a bytes
+    read -r -a bytes <<< "$(od -An -v -tu1 -j "$2" -N "$3" "$1")"
+    for ((i = ${#bytes[@]} - 1; i >= 0; i--)); do v=$((v * 256 + bytes[i])); done
+    echo "$v"
+}
+wav_check() { # request body, clip: RIFF/WAVE/PCM mono 16 kHz 16-bit, sample count == the clip's
+    local f=$1 clip=$2 size tag ch rate bits n frames
+    size=$(stat -f %z "$f")
+    [[ $(head -c 4 "$f") == RIFF && $(dd if="$f" bs=1 skip=8 count=8 2>/dev/null) == 'WAVEfmt ' \
+        && $(dd if="$f" bs=1 skip=36 count=4 2>/dev/null) == data ]] || { echo "body: not a RIFF/WAVE fmt/data header" >&2; return 1; }
+    tag=$(le "$f" 20 2); ch=$(le "$f" 22 2); rate=$(le "$f" 24 4); bits=$(le "$f" 34 2); n=$(le "$f" 40 4)
+    # afinfo prints the clip's PCM byte count as "audio bytes: N".
+    frames=$(( $(afinfo "$clip" | sed -n 's/^audio bytes: *//p') / 2 ))
+    echo "body: $size bytes, pcm=$tag ch=$ch rate=$rate bits=$bits samples=$((n / 2)) (clip $frames)"
+    [[ $tag == 1 && $ch == 1 && $rate == 16000 && $bits == 16 && $n == $((size - 44)) && $((n / 2)) == $frames ]]
+}
+
 port=$((20000 + RANDOM % 20000))
-cat > "$work/stub.py" <<'EOF'
-import json, sys, http.server
-out = sys.argv[2]
-class H(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        n = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(n)
-        with open(out + ".body", "wb") as f:
-            f.write(body)
-        with open(out + ".head", "w") as f:
-            f.write(self.requestline + "\n" + str(self.headers))
-        reply = json.dumps({"type": "transcript", "text": "stub transcript for file mode",
-                            "route": "type", "word_count": 5, "model": "stub"}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(reply)))
-        self.end_headers()
-        self.wfile.write(reply)
-    def log_message(self, *a):
-        pass
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
-EOF
-python3 -I "$work/stub.py" "$port" "$PWD/$work/request" &
+swiftc -O -o "$work/stub" scripts/file-probe-stub.swift
+"$work/stub" "$port" "$PWD/$work/request" &
 stub=$!
 trap 'kill $stub 2>/dev/null || true' EXIT
 sleep 0.7
@@ -62,16 +61,7 @@ grep -qi '^authorization: Bearer probe-token-not-a-secret' "$work/request.head" 
 grep -qi '^content-type: audio/wav' "$work/request.head" || { echo "FAIL: no audio/wav" >&2; ok=0; }
 # The body is the live encoder's WAV: RIFF/WAVE, PCM, mono, 16 kHz, 16-bit,
 # and as many samples as the clip (afinfo's frame count).
-python3 -I - "$work/request.body" "$work/clip.wav" <<'EOF' || ok=0
-import struct, sys, wave
-body = open(sys.argv[1], "rb").read()
-riff, _, wave_id, fmt, _, tag, ch, rate, _, _, bits, data, n = struct.unpack("<4sI4s4sIHHIIHH4sI", body[:44])
-frames = wave.open(sys.argv[2]).getnframes()
-ok = (riff, wave_id, fmt, data) == (b"RIFF", b"WAVE", b"fmt ", b"data") and (tag, ch, rate, bits) == (1, 1, 16000, 16) \
-    and n == len(body) - 44 and n // 2 == frames
-print(f"body: {len(body)} bytes, pcm={tag} ch={ch} rate={rate} bits={bits} samples={n // 2} (clip {frames})")
-sys.exit(0 if ok else 1)
-EOF
+wav_check "$work/request.body" "$work/clip.wav" || ok=0
 grep -q '^DICTATEHUB_RESULT .*"ok":true' "$work/out.log" || { echo "FAIL: no ok result line" >&2; ok=0; }
 grep -q '"text":"stub transcript for file mode"' "$work/out.log" || { echo "FAIL: text not passed through" >&2; ok=0; }
 grep -q '"inserted":false' "$work/out.log" || { echo "FAIL: inserted without --insert" >&2; ok=0; }

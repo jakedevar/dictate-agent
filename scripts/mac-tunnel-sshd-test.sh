@@ -17,7 +17,9 @@ pass=0
 ok() { pass=$((pass+1)); printf 'ok   %s\n' "$*"; }
 sshd_bin=$(command -v sshd || true)
 [[ -n $sshd_bin ]] || sshd_bin=/usr/sbin/sshd
-free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+# shellcheck source=scripts/lib-devtool.sh
+. "$repo/scripts/lib-devtool.sh"
+free_port() { devtool free-port; }
 sport=$(free_port); hport=$(free_port)
 ssh-keygen -q -t ed25519 -N '' -f "$t/hostkey" -C test-host
 ssh-keygen -q -t ed25519 -N '' -f "$t/id" -C test-client
@@ -57,9 +59,8 @@ CFG
 "$sshd_bin" -t -f "$t/sshd_config"
 "$sshd_bin" -D -e -f "$t/sshd_config" > "$t/sshd.log" 2>&1 &
 sshd_pid=$!
-mkdir "$t/www" "$t/private run"
-printf 'hub-api-stand-in\n' > "$t/www/index.html"
-python3 -I -m http.server --bind 127.0.0.1 --directory "$t/www" "$hport" > "$t/http.log" 2>&1 &
+mkdir "$t/private run"
+"$DEVTOOL_BIN" http-static 127.0.0.1 "$hport" 'hub-api-stand-in\n' > "$t/http.log" 2>&1 &
 http_pid=$!
 for _ in {1..50}; do "$t/ssh" -o BatchMode=yes -o StrictHostKeyChecking=yes test-mac true 2>/dev/null && break; sleep 0.1; done
 "$t/ssh" -o BatchMode=yes -o StrictHostKeyChecking=yes test-mac true

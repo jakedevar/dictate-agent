@@ -1,0 +1,16 @@
+[package]
+name = "dictate-devtools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dev-only helper binary for repo shell scripts and tests (free port, stale Unix socket, symlink planter, static HTTP server, WER). Not installed or shipped. std only: no dependencies."
+publish = false
+
+# Operator directive 2b22862d forbids Python, so the few things plain shell
+# cannot do portably (bind port 0, leave a stale socket inode behind, plant
+# thousands of symlinks from one process, score a word error rate) live here.
+[[bin]]
+name = "devtool"
+path = "src/main.rs"
+
+[dependencies]

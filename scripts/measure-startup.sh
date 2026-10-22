@@ -23,18 +23,18 @@ enabled = false
 CFG
 export XDG_RUNTIME_DIR=$root/run XDG_CONFIG_HOME=$root/config XDG_DATA_HOME=$root/data DICTATE_SOCKET=$root/run/dictate-agent/dictated.sock
 unset DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
-now() { python3 -c 'import time;print(time.monotonic())'; }
+now() { date +%s.%N; }
 t0=$(now)
 target/release/dictated > $root/log 2>&1 &
 pid=$!
 while [ ! -S $DICTATE_SOCKET ]; do sleep 0.005; done
 t_sock=$(now)
-until target/release/dictate status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["model"]["loaded"] else 1)'; do sleep 0.02; done
+until target/release/dictate status --json | jq -e '.model.loaded' >/dev/null; do sleep 0.02; done
 t_loaded=$(now)
-python3 - <<PY
-print(f"socket bound        : {($t_sock-$t0)*1000:.0f} ms after exec")
-print(f"model loaded (ready): {($t_loaded-$t0)*1000:.0f} ms after exec")
-PY
+awk -v t0="$t0" -v s="$t_sock" -v l="$t_loaded" 'BEGIN {
+  printf "socket bound        : %.0f ms after exec\n", (s - t0) * 1000
+  printf "model loaded (ready): %.0f ms after exec\n", (l - t0) * 1000
+}'
 sleep 2
 grep -E 'VmRSS|VmHWM' /proc/$pid/status | tr '\n' ' '; echo "(idle after load)"
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | awk -F, -v p=$pid '$1+0==p {print "GPU memory idle      : " $2+0 " MiB"}'
@@ -56,6 +56,6 @@ grep -E 'VmRSS|VmHWM' /proc/$pid/status | tr '\n' ' '; echo "(after transcribing
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | awk -F, -v p=$pid '$1+0==p {print "GPU memory after   : " $2+0 " MiB"}'
 # idle CPU over 10 s
 a=$(awk '{print $14+$15}' /proc/$pid/stat); sleep 10; b=$(awk '{print $14+$15}' /proc/$pid/stat)
-python3 -c "print(f'idle CPU over 10 s   : {($b-$a)/100/10*100:.2f} % of one core')"
+awk -v a="$a" -v b="$b" 'BEGIN { printf "idle CPU over 10 s   : %.2f %% of one core\n", (b - a) / 100 / 10 * 100 }'
 kill -TERM $pid; wait $pid 2>/dev/null || true
 rm -rf $root

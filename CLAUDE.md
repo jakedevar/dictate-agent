@@ -40,9 +40,10 @@ files, no `python`/`python3` calls, no one-liners, no Python test servers.
 New code and scripts are Rust; Go only where Rust is impractical; Swift for
 the Mac app (`mac/`); plain shell only for thin glue (`jq`, `grep`, `awk`).
 No tracked `.py` file remains (removed under Issue #3618; the retired Python
-reference daemon is in git history at commit `b85e953`, `dictate/`). Inline
-`python3` snippets inside a few shell scripts are tracked for removal in #3690 as a
-follow-up; do not add more.
+reference daemon is in git history at commit `b85e953`, `dictate/`). The inline
+`python3` snippets that shell scripts carried were removed under #3690; the dev-only
+Rust helper `devtool` (`crates/dictate-devtools`, loaded by `scripts/lib-devtool.sh`)
+replaces them. Do not add more.
 
 ## Workspace layout
 
@@ -75,6 +76,9 @@ crates/
   dictate-cli      the `dictate` control client. Depends on dictate-proto and
                     nothing else — a keybinding runs it on every dictation,
                     so it must not link whisper/CUDA (1.4MB vs the daemon's 45MB)
+  dictate-devtools dev-only `devtool` helper bin for repo shell scripts (free port,
+                    stale Unix socket, symlink planter, static HTTP, WER). std-only,
+                    publish = false, never installed
   dictate-server   S33 network API transport (axum HTTP+WS): bind policy, bearer
                     token, Host/Origin checks, limits, optional rustls, [api]
                     config. Depends on dictate-proto only; commands run through

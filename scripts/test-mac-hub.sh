@@ -11,6 +11,8 @@ ok() { pass=$((pass + 1)); printf 'ok   %s\n' "$*"; }
 bad() { failures=$((failures + 1)); printf 'FAIL %s\n' "$*" >&2; }
 mkdir -p "$t/bin" "$t/stub" "$t/private run"
 export DMT_STUB_DIR="$t/stub"
+# shellcheck source=scripts/lib-devtool.sh
+. "$repo/scripts/lib-devtool.sh"
 cat > "$t/bin/ssh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DMT_STUB_DIR/ssh.log"
@@ -51,10 +53,7 @@ expect 'Unix forward accepts spaces in socket path' 1 "$wrapper"
 grep -qF -- "-R $t/private run/hub.sock:127.0.0.1:17998" "$t/stub/ssh.log" \
     && ok 'only explicit UDS reverse forward requested' || bad 'forward shape'
 grep -qF -- 'ClearAllForwardings=yes' "$t/stub/ssh.log" && ok 'preparation is forward-free' || bad 'preparation options'
-python3 - "$t/private run/hub.sock" <<'SOCKET'
-import socket, sys
-s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()
-SOCKET
+devtool stale-uds "$t/private run/hub.sock"
 expect 'stale socket is removed before forwarding' 1 "$wrapper"
 [ ! -e "$t/private run/hub.sock" ] && ok 'stale socket unlinked' || bad 'stale socket remains'
 printf sentinel > "$t/private run/hub.sock"
@@ -131,15 +130,7 @@ d="$t/mac/planted/DictateHub"; victim="$t/outside/victim"
 mkdir -p "$d" "$t/outside"; chmod 755 "$d"
 echo VICTIM > "$victim"
 # One process plants them all (a loop of `ln` would itself use up those pids).
-planted="$(python3 -I -c '
-import os, sys
-victim, d = sys.argv[1], sys.argv[2]
-me = os.getpid()
-for pid in range(me + 1, me + 2001):
-    os.symlink(victim, os.path.join(d, ".api-token.%d" % pid))
-os.symlink(victim, os.path.join(d, "api-token"))
-print(2000)
-' "$victim" "$d")"
+planted="$(devtool plant-symlinks "$victim" "$d")"
 provision "$d"
 [ "$rc" = 0 ] && [ "$(cat "$victim")" = VICTIM ] && [ ! -L "$d/api-token" ] && [ -f "$d/api-token" ] \
     && [ "$(cat "$d/api-token")" = "$token" ] && [ "$(mode_of "$d")" = 700 ] \

@@ -156,7 +156,7 @@ remote_curl() { # $1 = token mode (good|none|wrong), rest = curl args
 }
 
 status_json="$(remote_curl good "http://127.0.0.1:$port/v1/status")"
-printf '%s' "$status_json" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["type"]=="status", d' \
+printf '%s' "$status_json" | jq -e '.type == "status"' >/dev/null \
     || fail "status through the tunnel: $status_json"
 say "  GET /v1/status with the token: type=status"
 for mode in none wrong; do
@@ -165,14 +165,9 @@ for mode in none wrong; do
     say "  GET /v1/status with $mode token: $code"
 done
 reply="$(remote_curl good -H 'Content-Type: audio/wav' --data-binary @short.wav "http://127.0.0.1:$port/v1/transcribe?app=smoke")"
-printf '%s' "$reply" | python3 -I -c '
-import json, sys
-d = json.load(sys.stdin)
-assert d["type"] == "transcript", d
-assert d["route"] == "type", d
-assert d["text"].strip(), d
-print("mac-smoke|   POST /v1/transcribe: type=transcript, route=type, %d chars" % len(d["text"]))
-' || fail "transcribe through the tunnel: $reply"
+printf '%s' "$reply" | jq -e '.type == "transcript" and .route == "type" and ((.text | gsub("^\\s+|\\s+$"; "")) != "")' >/dev/null \
+    || fail "transcribe through the tunnel: $reply"
+say "  POST /v1/transcribe: type=transcript, route=type, $(printf '%s' "$reply" | jq -r '.text | length') chars"
 code="$(remote_curl none -o /dev/null -w '%{http_code}' -H 'Content-Type: audio/wav' --data-binary @short.wav "http://127.0.0.1:$port/v1/transcribe")"
 [ "$code" = 401 ] || fail "an unauthenticated upload got HTTP $code"
 say "  POST /v1/transcribe without a token: $code"

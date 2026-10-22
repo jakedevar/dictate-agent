@@ -858,6 +858,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-devtools"
+version = "0.2.0"
+
+[[package]]
 name = "dictate-dict"
 version = "0.2.0"
 dependencies = [

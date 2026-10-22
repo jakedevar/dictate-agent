@@ -41,6 +41,6 @@ are not part of this repository or any package built from it.
 
 ```bash
 cargo metadata --format-version 1 --features dictated/cuda | \
-  python3 -c 'import json,sys,collections; d=json.load(sys.stdin); ws=set(d["workspace_members"]); print(collections.Counter(p.get("license") for p in d["packages"] if p["id"] not in ws))'
+  jq -r '.workspace_members as $ws | [.packages[] | select(.id as $i | $ws | index($i) | not) | .license // "UNLICENSED"] | group_by(.) | map("\(.[0])\t\(length)") | .[]' | sort -t$'\t' -k2 -nr
 ```
 Re-run when adding a dependency; anything GPL/AGPL/SSPL or unlicensed needs a decision first.

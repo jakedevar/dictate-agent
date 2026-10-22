@@ -23,6 +23,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="/opt/cuda/bin:$PATH"
+. "$repo/scripts/lib-devtool.sh"
 model="${E2E_MODEL:-$HOME/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin}"
 fixtures="$repo/crates/dictated/tests/fixtures/e2e"
 
@@ -30,7 +31,7 @@ say()  { printf 'smoke| %s\n' "$*"; }
 fail() { printf 'smoke| FAIL: %s\n' "$*" >&2; exit 1; }
 
 [ -f "$model" ] || fail "speech model not installed at $model (run: dictate model pull large-v3-turbo). This script never downloads it."
-command -v python3 >/dev/null || fail "python3 is needed for the WER assertion"
+command -v jq >/dev/null || fail "jq is needed for the status assertion"
 
 # --- fingerprints of what must not change --------------------------------
 live_pid_file="$HOME/.config/dictate-agent/dictate.pid"
@@ -97,7 +98,7 @@ for _ in $(seq 1 600); do
     sleep 0.1
 done
 [ -S "$DICTATE_SOCKET" ] || fail "dictated did not bind its socket"
-say "socket up after $(python3 -c "print(round($(date +%s.%N)-$started,2))")s"
+say "socket up after $(awk -v a="$started" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')s"
 
 # --- doctor --------------------------------------------------------------
 say "dictate doctor"
@@ -108,36 +109,21 @@ grep -q 'GPU memory' "$root/doctor.txt" || fail "doctor did not confirm the GPU 
 grep -q 'verified against the pinned SHA-256' "$root/doctor.txt" || fail "doctor did not verify the model"
 
 # --- transcribe ----------------------------------------------------------
-wer() { python3 - "$1" "$2" <<'PY'
-import re, sys
-norm = lambda t: re.sub(r"[^a-z0-9' ]+", " ", t.lower()).split()
-ref, hyp = norm(open(sys.argv[1]).read()), norm(sys.argv[2])
-d = list(range(len(hyp) + 1))
-for i, r in enumerate(ref, 1):
-    nd = [i]
-    for j, h in enumerate(hyp, 1):
-        nd.append(min(d[j - 1] + (r != h), d[j] + 1, nd[j - 1] + 1))
-    d = nd
-print(f"{d[-1] / max(len(ref), 1):.3f}")
-PY
-}
+# Word error rate (normalised word-level edit distance): the dev-only helper.
+wer() { devtool wer "$1" "$2"; }
 for clip in short medium long; do
     say "dictate transcribe $clip.wav"
     text="$("$dictate" transcribe "$fixtures/$clip.wav" --privacy 2> "$root/$clip.summary")"
     score="$(wer "$fixtures/$clip.txt" "$text")"
     say "  WER $score   $(cat "$root/$clip.summary")"
-    python3 -c "import sys; sys.exit(0 if float('$score') <= 0.10 else 1)" \
+    awk -v s="$score" 'BEGIN { exit !(s <= 0.10) }' \
         || fail "$clip: WER $score exceeds 0.10 (heard: $text)"
 done
 
 # --- no microphone, no typing --------------------------------------------
 "$dictate" status --json > "$root/status.json"
-python3 - "$root/status.json" <<'PY' || fail "status did not show CUDA + audio-less mode"
-import json, sys
-s = json.load(open(sys.argv[1]))
-assert s["model"]["backend"] == "cuda", s["model"]
-assert s["audio"]["capture_enabled"] is False and s["audio"]["input_open"] is False, s["audio"]
-PY
+jq -e '.model.backend == "cuda" and .audio.capture_enabled == false and .audio.input_open == false' "$root/status.json" >/dev/null \
+    || fail "status did not show CUDA + audio-less mode: $(cat "$root/status.json")"
 if "$dictate" toggle > "$root/toggle.out" 2>&1; then
     fail "toggle succeeded in audio-less mode — something opened a recording session"
 fi
