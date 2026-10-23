@@ -1137,6 +1137,7 @@ mod tests {
 
     /// A unix socket that is listening but will never accept: backlog 0, and
     /// already holding the one queued connection Linux allows it.
+    #[cfg(target_os = "linux")]
     fn wedged_socket(path: &Path) -> (std::os::fd::OwnedFd, std::os::unix::net::UnixStream) {
         use std::os::fd::FromRawFd;
         use std::os::unix::ffi::OsStrExt;
@@ -1168,6 +1169,9 @@ mod tests {
 
     /// `doctor_unbounded_connect`: a blocking connect to a server that never
     /// accepts waited forever; the probe must answer within its deadline.
+    /// Darwin permits further connects at backlog zero, so this X11/Linux
+    /// regression fixture cannot manufacture an unreachable socket there.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_socket_that_never_accepts_is_reported_within_the_deadline() {
         // Under /tmp: the harness TMPDIR can be too long for sun_path.
@@ -1195,6 +1199,22 @@ mod tests {
             "a server that never accepts is unreachable: {found:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_stale_unix_socket_is_reported_within_the_deadline() {
+        let path = PathBuf::from("/tmp").join(format!("dd-stale-{}.sock", std::process::id()));
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(listener);
+        let found = tokio::time::timeout(
+            Duration::from_secs(1),
+            socket_unreachable(&path, Duration::from_millis(300)),
+        )
+        .await
+        .expect("the probe must finish within its deadline");
+        assert!(found.is_some(), "stale listener must be unreachable");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
