@@ -130,3 +130,20 @@ Friction: none
   - `journalctl --user -u dictated | grep network` (never print text)
 
 Friction: none
+
+## Update 10-23 03:48Z (seat 4b68d1fa): #3824, a crash on every recording
+
+- **Symptom:** the operator saw "no app, no icon". DictateHub had crashed, three times: 03:17Z, then 03:40Z twice.
+- **Crash:** EXC_BREAKPOINT in the `AudioRecorder.startEngine` mic tap closure.
+  - It is a Swift 6 main-actor isolation check, tripped on AVFAudio's realtime queue at the first buffer.
+  - So every Option+N crashed the app. The tests never start the mic.
+- **Fix:** master 399e22a (closures are `@Sendable`).
+  - Mac tests: Swift 119, guard 59.
+  - Reinstalled at 03:47Z: pid 77547, accessibility=true, microphone granted, tap installed.
+  - The TCC ListenEvent row exists.
+- **To-do:** `dictatehub-input-monitoring` (fb1eb8d5) is rewritten as "Option+N once in a text field". The `optn-todo` wake watches it, and the `optn-recheck` safety wake fires at about 04:18Z.
+- **Close on the first live dictation:** #3762, #3766, #3807 and #3824, then report DONE once.
+- **Open follow-up in the #3824 body:** a mic-path smoke or test (`remote.sh` has none). Not started: low priority, per the GM throttle.
+- **Crash reports:** `~/Library/Logs/DiagnosticReports/DictateHub-*.ips` on the Mac. Read the faulting thread with `plutil -extract threads.N.frames`.
+
+Friction: none
