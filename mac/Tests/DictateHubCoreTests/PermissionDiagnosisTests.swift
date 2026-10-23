@@ -28,7 +28,7 @@ import Testing
         for permission in [MissingPermission.accessibility, .inputMonitoring] {
             let hint = permission.staleGrantHint ?? ""
             #expect(hint.hasPrefix("If DictateHub already looks enabled there, remove it with − and add "))
-            #expect(hint.contains("~/Applications/DictateHub.app again with +"))
+            #expect(hint.contains("/Applications/DictateHub.app again with +"))
             #expect(hint.contains("a grant made for an older build does not carry over"))
         }
         let d = PermissionDiagnosis(snap(ax: false, im: false, chord: true))

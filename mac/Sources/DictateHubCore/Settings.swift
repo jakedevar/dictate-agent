@@ -10,6 +10,7 @@ public struct HubSettings: @unchecked Sendable {
     public static let keepMicWarmKey = "keepMicWarm"
     public static let onboardingDoneKey = "onboardingDone"
     public static let loginItemConfiguredKey = "loginItemConfigured"
+    public static let loginItemRegisteredPathKey = "loginItemRegisteredPath"
 
     let defaults: UserDefaults
 
@@ -63,6 +64,12 @@ public struct HubSettings: @unchecked Sendable {
     public var loginItemConfigured: Bool {
         get { bool(Self.loginItemConfiguredKey, default: false) }
         nonmutating set { defaults.set(newValue, forKey: Self.loginItemConfiguredKey) }
+    }
+
+    /// The bundle path the login item was last registered from (see `LoginItemPlan`).
+    public var loginItemRegisteredPath: String? {
+        get { defaults.string(forKey: Self.loginItemRegisteredPathKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.loginItemRegisteredPathKey) }
     }
 
     private func bool(_ key: String, default value: Bool) -> Bool {

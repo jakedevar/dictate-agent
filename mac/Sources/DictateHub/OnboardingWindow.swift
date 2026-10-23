@@ -237,7 +237,7 @@ struct OnboardingView: View {
                 showButton: model.accessibility != .granted,
                 action: model.openAccessibility)
             if model.accessibility != .granted && model.accessibilityRequested {
-                Text("In the list, switch DictateHub on. This row turns green within a second. (Already on but still red? Remove it with − and add ~/Applications/DictateHub.app again with +.)")
+                Text("In the list, switch DictateHub on. This row turns green within a second. (Already on but still red? Remove it with − and add /Applications/DictateHub.app again with +.)")
                     .font(.caption).foregroundStyle(.secondary).padding(.leading, 30)
             }
 

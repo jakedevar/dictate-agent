@@ -36,7 +36,10 @@ Resources/Info.plist        bundle template (LSUIElement, mic usage string)
 scripts/remote.sh           run from the hub: rsync to the Mac + every command below
 scripts/bundle.sh           on the Mac: release build → build/DictateHub.app, codesign
 scripts/signing-setup.sh    on the Mac: dedicated signing keychain + identity (idempotent)
-scripts/install.sh          on the Mac: → ~/Applications/DictateHub.app, launch once
+scripts/install.sh          on the Mac: → /Applications/DictateHub.app, migrate ~/Applications, launch once
+scripts/lib-launchservices.sh lsregister helpers (register/unregister bundles) + test-only overrides
+scripts/clean-stale.sh      on the Mac: unregister + delete stale build bundles (keeps the current id)
+scripts/ls-unregister-build.sh on the Mac: unregister this build dir's bundle from LaunchServices
 scripts/lib-signing.sh      shared ad-hoc guard (install, bundle, remote)
 scripts/test-install-guard.sh shell tests for the guard and launch hygiene (remote.sh test)
 scripts/uninstall.sh        on the Mac: login item + app (--purge: token, settings, logs)
@@ -55,15 +58,18 @@ mac/scripts/remote.sh run 4       # bundle, open it, smoke mode quits after 4 s
 mac/scripts/remote.sh probe       # bundled app → stub /v1/status over plain HTTP
 mac/scripts/remote.sh file-probe  # bundled app file mode → stub /v1/transcribe
 mac/scripts/remote.sh install [--allow-adhoc]
-                                  # bundle → ~/Applications/DictateHub.app, launch,
-                                  # Open at login on (first install)
+                                  # bundle → /Applications/DictateHub.app, launch,
+                                  # Open at login on (first install), clean-stale
 mac/scripts/remote.sh uninstall [--purge] [--remove-signing-keychain]
-mac/scripts/remote.sh clean       # delete this build dir on the Mac
+mac/scripts/remote.sh clean-stale [--dry-run]
+                                  # unregister + delete old build bundles under
+                                  # ~/dictate-mac-build/ except this build id's
+mac/scripts/remote.sh clean            # delete this build dir on the Mac
 ```
 
-The package is synced to `mac-mini:~/dictate-mac-build/<id>/`. The id is
+The package is synced to `mac-mini:~/dictate-mac-build/<id>.noindex/`. The id is
 `$DICTATE_MAC_BUILD_ID`, else `$RSI_SESSION_ID`, else `manual`; the host is
-`$DICTATE_MAC_HOST`. Only `install` (and `signing-setup`, run by `bundle`)
+`$DICTATE_MAC_HOST`. Only `install` (and `signing-setup`, run by `bundle`; `clean-stale`, inside `~/dictate-mac-build/`)
 writes outside that dir. Install needs no sudo. It never installs an ad-hoc bundle silently: `remote.sh
 install` sets `DICTATEHUB_REQUIRE_SIGNED=1`, so `bundle.sh` fails instead of
 falling back to ad hoc, and `install.sh` refuses an ad-hoc bundle too. Pass
@@ -72,7 +78,35 @@ requirement is its cdhash, so a grant made then is pinned to that one build
 and every later build is "not trusted" while System Settings still shows the
 switch on. A running copy is
 stopped and replaced, and the new copy is launched. Its stderr goes to
-`~/Library/Logs/DictateHub/launch.log`.
+$1
+## Install location, migration, stale bundles (#3807)
+
+- **Destination: `/Applications/DictateHub.app`**, owned by the console user. `/Applications` is
+  group-writable for an admin user, so there is no sudo. Spotlight, Launchpad and Finder find it there;
+  `install.sh` also runs `lsregister -f` on it. A bundle that is not quarantined opens with a plain
+  `open` even though Gatekeeper (`spctl`) rejects the self-signed identity; `install.sh` clears any
+  quarantine flag and never downloads the app.
+- **Migration from `~/Applications`.** `install.sh` removes an old per-user copy: it runs that copy's
+  `--unregister-login-item` (through `open`), stops it, `lsregister -u`s it and deletes it. If the login
+  item was on, `install.sh` resets the first-install flag so the new copy turns it on from
+  `/Applications`; if the user had switched it off, it stays off. At launch the app also re-registers
+  the login item once when it runs from `/Applications`, the item is on, and the path it last
+  registered from differs (`LoginItemPlan`); smoke, file-mode and build-dir runs never touch it.
+  Privacy grants follow the designated requirement, which is the same at the new path.
+- **Opening the running app shows something.** `applicationShouldHandleReopen` (Finder, Launchpad,
+  Spotlight, `open`) opens the **Permissions** window while onboarding is not done or any permission is
+  missing, otherwise **Settings**, and activates the app (`ReopenWindow`).
+- **Stale build bundles are never launchable.** The build dir is `~/dictate-mac-build/<id>.noindex/`
+  (Spotlight skips `.noindex` directories; `.metadata_never_index` is dropped in the root and the dir
+  too). `remote.sh test|run <secs>|probe|file-probe|dr-check|stop|clean` unregister this build's bundle
+  from LaunchServices afterwards. `remote.sh clean-stale` (also run at the end of `install`) unregisters
+  and deletes every `DictateHub.app` with this bundle id under `~/dictate-mac-build/` except the one in
+  the current build id's dir; it never touches `/Applications` or `~/Applications`, and `--dry-run`
+  lists what it would remove.
+- Test hooks: `DICTATEHUB_DEST_DIR`, `DICTATEHUB_LEGACY_DEST`, `DICTATEHUB_LSREGISTER`,
+  `DICTATEHUB_OPEN`, `DICTATEHUB_DEFAULTS`, `DICTATEHUB_BUILD_ROOT` (see `lib-launchservices.sh`) let
+  `test-install-guard.sh` run the install and cleanup against a stub HOME and destination. Nothing else
+  sets them.
 
 ## Signing (stable privacy grants, no operator step)
 
@@ -142,7 +176,7 @@ error state (red triangle, the menu lists each one), each with its path:
 - Microphone: System Settings → Privacy & Security → Microphone
 
 For Accessibility and Input Monitoring the text adds: if DictateHub already
-looks enabled there, remove it with − and add `~/Applications/DictateHub.app`
+looks enabled there, remove it with − and add `/Applications/DictateHub.app`
 again with + (a grant made for an older build does not carry over). With
 Option+N chosen and AeroSpace binding `alt-n` in
 `~/.config/aerospace/aerospace.toml` (read only, never edited), the window
@@ -213,7 +247,7 @@ mac/scripts/remote.sh transcribe-file clip.wav             # print the text
 mac/scripts/remote.sh transcribe-file clip.wav --insert    # also paste it at
                                                            # the frontmost app's cursor
 # On the Mac directly:
-~/Applications/DictateHub.app/Contents/MacOS/DictateHub --transcribe-file clip.wav [--insert] [--app NAME]
+/Applications/DictateHub.app/Contents/MacOS/DictateHub --transcribe-file clip.wav [--insert] [--app NAME]
 ```
 
 The app decodes any audio file to 16 kHz mono and runs it through the same

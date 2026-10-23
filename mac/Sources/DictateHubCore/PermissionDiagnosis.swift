@@ -27,7 +27,7 @@ public enum MissingPermission: String, Equatable, Sendable, CaseIterable {
         switch self {
         case .accessibility, .inputMonitoring:
             return "If DictateHub already looks enabled there, remove it with − and add "
-                + "~/Applications/DictateHub.app again with + (a grant made for an older build does not carry over)."
+                + "/Applications/DictateHub.app again with + (a grant made for an older build does not carry over)."
         case .microphone:
             return nil
         }

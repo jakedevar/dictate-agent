@@ -1,4 +1,5 @@
 import Foundation
+import DictateHubCore
 import ServiceManagement
 
 /// "Open at login" through `SMAppService.mainApp` (macOS 13+): no helper
@@ -23,9 +24,15 @@ enum LoginItem {
     /// Only an installed copy registers itself: a build-dir or smoke-test
     /// launch must never leave a login item pointing at a scratch bundle.
     static var isInstalledLocation: Bool {
-        let path = Bundle.main.bundleURL.standardizedFileURL.path
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return path == "\(home)/Applications/DictateHub.app" || path == "/Applications/DictateHub.app"
+        InstallLocation.isInstalled(bundlePath: Bundle.main.bundleURL.path)
+    }
+
+    /// Unregister and register again from the running bundle, so the entry
+    /// names the current path (a copy moved from ~/Applications leaves one for
+    /// the old path).
+    static func reregister() throws {
+        if status != .notRegistered { try SMAppService.mainApp.unregister() }
+        try SMAppService.mainApp.register()
     }
 
     static func set(_ on: Bool) throws {

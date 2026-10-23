@@ -148,6 +148,12 @@ another port, add `"127.0.0.1:7313"` to `[api] allowed_hosts`, because the UDS
 client always sends that Host spelling. Remove old `DICTATE_MAC_PORT` and
 sshd/lsof override variables from existing drop-ins; they no longer apply.
 Upgrade the app with `mac/scripts/remote.sh install` alongside the tunnel.
+The app is installed at `/Applications/DictateHub.app` (no sudo; an older
+`~/Applications` copy is migrated away and its login item moved), so Launchpad
+and Spotlight find it. Opening it again while it runs shows the Permissions
+window (or Settings once everything is granted). Old build bundles under
+`~/dictate-mac-build/` are unregistered and deleted by `remote.sh clean-stale`
+(run at the end of every `install`). Details: `mac/README.md`.
 
 ## When something is down
 

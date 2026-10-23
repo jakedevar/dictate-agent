@@ -121,6 +121,24 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Opening DictateHub again while it runs (Finder, Launchpad, Spotlight,
+    /// `open`) shows the setup window, or Settings once everything is granted.
+    /// The app has no Dock icon and no window of its own, so without this the
+    /// open looks like nothing happened (#3807).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard options.mode == .normal else { return true }
+        let window = ReopenWindow.decide(
+            checklist: currentChecklist(), onboardingDone: settings.onboardingDone,
+            missing: PermissionDiagnosis(permissionSnapshot()).missing)
+        Log.info("reopen requested: showing \(window == .onboarding ? "permissions" : "settings") window")
+        switch window {
+        case .onboarding: openPermissions()
+        case .settings: openSettings()
+        }
+        NSApp.activate()
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         recorder.shutdown()
         hotkeys.stop()
@@ -144,11 +162,27 @@ final class AppController: NSObject, NSApplicationDelegate {
         if !settings.loginItemConfigured {
             do {
                 try LoginItem.set(true)
+                settings.loginItemRegisteredPath = Bundle.main.bundleURL.path
                 Log.info("login item registered")
             } catch {
                 Log.error("login item register: \(error.localizedDescription)")
             }
             settings.loginItemConfigured = true
+        } else {
+            // Moved from ~/Applications to /Applications: the entry must name
+            // the running bundle (never done for smoke or file-mode runs).
+            let plan = LoginItemPlan.decide(
+                bundlePath: Bundle.main.bundleURL.path, registeredPath: settings.loginItemRegisteredPath,
+                enabled: LoginItem.isEnabled, isNormalLaunch: true)
+            if plan == .reregister {
+                do {
+                    try LoginItem.reregister()
+                    settings.loginItemRegisteredPath = Bundle.main.bundleURL.path
+                    Log.info("login item re-registered from \(Bundle.main.bundlePath)")
+                } catch {
+                    Log.error("login item re-register: \(error.localizedDescription)")
+                }
+            }
         }
         Log.info("login item: \(LoginItem.statusText)")
     }

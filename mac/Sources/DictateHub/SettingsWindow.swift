@@ -124,7 +124,7 @@ final class SettingsModel {
 
     private func loginStatusNote() -> String? {
         if !LoginItem.isInstalledLocation {
-            return "Only the installed copy (~/Applications/DictateHub.app) opens at login."
+            return "Only the installed copy (/Applications/DictateHub.app) opens at login."
         }
         if LoginItem.status == .requiresApproval {
             return "Waiting for approval in System Settings → General → Login Items."
