@@ -853,6 +853,7 @@ async fn pipelined_hangup_injects_nothing(pipelined: Vec<u8>) {
     .await;
 
     let mut uploader = h.client().await;
+    uploader.set_send_capacity(512 * 1024);
     uploader
         .fire(Command::TranscribeAudio {
             audio: upload_wav(wav(16_000, 1, 1.0)),

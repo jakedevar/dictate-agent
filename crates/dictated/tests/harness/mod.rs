@@ -395,6 +395,31 @@ impl Client {
         .await;
     }
 
+    /// A read-ahead overflow fixture must enqueue its tail before closing.
+    /// Darwin's default UDS send buffer is smaller than Linux's; request the
+    /// capacity explicitly so the fixture tests hangup rather than write_all
+    /// backpressure while the daemon correctly stops reading at its bound.
+    pub fn set_send_capacity(&self, bytes: i32) {
+        use std::os::fd::AsRawFd;
+        let fd = self.writer.as_ref().as_raw_fd();
+        // SAFETY: live socket fd and a correctly sized integer option.
+        let result = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                std::ptr::addr_of!(bytes).cast(),
+                std::mem::size_of_val(&bytes) as libc::socklen_t,
+            )
+        };
+        assert_eq!(
+            result,
+            0,
+            "setting fixture send capacity: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
     /// Read the next `n` responses and return their ids, buffering events.
     #[allow(dead_code)]
     pub async fn read_response_ids(&mut self, n: usize) -> Vec<RequestId> {
