@@ -28,12 +28,20 @@ cat > "$root/bin/dictate" <<'STUB'
 #!/bin/bash
 printf 'dictate %s\n' "$*" >> "$CALLS"
 STUB
+cat > "$root/bin/dictate-parakeet" <<'STUB'
+#!/bin/bash
+printf 'parakeet %s\n' "$*" >> "$CALLS"
+STUB
 chmod +x "$root/bin/"*
 export DICTATED_BINARY="$root/bin/dictated" DICTATE_CLI="$root/bin/dictate"
+export DICTATE_PARAKEET_BINARY="$root/bin/dictate-parakeet"
 "$HERE/dictated-launchagent.sh" install > "$root/output"
 data="$HOME/Library/Application Support/dictated"
 plist="$HOME/Library/LaunchAgents/dev.jakedevar.dictated.plist"
 [[ -f $plist && -x $data/bin/dictated ]]
+[[ -x $data/bin/dictate-parakeet ]]
+grep -q '^provider = "parakeet"' "$data/config.toml"
+grep -q 'parakeet --prepare ' "$CALLS"
 grep -q '<key>KeepAlive</key><true/>' "$plist"
 grep -q '<key>RunAtLoad</key><true/>' "$plist"
 grep -q 'home &amp; test/Library/Application Support/dictated/bin/dictated' "$plist"

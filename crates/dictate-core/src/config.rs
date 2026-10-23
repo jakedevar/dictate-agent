@@ -22,6 +22,7 @@ const MEDIA_STATE_FILE: &str = "media_was_playing";
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct Config {
+    pub stt: dictate_stt::config::SttConfig,
     pub audio: AudioConfig,
     pub whisper: WhisperConfig,
     pub vad: VadConfig,
@@ -554,6 +555,7 @@ fn validate(config: &Config) -> Vec<String> {
     // S33: an enabled API that would expose more than it opted into is a
     // startup error, reported by `--check-config` before a restart.
     errors.extend(config.api.validate());
+    errors.extend(config.stt.validate());
     let device = config.whisper.device.to_ascii_lowercase();
     if !matches!(device.as_str(), "cuda" | "metal" | "cpu") {
         errors.push(format!(
@@ -594,6 +596,23 @@ fn soft_checks(config: &Config) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stt_provider_selection_is_explicit_and_validated() {
+        let (config, report) = super::parse_config("[stt]\nprovider = \"whisper\"\n").unwrap();
+        assert_eq!(config.stt.provider, "whisper");
+        assert!(report.errors.is_empty());
+        let (_, report) = super::parse_config("[stt]\nprovider = \"unknown\"\n").unwrap();
+        assert!(report.errors.iter().any(|e| e.contains("stt.provider")));
+        let (_, report) =
+            super::parse_config("[stt]\nprovider = \"parakeet\"\nlanguage = \"fr\"\n").unwrap();
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.contains("English") || e.contains("stt.language")));
+        let (_, report) = super::parse_config("[stt]\nprovider = \"parakeet\"\n").unwrap();
+        assert_eq!(report.errors.is_empty(), cfg!(target_os = "macos"));
+        assert!(report.warnings.iter().all(|w| !w.contains("unknown")));
+    }
     use super::*;
 
     #[test]

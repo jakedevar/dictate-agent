@@ -157,6 +157,18 @@ impl Doctor {
     async fn check_stt_model(&self, quick: bool) -> DiagnosticCheck {
         const ID: &str = "stt_model";
         const TITLE: &str = "Speech model";
+        if self.config.stt.provider == "parakeet" {
+            let model = self.pipeline.stt.model();
+            return if model.loaded {
+                DiagnosticCheck::ok(
+                    ID,
+                    TITLE,
+                    "Parakeet v2; pinned model hashes verified at helper startup",
+                )
+            } else {
+                DiagnosticCheck::fail(ID, TITLE, "Parakeet v2 loading or unavailable", "verify the helper/models with mac/scripts/dictated-launchagent.sh install and check the LaunchAgent log")
+            };
+        }
         let whisper = &self.config.whisper;
         let path = Path::new(&whisper.model_path).to_path_buf();
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -258,7 +270,11 @@ impl Doctor {
     async fn check_stt_backend(&self) -> DiagnosticCheck {
         const ID: &str = "stt_backend";
         const TITLE: &str = "Speech backend";
-        let wanted = self.config.whisper.device.to_ascii_lowercase();
+        let wanted = if self.config.stt.provider == "parakeet" {
+            "coreml".into()
+        } else {
+            self.config.whisper.device.to_ascii_lowercase()
+        };
 
         // The model loads on a background thread at startup; give it a chance
         // rather than reporting a race as a fault.

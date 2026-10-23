@@ -21,6 +21,16 @@ install)
     : "${DICTATE_CLI:?set DICTATE_CLI to the built dictate CLI (pinned model pull)}"
     for dir in "$DATA" "$DATA/bin" "$DATA/run" "$DATA/models" "$LOGS" "$HOME/Library/LaunchAgents"; do secure_dir "$dir"; done
     [[ ! -L $DATA/config.toml && ! -L $PLIST ]] || { echo 'refusing symlink config/plist' >&2; exit 1; }
+    # Existing explicit Whisper configurations stay supported. The standard Mac
+    # install passes this helper and new configurations select English Parakeet.
+    if [[ -n ${DICTATE_PARAKEET_BINARY:-} ]]; then
+        "$DICTATE_PARAKEET_BINARY" --prepare "$DATA/models/parakeet-tdt-0.6b-v2"
+        stage=$(mktemp "$DATA/bin/.parakeet.XXXXXX")
+        trap 'rm -f "${stage:-}" "${plist_stage:-}"' EXIT
+        cp "$DICTATE_PARAKEET_BINARY" "$stage"
+        chmod 700 "$stage"
+        mv -f "$stage" "$DATA/bin/dictate-parakeet"
+    fi
     # ModelManager verifies the pinned catalog SHA even if the model exists.
     "$DICTATE_CLI" model pull large-v3-turbo
     stage=$(mktemp "$DATA/bin/.dictated.XXXXXX")
@@ -35,6 +45,9 @@ install)
 capture = false
 [audio.earcons]
 enabled = false
+[stt]
+provider = "$(if [[ -n ${DICTATE_PARAKEET_BINARY:-} ]]; then printf parakeet; else printf whisper; fi)"
+language = "en"
 [whisper]
 model = "large-v3-turbo"
 model_path = "$(toml_path "$DATA/models/ggml-large-v3-turbo.bin")"
