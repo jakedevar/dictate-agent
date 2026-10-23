@@ -21,7 +21,7 @@ private actor EndpointTransport: HubTransport {
     func socketClient(_ path: String, token: String, timeout: TimeInterval = 2) throws -> HubClient {
         HubClient(builder: try HubRequestBuilder(endpoint: "unix:" + path, token: token, timeout: timeout))
     }
-    func fake(_ transport: EndpointTransport) throws -> HubClient {
+    private func fake(_ transport: EndpointTransport) throws -> HubClient {
         HubClient(builder: try HubRequestBuilder(endpoint: "tunnel", token: "fixture"), transport: transport)
     }
 
@@ -159,9 +159,12 @@ private actor EndpointTransport: HubTransport {
         let lines = await DictationClient(mode: .auto, local: { lc }, hub: { hc }).probe()
         #expect(lines.count == 2)
         #expect(lines[0].contains("401"))
+        #expect(lines[0].contains("local token rejected"))
         #expect(lines[1].hasPrefix("Hub OK:"))
         #expect(await local.requests.first?.httpMethod == "GET")
         #expect(await hub.requests.first?.httpMethod == "GET")
+        #expect(await local.requests.count == 1)
+        #expect(await hub.requests.count == 1)
     }
 
     @Test func localTokenReadOnlyAndReloadedAfterRotation() async throws {
@@ -196,6 +199,23 @@ private actor EndpointTransport: HubTransport {
         #expect(await good.requests.isEmpty)
     }
 
+    @Test(arguments: [true, false])
+    func missingLocalTokenOnlyFallsBackForMissingSocket(_ socketExists: Bool) async throws {
+        let dir = URL(fileURLWithPath: "/tmp/dhm-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("run"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let local = LocalDictated(directory: dir)
+        if socketExists { try Data().write(to: URL(fileURLWithPath: local.socketPath)) }
+        let client = DictationClient(endpoint: "auto", hubTokens: TokenStore(directory: dir.appendingPathComponent("no-hub")), localDictated: local)
+        do {
+            _ = try await client.transcribe(wav: wav, app: nil)
+            Issue.record("missing tokens succeeded")
+        } catch let failure as EndpointRequestError {
+            #expect(failure.endpoint == (socketExists ? .mac : .fallback))
+            #expect(failure.error == .missingToken)
+        }
+    }
+
     @Test func secondClientShellAgainstUnixStub() async throws {
         let dir = URL(fileURLWithPath: "/tmp/dhc-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("run"), withIntermediateDirectories: true)
@@ -226,5 +246,6 @@ private actor EndpointTransport: HubTransport {
         #expect(server.requests.count == 1)
         #expect(server.requests.first?.body == wav)
         #expect(server.requests.first?.headers["authorization"] == "Bearer " + StubServerTests.token)
+        #expect(server.requests.first?.headers["host"] == "127.0.0.1:7313")
     }
 }

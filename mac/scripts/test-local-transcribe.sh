@@ -31,6 +31,7 @@ expect grep -qxF -- '-' "$tmp/argv"
 expect grep -qxF -- "$tmp/local/run/api.sock" "$tmp/argv"
 expect grep -qxF -- "@$tmp/clip with spaces.wav" "$tmp/argv"
 expect grep -qxF -- 'http://localhost/v1/transcribe' "$tmp/argv"
+expect grep -qxF -- 'Host: 127.0.0.1:7313' "$tmp/argv"
 expect grep -qxF -- '{"text":"curl stub"}' "$tmp/out"
 if grep -q synthetic-token "$tmp/argv"; then echo 'token leaked to argv' >&2; exit 1; fi
 pass=$((pass + 1))

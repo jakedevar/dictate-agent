@@ -12,5 +12,6 @@ token=$(cat "$directory/api-token") || { echo "Cannot read dictated API token" >
 printf 'header = "Authorization: Bearer %s"\n' "$token" |
     curl --disable --silent --show-error --fail-with-body --max-time 120 \
         --unix-socket "$directory/run/api.sock" -K - \
+        --header 'Host: 127.0.0.1:7313' \
         --header 'Content-Type: audio/wav' --data-binary "@$1" \
         http://localhost/v1/transcribe

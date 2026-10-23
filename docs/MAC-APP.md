@@ -40,7 +40,8 @@ printf 'header = "Authorization: Bearer %s"\n' \
   "$(cat "$HOME/Library/Application Support/dictated/api-token")" |
   curl --disable --silent --show-error --fail-with-body --max-time 120 \
     --unix-socket "$HOME/Library/Application Support/dictated/run/api.sock" \
-    -K - --header 'Content-Type: audio/wav' --data-binary @clip.wav \
+    -K - --header 'Host: 127.0.0.1:7313' \
+    --header 'Content-Type: audio/wav' --data-binary @clip.wav \
     http://localhost/v1/transcribe
 ```
 
@@ -50,6 +51,8 @@ without copying it to another file or putting it in argv. `DICTATE_LOCAL_DIRECTO
 overrides the local daemon directory for isolated tests. `remote.sh test` runs
 the shell argv/stdin checks and the wrapper against a Swift UDS stub, without
 the local daemon or hub. Do not use `-H "Authorization: Bearer …"` with the token.
+The fixed Host header matches DictateHub's UDS transport and the API's default
+Host allow-list; `localhost` without the port is rejected with HTTP 421.
 
 ## Endpoint selection
 

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum PreSendFailure: String, Equatable, Sendable {
@@ -91,7 +92,8 @@ public struct DictationClient: Sendable {
                 // An uninstalled local daemon must not require a local token
                 // just to reach the hub. An existing socket with no token is
                 // a configuration error, not permission to send audio away.
-                if !FileManager.default.fileExists(atPath: localDictated.socketPath) {
+                var info = stat()
+                if lstat(localDictated.socketPath, &info) != 0, errno == ENOENT {
                     throw HubError.notSent(.missingSocket)
                 }
                 throw HubError.missingToken
@@ -154,14 +156,15 @@ public struct DictationClient: Sendable {
     /// Probe both independently, even when the preferred endpoint succeeds or
     /// rejects its token. GET probes never change the last dictation endpoint.
     public func probe() async -> [String] {
-        if mode == .custom { return [await probeOne(custom, label: "Custom")] }
-        async let mac = probeOne(local, label: "Mac")
-        async let hubResult = probeOne(hub, label: "Hub")
+        if mode == .custom { return [await probeOne(custom, endpoint: .custom)] }
+        async let mac = probeOne(local, endpoint: .mac)
+        async let hubResult = probeOne(hub, endpoint: .hub)
         return await [mac, hubResult]
     }
 
-    private func probeOne(_ factory: ClientFactory, label: String) async -> String {
+    private func probeOne(_ factory: ClientFactory, endpoint: EndpointUse) async -> String {
+        let label = endpoint == .mac ? "Mac" : endpoint == .hub ? "Hub" : "Custom"
         do { return label + " OK: " + (try await factory().status()).summary }
-        catch { return label + ": " + hubError(fromTransport: error).userMessage }
+        catch { return EndpointRequestError(endpoint: endpoint, error: hubError(fromTransport: error)).userMessage }
     }
 }
