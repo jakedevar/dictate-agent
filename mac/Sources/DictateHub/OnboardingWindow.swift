@@ -139,7 +139,7 @@ final class OnboardingModel {
     func requestMicrophone() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { _ in
+            AVCaptureDevice.requestAccess(for: .audio) { @Sendable _ in
                 Task { @MainActor in self.refresh() }
             }
         default:

@@ -309,7 +309,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         case .authorized:
             micDenied = false
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
+            AVCaptureDevice.requestAccess(for: .audio) { @Sendable granted in
                 Task { @MainActor in
                     self.micDenied = !granted
                     self.phase = granted ? .idle : .error("Microphone access denied")

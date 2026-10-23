@@ -189,7 +189,10 @@ final class AudioRecorder {
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw RecorderError.noInputDevice }
         let sink = try SampleSink(input: format, preRollSamples: preRollSamples, maxSeconds: Self.maxSeconds)
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+        // `@Sendable` keeps this closure off the main actor: AVFAudio calls it on
+        // its realtime queue, and a main-actor-isolated closure there trips Swift
+        // 6's runtime isolation check (EXC_BREAKPOINT on the first buffer, #3824).
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { @Sendable buffer, _ in
             sink.append(buffer)
         }
         engine.prepare()
