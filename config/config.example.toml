@@ -52,7 +52,7 @@ model = "large-v3-turbo"
 # catalog location for `model`; custom existing paths are not downloaded.
 model_path = "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
 
-# Device: "cuda" for GPU (RTX), "cpu" for CPU-only
+# Device: "cuda" for Nvidia GPU, "metal" for Apple GPU, "cpu" for CPU-only
 device = "cuda"
 
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
