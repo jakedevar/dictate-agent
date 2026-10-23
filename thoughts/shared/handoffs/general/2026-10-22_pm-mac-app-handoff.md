@@ -161,3 +161,9 @@ Friction: none
 GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
 
 Friction: #3831
+
+## Note 10-23 05:00Z
+
+At the operator's request, the GM stopped `dictated.service` (it stays enabled) and unloaded gemma4:e4b. Mac DictateHub dictation is therefore down. This is expected, not a fault: do NOT restart dictated, and do not open Issues for it.
+
+Friction: #3831
