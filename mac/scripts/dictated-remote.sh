@@ -3,9 +3,13 @@
 # TCC, tunnel, hub service or other session's artifacts are touched.
 set -euo pipefail
 HOST=${DICTATE_MAC_HOST:-mac-mini}
-ID=${DICTATE_MAC_BUILD_ID:-${RSI_SESSION_ID:-manual}}
-[[ $ID =~ ^[A-Za-z0-9._-]+$ ]] || exit 2
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# Durable jobs intentionally have a smaller environment than agent turns.
+# The RSI branch is durable custody, so it is the fallback session identity.
+branch=$(git -C "$ROOT" branch --show-current)
+case $branch in rsi/*) default_id=${branch#rsi/};; *) default_id=manual;; esac
+ID=${DICTATE_MAC_BUILD_ID:-${RSI_SESSION_ID:-$default_id}}
+[[ $ID =~ ^[A-Za-z0-9._-]+$ ]] || exit 2
 DIR="dictate-mac-build/$ID.noindex/rust"
 ssh_mac() { ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" "$@"; }
 remote() { ssh_mac "cd ~/$DIR && export PATH=\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin && export CARGO_BUILD_JOBS=6 && nice -n 10 $*"; }

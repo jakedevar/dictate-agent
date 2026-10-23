@@ -13,6 +13,7 @@ pub use dictate_stt::WhisperConfig;
 pub use dictate_vad::VadConfig;
 
 // XDG paths
+#[cfg(not(target_os = "macos"))]
 const CONFIG_DIR: &str = "dictate-agent";
 const CONFIG_FILE: &str = "config.toml";
 const PID_FILE: &str = "dictate.pid";

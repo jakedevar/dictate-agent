@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
 use anyhow::{anyhow, Context, Result};
-use dictate_proto::{ErrorCode, InjectionOutcome, ProtoError, SkipReason};
+#[cfg(target_os = "linux")]
+use dictate_proto::{ErrorCode, ProtoError};
+use dictate_proto::{InjectionOutcome, SkipReason};
 #[cfg(target_os = "linux")]
 use enigo::{Enigo, Keyboard, Settings};
 #[cfg(target_os = "linux")]

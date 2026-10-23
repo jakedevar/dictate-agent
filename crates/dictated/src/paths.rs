@@ -46,10 +46,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 /// Directory name shared by both daemons for user-visible config.
+#[cfg(not(target_os = "macos"))]
 const CONFIG_DIR: &str = "dictate-agent";
 /// Subdirectory of the runtime dir. Shared with the reference daemon's
 /// namespace on purpose: the *files* are distinct, and one directory keeps
 /// `ls $XDG_RUNTIME_DIR` legible.
+#[cfg(any(not(target_os = "macos"), test))]
 const RUNTIME_DIR: &str = "dictate-agent";
 /// The new daemon's socket.
 const SOCKET_FILE: &str = "dictated.sock";
@@ -58,6 +60,7 @@ const PID_FILE: &str = "dictated.pid";
 /// The PID file `scripts/dictate-toggle` and `scripts/dictate-cancel` read.
 const LEGACY_PID_FILE: &str = "dictate.pid";
 /// Data subdirectory for the new daemon's history database.
+#[cfg(not(target_os = "macos"))]
 const DATA_DIR: &str = "dictated";
 
 /// Where the daemon keeps its runtime state.
@@ -180,6 +183,7 @@ pub fn runtime_dir() -> PathBuf {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn runtime_dir_for(xdg: Option<std::ffi::OsString>, euid: u32) -> PathBuf {
     match xdg.filter(|v| !v.is_empty()) {
         Some(base) => PathBuf::from(base).join(RUNTIME_DIR),
