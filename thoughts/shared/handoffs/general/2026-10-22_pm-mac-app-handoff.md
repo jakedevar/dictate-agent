@@ -226,3 +226,13 @@ Friction: #3831, #3954, #3955
   - Then report milestone 2.
 
 Friction: #3831, #3954, #3955
+
+## Update 10-23 23:33Z
+
+- **#3962 security review:** RESULT approve (no Critical, High or Medium). Low/Info hardening is filed as #3963 (open, low priority).
+- **#3945 merged to master** as 2c87dcf. The conflicts in justfile and .rsi/jobs.toml were additive, and I kept both sides. #3945 and #3962 are closed.
+- **Post-merge check-cpu:** job b3255c67 (20-min default), with the `postmerge-gate` wake on it.
+- **#3961 worker** told: the UDS auth throttle is shared, so re-read the token on every request, never retry on 401, and Test connection makes one attempt.
+- **Still running:** #3961 (d3d462c4) and #3957 (e90aaba0, based on d430a3df, which is now on master).
+
+Friction: #3831, #3954, #3955, #3963
