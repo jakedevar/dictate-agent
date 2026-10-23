@@ -2,6 +2,8 @@
 mod backend;
 pub mod config;
 pub mod model;
+#[cfg(all(feature = "transcribe", any(target_os = "macos", test)))]
+pub mod parakeet;
 #[cfg(feature = "transcribe")]
 pub mod transcribe;
 
@@ -60,6 +62,10 @@ pub struct ModelInfo {
 
 /// Final extension point for local, future remote, or future cloud STT.
 pub trait SttProvider: Send + Sync + 'static {
+    /// Preload barrier. Providers with lazy loading keep the existing behavior.
+    fn ready(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Transcribe 16 kHz mono f32 audio. `Ok(None)` means no speech.
     fn transcribe<'a>(
         &'a self,

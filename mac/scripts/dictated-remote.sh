@@ -20,14 +20,25 @@ case ${1:-} in
 setup)
     ssh_mac 'export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"; if ! command -v cargo >/dev/null; then mkdir -p "$HOME/.cargo"; curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs -o "$HOME/.cargo/rustup-init.sh" && sh "$HOME/.cargo/rustup-init.sh" -y --profile minimal --no-modify-path; fi; command -v cmake >/dev/null || brew install cmake'
     ;;
-build) remote 'cargo build --release --workspace --features dictated/metal -j 6' ;;
-test) remote 'cargo test -p dictate-server -p dictated -j 6'
+build) remote 'swift build --package-path mac/parakeet -c release --jobs 6'
+    remote 'cargo build --release --workspace --features dictated/metal -j 6' ;;
+parakeet-test) remote 'swift test --package-path mac/parakeet --jobs 6'
+    remote 'swift build --package-path mac/parakeet -c release --jobs 6' ;;
+test) remote 'swift test --package-path mac/parakeet --jobs 6'
+    remote 'cargo test -p dictate-stt -p dictate-server -p dictated -j 6'
     remote 'mac/scripts/test-dictated-launchagent.sh' ;;
 workspace) remote 'cargo check --workspace -j 6' ;;
 smoke) remote mac/scripts/dictated-smoke.sh ;;
-install)
-    remote 'cargo build --release --workspace --features dictated/metal -j 6'
-    remote 'env DICTATED_BINARY="$PWD/target/release/dictated" DICTATE_CLI="$PWD/target/release/dictate" mac/scripts/dictated-launchagent.sh install'
+parakeet-bench)
+    remote 'swift build --package-path mac/parakeet -c release --jobs 6'
+    remote 'mkdir -p build/parakeet-results && mac/parakeet/.build/release/UdsBench build/parakeet-fixtures/manifest.tsv > build/parakeet-results/uds.jsonl'
+    mkdir -p "$ROOT/mac/parakeet/results"
+    rsync -a "$HOST:$DIR/build/parakeet-results/" "$ROOT/mac/parakeet/results/"
     ;;
-*) echo "usage: $0 setup|build|test|workspace|install|smoke" >&2; exit 2 ;;
+install)
+    remote 'swift build --package-path mac/parakeet -c release --jobs 6'
+    remote 'cargo build --release --workspace --features dictated/metal -j 6'
+    remote 'env DICTATED_BINARY="$PWD/target/release/dictated" DICTATE_CLI="$PWD/target/release/dictate" DICTATE_PARAKEET_BINARY="$PWD/mac/parakeet/.build/release/dictate-parakeet" mac/scripts/dictated-launchagent.sh install'
+    ;;
+*) echo "usage: $0 setup|build|test|parakeet-test|parakeet-bench|workspace|install|smoke" >&2; exit 2 ;;
 esac

@@ -4,6 +4,18 @@
 # cpu_quota_percent 800 = the host-etiquette 8 cores (shared 32-core host).
 version = 1
 
+[recipes.mac-parakeet-test]
+runner = "just"
+target = "mac-parakeet-test"
+timeout_minutes = 30
+cpu_quota_percent = 100
+
+[recipes.mac-parakeet-bench]
+runner = "just"
+target = "mac-parakeet-bench"
+timeout_minutes = 15
+cpu_quota_percent = 100
+
 # Worker gate: tests + clippy (3 feature lines) + fmt + dictate-cli tree check. CPU only.
 [recipes.check-cpu]
 runner = "just"

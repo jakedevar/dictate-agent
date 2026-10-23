@@ -315,7 +315,15 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
         info!("audio capture disabled ([audio] capture = false): no input device will be opened");
         Arc::new(DisabledAudioSource::new(&config.audio))
     };
-    let stt = Arc::new(WhisperStt::new(&config.whisper));
+    let stt: Arc<dyn dictate_stt::SttProvider> = match config.stt.provider.as_str() {
+        "whisper" => Arc::new(WhisperStt::new(&config.whisper)),
+        #[cfg(target_os = "macos")]
+        "parakeet" => {
+            anyhow::ensure!(config.stt.language == "en", "Parakeet v2 requires English");
+            Arc::new(dictate_stt::parakeet::ParakeetStt::new(&config.stt))
+        }
+        _ => anyhow::bail!("unsupported STT provider on this host"),
+    };
     let vad = Arc::new(
         dictate_vad::SileroVad::new(config.vad.clone()).context("loading VAD configuration")?,
     );
@@ -494,6 +502,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         doctor::Doctor::new(config.clone(), report, runtime.clone(), pipeline.clone())
             .with_api_status(api_status.clone()),
     );
+    let stt_readiness = pipeline.stt.clone();
     let mut daemon = Daemon::start_with(
         pipeline,
         history,
@@ -510,6 +519,10 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     // refusal or a failed bind is logged as a warning, nothing listens, and
     // `dictate doctor` reports the API as down with the reason.
     daemon.serve_network_api(&config.api, &api_status).await;
+    if let Err(error) = stt_readiness.ready().await {
+        daemon.shutdown().await;
+        return Err(error.context("preloading STT before readiness"));
+    }
     info!(
         socket = %daemon.socket().display(),
         pid = std::process::id(),

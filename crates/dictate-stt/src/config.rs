@@ -79,3 +79,47 @@ fn dirs_path_home() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/home/user"))
 }
+
+/// Engine selection is separate from Whisper's model/device settings. Existing
+/// configurations retain Whisper; the Mac installer explicitly selects Parakeet.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
+pub struct SttConfig {
+    pub provider: String,
+    pub language: String,
+    pub helper_path: String,
+    pub model_dir: String,
+}
+
+impl Default for SttConfig {
+    fn default() -> Self {
+        Self {
+            provider: "whisper".into(),
+            language: "en".into(),
+            helper_path: "~/Library/Application Support/dictated/bin/dictate-parakeet".into(),
+            model_dir: "~/Library/Application Support/dictated/models/parakeet-tdt-0.6b-v2".into(),
+        }
+    }
+}
+
+impl SttConfig {
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        match self.provider.as_str() {
+            "whisper" => {}
+            "parakeet" => {
+                if !cfg!(target_os = "macos") {
+                    errors.push("stt.provider = parakeet requires macOS".into());
+                }
+                if self.language != "en" {
+                    errors.push("Parakeet v2 requires stt.language = en; use provider = whisper for other languages".into());
+                }
+                if self.helper_path.is_empty() || self.model_dir.is_empty() {
+                    errors.push("Parakeet requires stt.helper_path and stt.model_dir".into());
+                }
+            }
+            _ => errors.push("stt.provider must be parakeet or whisper".into()),
+        }
+        errors
+    }
+}

@@ -199,6 +199,10 @@ mac-dictated-build:
     mac/scripts/dictated-remote.sh build
 mac-dictated-test:
     mac/scripts/dictated-remote.sh test
+mac-parakeet-test:
+    mac/scripts/dictated-remote.sh parakeet-test
+mac-parakeet-bench:
+    mac/scripts/dictated-remote.sh parakeet-bench
 mac-dictated-install:
     mac/scripts/dictated-remote.sh install
 mac-dictated-smoke:
