@@ -114,7 +114,7 @@ final class OnboardingModel {
         microphone = Self.microphoneState()
         accessibility = Self.accessibilityState()
         inputMonitoringGranted = CGPreflightListenEventAccess()
-        tokenPresent = tokens.load() != nil
+        tokenPresent = DictationClient.tokenPresent(endpoint: settings.endpoint, hubTokens: tokens)
         hotkeyName = settings.hotkey.displayName
         hotkeyMode = settings.hotkey.mode
         now = Date()

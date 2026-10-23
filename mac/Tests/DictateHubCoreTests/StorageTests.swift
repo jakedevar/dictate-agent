@@ -58,7 +58,7 @@ import Testing
     @Test func defaultsAndPersistence() {
         let d = defaults()
         let s = HubSettings(defaults: d)
-        #expect(s.endpoint == HubRequestBuilder.defaultEndpoint)
+        #expect(s.endpoint == "auto")
         #expect(s.hotkey == .rightOption)
         s.endpoint = "http://hub.example.test:7313"
         s.hotkey = .fn
@@ -71,8 +71,8 @@ import Testing
         let d = defaults()
         let s = HubSettings(defaults: d)
         d.set("http://127.0.0.1:7313", forKey: HubSettings.endpointKey)
-        #expect(s.endpoint == HubRequestBuilder.defaultEndpoint)
-        #expect(d.string(forKey: HubSettings.endpointKey) == "tunnel")
+        #expect(s.endpoint == "auto")
+        #expect(d.string(forKey: HubSettings.endpointKey) == "auto")
         s.endpoint = "https://custom.example.test"
         #expect(s.endpoint == "https://custom.example.test")
     }
@@ -82,8 +82,21 @@ import Testing
         d.set("  ", forKey: HubSettings.endpointKey)
         d.set("caps_lock", forKey: HubSettings.hotkeyKey)
         let s = HubSettings(defaults: d)
-        #expect(s.endpoint == HubRequestBuilder.defaultEndpoint)
+        #expect(s.endpoint == "auto")
         #expect(s.hotkey == .default)
+    }
+
+    @Test func tunnelMigratesOnceAndExplicitHubOnlyPersists() {
+        let d = defaults()
+        d.set("tunnel", forKey: HubSettings.endpointKey)
+        let s = HubSettings(defaults: d)
+        #expect(s.endpoint == "auto")
+        s.endpoint = "tunnel"
+        #expect(HubSettings(defaults: d).endpoint == "tunnel")
+        s.endpoint = "mac"
+        #expect(HubSettings(defaults: d).endpoint == "mac")
+        s.endpoint = "unix:/tmp/custom.sock"
+        #expect(HubSettings(defaults: d).endpoint == "unix:/tmp/custom.sock")
     }
 }
 

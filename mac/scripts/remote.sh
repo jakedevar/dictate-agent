@@ -82,6 +82,7 @@ test)
     # Shell tests: install ad-hoc guard, launch hygiene (run on the Mac, which
     # has codesign; they touch only temp dirs).
     remote scripts/test-install-guard.sh
+    remote scripts/test-local-transcribe.sh
     ;;
 bundle)
     sync

@@ -44,6 +44,8 @@ final class SettingsModel {
     var onOpenPermissions: () -> Void = {}
 
     var endpoint = ""
+    var usingLine: String?
+    var endpointMode: EndpointMode { EndpointMode(endpoint: endpoint) }
     var hotkey: HotkeyChoice = .default
     var tokenInput = ""
     var tokenPresent = false
@@ -73,7 +75,7 @@ final class SettingsModel {
 
     func saveEndpoint() {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.endpoint = trimmed.isEmpty ? HubRequestBuilder.defaultEndpoint : trimmed
+        settings.endpoint = trimmed.isEmpty ? EndpointMode.auto.rawValue : trimmed
         endpoint = settings.endpoint
     }
 
@@ -138,18 +140,18 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Hub") {
+            Section("Dictation") {
                 Picker("Connection", selection: Binding(
-                    get: { model.endpoint == HubRequestBuilder.defaultEndpoint },
-                    set: { model.endpoint = $0 ? HubRequestBuilder.defaultEndpoint : "https://"; model.saveEndpoint() })) {
-                    Text("Hub (secure tunnel)").tag(true)
-                    Text("Custom HTTP(S) URL").tag(false)
+                    get: { model.endpointMode },
+                    set: { model.endpoint = $0 == .custom ? "https://" : $0.rawValue; model.saveEndpoint() })) {
+                    ForEach(EndpointMode.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                if model.endpoint != HubRequestBuilder.defaultEndpoint {
+                if model.endpointMode == .custom {
                     TextField("Endpoint", text: $model.endpoint)
                         .onSubmit { model.saveEndpoint() }
                 }
-                Text("The secure tunnel connects to the hub through SSH.")
+                if let line = model.usingLine { Text(line).font(.caption) }
+                Text("Auto tries dictated on this Mac, then the hub through SSH when the Mac is unavailable.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Hotkey") {
@@ -159,7 +161,7 @@ struct SettingsView: View {
                     ForEach(HotkeyChoice.allCases, id: \.self) { Text($0.pickerLabel).tag($0) }
                 }
             }
-            Section("API token") {
+            Section("Hub / Custom API token") {
                 SecureField(model.tokenPresent ? "Token saved; paste a new one to replace it" : "Paste the hub's API token",
                             text: $model.tokenInput)
                     .onSubmit { model.saveToken() }
@@ -171,6 +173,8 @@ struct SettingsView: View {
                     }
                 }
                 Text("Or run `just mac-token` on the hub (it runs dictated --api-token and installs it over SSH).")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Mac token: read directly from dictated/api-token in Application Support. Managed by dictated; never copied here.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

@@ -1,9 +1,10 @@
 # DictateHub (macOS client)
 
 A menu-bar dictation app for the Mac. Hold the hotkey, speak, and release.
-The clip goes to the hub's S33 network API (`POST /v1/transcribe`), and the
-cleaned-up text is pasted at the cursor. All inference runs on the hub; the
-app holds no model. Plan: Issue #3527. Slices: M1 (#3529) MVP, M2 (#3543)
+The clip goes to dictated's S33 API (`POST /v1/transcribe`), and the
+cleaned-up text is pasted at the cursor. Auto tries dictated on the Mac first,
+then the hub's SSH tunnel when the Mac is unavailable. The app holds no model.
+Plan: Issue #3527. Slices: M1 (#3529) MVP, M2 (#3543)
 stable signing, permissions window, install + login item, feedback, file mode.
 
 ## Layout
@@ -197,17 +198,30 @@ DictateHub, then "−"). The scripts never touch TCC.
 
 ## Runtime
 
-- Endpoint: UserDefaults `hubEndpoint`, default `tunnel` (**Hub (secure tunnel)**), connecting
-  to `~/Library/Application Support/DictateHub/run/hub.sock` over SSH. Old
-  default loopback URLs migrate automatically; custom HTTP(S) URLs stay.
+- Endpoint: UserDefaults `hubEndpoint`, default `auto`. Settings offers **Auto**,
+  **Mac only**, **Hub only**, and **Custom URL**. Auto tries
+  `~/Library/Application Support/dictated/run/api.sock`, then
+  `~/Library/Application Support/DictateHub/run/hub.sock` over SSH. Old
+  `tunnel` and default loopback settings migrate to Auto; custom HTTP(S) URLs stay.
+  An explicit Hub only choice persists (migration marker `endpointMode`).
+  Only missing/refused sockets, timeouts before any bytes are submitted, and
+  HTTP 503 rejections permit fallback. A 401, send/receive failure, malformed
+  response or timeout after send is an error: no second transcription.
+  Settings and the status-item tooltip show the endpoint of the last dictation;
+  `launch.log` records `endpoint=local`, `hub`, or `hub-fallback` without text.
+  Test connection probes both Mac and hub independently (Custom probes its URL).
   `unix:/absolute/path` selects a custom socket for isolated checks. Hotkey: UserDefaults `hotkey`
   (`right_option` | `fn` | `right_command` | `control_option` | `option_n`).
   The first four are hold-to-talk; `option_n` (Option+N, only Option held) toggles: press to start,
   press again to send, Esc to cancel. It uses an active event tap that swallows the chord (and Esc
   while recording) so no tilde or `n` reaches the focused app; if the tap or Accessibility is
   missing the menu-bar status says so. The default stays `right_option`.
-- Token: `~/Library/Application Support/DictateHub/api-token` (0600, directory
-  0700).
+- Tokens: the hub/custom token is `~/Library/Application Support/DictateHub/api-token`
+  (0600, directory 0700). The Mac token is read directly from
+  `~/Library/Application Support/dictated/api-token` on every request; the app
+  never copies, writes or changes permissions on it. A local success needs no
+  hub token. An existing local socket with a missing token is a configuration
+  error. See `docs/MAC-APP.md` for the second-client shell wrapper.
 - Settings… → **Start and stop sounds** (default on). These are quiet system
   sounds: Tink plays when the microphone is live, Pop on release, and Basso
   on an error.
@@ -241,8 +255,7 @@ DictateHub, then "−"). The scripts never touch TCC.
 ## File mode (end-to-end check)
 
 ```bash
-# From the hub, against the REAL hub through the tunnel (installed app,
-# saved endpoint and token):
+# From the hub, using the installed app's selected endpoint and token:
 mac/scripts/remote.sh transcribe-file clip.wav             # print the text
 mac/scripts/remote.sh transcribe-file clip.wav --insert    # also paste it at
                                                            # the frontmost app's cursor

@@ -28,6 +28,7 @@ private final class UnixExchange: @unchecked Sendable {
     var data = Data()
     var finished = false
     var cancelled = false
+    var requestStarted = false
 
     init(path: String) {
         connection = NWConnection(to: .unix(path: path), using: .tcp)
@@ -40,18 +41,31 @@ private final class UnixExchange: @unchecked Sendable {
             let wire: Data
             do { wire = try UnixHTTP.request(request) }
             catch { self.finish(.failure(error)); return }
-            let timer = DispatchWorkItem { self.finish(.failure(HubError.timeout)) }
+            let timer = DispatchWorkItem {
+                self.finish(.failure(self.requestStarted ? HubError.timeout : HubError.notSent(.timeout)))
+            }
             self.timer = timer
             self.queue.asyncAfter(deadline: .now() + max(0.001, request.timeoutInterval), execute: timer)
             self.connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    guard !self.finished, !self.requestStarted else { return }
+                    // Mark BEFORE send: a failed send may already have delivered bytes.
+                    self.requestStarted = true
                     self.connection.send(content: wire, completion: .contentProcessed { error in
                         if error != nil { self.finish(.failure(HubError.unreachable("tunnel send failed"))) }
                         else { self.receive() }
                     })
-                case .failed, .waiting:
-                    self.finish(.failure(HubError.unreachable("secure tunnel unavailable")))
+                case .failed(let error), .waiting(let error):
+                    let failure: HubError
+                    if !self.requestStarted, case .posix(let code) = error, code == .ENOENT {
+                        failure = .notSent(.missingSocket)
+                    } else if !self.requestStarted, case .posix(let code) = error, code == .ECONNREFUSED {
+                        failure = .notSent(.refused)
+                    } else if !self.requestStarted, case .posix(let code) = error, code == .ETIMEDOUT {
+                        failure = .notSent(.timeout)
+                    } else { failure = .unreachable("socket connection failed") }
+                    self.finish(.failure(failure))
                 default: break
                 }
             }

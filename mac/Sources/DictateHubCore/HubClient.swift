@@ -76,6 +76,8 @@ public struct ProtoError: Decodable, Equatable, Sendable {
 
 /// Everything that can go wrong between "release the hotkey" and "text".
 public enum HubError: Error, Equatable, Sendable {
+    /// The UDS transport proves no request bytes were submitted to Network.framework.
+    case notSent(PreSendFailure)
     /// No token file / token is empty.
     case missingToken
     /// The endpoint is not the secure tunnel, a valid UDS path or an HTTP(S) URL.
@@ -96,6 +98,8 @@ public enum HubError: Error, Equatable, Sendable {
     /// Short text for the menu's status line. Never contains transcript text.
     public var userMessage: String {
         switch self {
+        case .notSent(let reason):
+            return "Endpoint unavailable before sending audio (\(reason.rawValue))"
         case .missingToken:
             return "No API token: save it in Settings"
         case .invalidEndpoint(let s):
