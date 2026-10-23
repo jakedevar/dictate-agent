@@ -116,3 +116,17 @@ Friction: none
 - Wakes: `health` and `optn-todo`; the safety wake was cancelled.
 
 Friction: none
+
+## Update 10-23 03:27Z (seat 4b68d1fa)
+
+- **Accessibility:** granted for /Applications/DictateHub.app. The TCC auth is 2 at 03:17Z, the csreq is the stable leaf 27a5d983, and the app logged `event tap installed for option_n`.
+- **Input Monitoring:** NOT granted (no kTCCServiceListenEvent row).
+- **To-do `dictatehub-option-n`:** the operator closed it.
+- **New to-do:** P1 `dictatehub-input-monitoring` (id fb1eb8d5-f519-4d24-9949-b4deaea843f5). The `optn-todo` wake now watches it.
+- **No Mac dictation yet:** dictated saw only one Test-connection status call (03:14Z).
+- **On the first live dictation:** close #3762, #3766 and #3807, then report DONE up once.
+- **Check commands (read-only):**
+  - `ssh mac-mini 'sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "select service,auth_value from access where client like \"%DictateHub%\""'`
+  - `journalctl --user -u dictated | grep network` (never print text)
+
+Friction: none
