@@ -1,0 +1,17 @@
+[package]
+name = "mac-stt-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+metal = ["whisper-rs/metal"]
+cuda = ["whisper-rs/cuda"]
+
+[dependencies]
+whisper-rs = "=0.16.0"
+hound = "3.5.1"
+serde_json = "1"
+libc = "0.2"

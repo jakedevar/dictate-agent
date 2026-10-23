@@ -1,0 +1,4 @@
+free_vram_mib=7909
+name, driver_version, memory.total [MiB]
+NVIDIA GeForce RTX 5080, 615.71.09, 16303 MiB
+ 15:54:45 up 2 days,  3:14,  1 user,  load average: 13.28, 13.78, 11.79

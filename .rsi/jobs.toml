@@ -36,3 +36,27 @@ runner = "just"
 target = "mac-transport-verify"
 timeout_minutes = 15
 cpu_quota_percent = 800
+
+[recipes.mac-stt-bench-swift]
+runner = "just"
+target = "mac-stt-bench-swift"
+timeout_minutes = 60
+cpu_quota_percent = 200
+
+[recipes.mac-stt-bench-whisper]
+runner = "just"
+target = "mac-stt-bench-whisper"
+timeout_minutes = 60
+cpu_quota_percent = 200
+
+[recipes.mac-stt-bench-hub]
+runner = "just"
+target = "mac-stt-bench-hub"
+timeout_minutes = 30
+cpu_quota_percent = 800
+
+[recipes.mac-stt-bench-verify]
+runner = "just"
+target = "mac-stt-bench-verify"
+timeout_minutes = 20
+cpu_quota_percent = 200

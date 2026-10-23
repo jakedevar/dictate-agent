@@ -191,3 +191,17 @@ mac-transport-verify:
     mac/scripts/remote.sh dr-check
     mac/scripts/remote.sh install
     DICTATED="${CARGO_TARGET_DIR:-target}/debug/dictated" DICTATE="${CARGO_TARGET_DIR:-target}/debug/dictate" scripts/mac-tunnel-smoke.sh
+
+# Isolated Python-free Mac STT benchmark (#3944); never touches the app/service.
+mac-stt-bench-swift:
+    mac/bench/run.sh swift
+
+mac-stt-bench-whisper:
+    mac/bench/run.sh whisper
+
+mac-stt-bench-hub:
+    mac/bench/hub.sh
+
+mac-stt-bench-verify:
+    mac/bench/run.sh verify
+    cargo run --quiet --locked --manifest-path mac/bench/score/Cargo.toml -- mac/bench/work/samples/manifest.tsv mac/bench/results/validation/FluidBench.jsonl mac/bench/results/validation/whisper-metal.jsonl > mac/bench/results/validation/summary.jsonl
