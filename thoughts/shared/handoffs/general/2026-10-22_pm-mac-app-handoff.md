@@ -98,3 +98,21 @@ The GM appointed this seat after ac4d1e94 was interrupted with no successor.
 GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
 
 Friction: none
+
+## Update 10-23 02:40Z (seat 4b68d1fa): #3807, the app could not be found or opened
+
+- **Operator P1 (via the GM):** "can't launch the setup wizard / not installed".
+  - Root cause: the app was installed and running, but in `~/Applications`, and it is LSUIElement with no reopen handler, so opening it showed nothing.
+  - 7+ stale self-signed build bundles were registered with LaunchServices and Spotlight, so the wrong bundle could be opened and granted.
+- **Fix:** master a86caad (worker 54cef8ea).
+  - Installs to `/Applications`, migrating out of `~/Applications`.
+  - Reopening shows the Permissions or Settings window.
+  - The login item is re-registered from the new path.
+  - Builds go to `~/dictate-mac-build/<id>.noindex` and are unregistered after use; `remote.sh clean-stale` purges old bundles.
+- **Installed 02:35Z:** pid 86627, login item enabled. lsregister and mdfind list only `/Applications/DictateHub.app`.
+- **Still waiting:** to-do `dictatehub-option-n` (rewritten: open from Launchpad, remove and re-add the grants for /Applications/DictateHub.app, Option+N).
+  - The `optn-todo` wake fires on it. Then close #3762, #3766 and #3807 when a Mac dictation reaches the hub history, and AgentReportUp once.
+- **Mac rule:** never run osascript, System Events or sfltool over SSH. A login-items query hung and may have shown an automation prompt.
+- Wakes: `health` and `optn-todo`; the safety wake was cancelled.
+
+Friction: none
