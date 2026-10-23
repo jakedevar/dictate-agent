@@ -167,3 +167,29 @@ Friction: #3831
 At the operator's request, the GM stopped `dictated.service` (it stays enabled) and unloaded gemma4:e4b. Mac DictateHub dictation is therefore down. This is expected, not a fault: do NOT restart dictated, and do not open Issues for it.
 
 Friction: #3831
+
+## Update 10-23 21:55Z (seat 4b68d1fa): NEW operator request, Mac-local dictation (plan #3943)
+
+- **Request:** run the dictation model on the Mac mini (Apple M6, 16 GB, macOS 27.0.1). It serves DictateHub and other local apps, and the hub becomes the fallback.
+  - The hub dictated.service stays STOPPED (the operator freed VRAM): never start it.
+- **Decisions** (full list in #3943):
+  - One Rust engine: dictated for aarch64-darwin with whisper-rs `metal`.
+  - The engine is swapped only if the benchmark shows a clear win: at least 1 point WER absolute, or at most half the p50 latency.
+  - The S33 API runs only on a private UDS: `~/Library/Application Support/dictated/run/api.sock`, with no TCP.
+  - A real LaunchAgent: `dev.jakedevar.dictated`.
+  - Models live in `~/Library/Application Support/dictated/models/`.
+  - DictateHub order: local first, then the hub tunnel.
+- **Workers** (Codex gpt-6.1-sol high, base 5b36baf):
+  - 86a762aa on #3944: the benchmark (whisper.cpp Metal vs WhisperKit vs Parakeet Core ML vs the hub baseline).
+  - bcbbc7c6 on #3945: the macOS port, the UDS listener and the LaunchAgent.
+- **Next:**
+  - #3944: done → pick the engine → AgentReportUp milestone 1 with the numbers.
+  - #3945: done → PM review, then a Codex luna pre-land security review (UDS listener), then land on master.
+  - Then file #D (DictateHub local-first plus fallback, a second client) and install.
+- **Mac Claude account is out until 10-26 06:00 PT:** Mac-side work runs on Codex. Workers reach the Mac over `ssh mac-mini` from the hub.
+- **Wakes:** `health`, `safety-maclocal` (60 min), and the terminal watches on both workers.
+
+GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
+- **Superseding the Codex-reviews-only line, for this request** (GM 10-23 21:50Z): prefer Codex gpt-6.1-sol for implementers ("Codex is open season"); Claude is throttled fleet-wide (directive 641b6dc8).
+
+Friction: #3831
