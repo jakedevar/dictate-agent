@@ -16,7 +16,10 @@ slice section of
    descendant of `master` on the manager's branch; every sandbox shares one
    object store). Confirm `git log -1` shows it and `git status` is clean.
 2. Never `git checkout`, `git switch`, create branches, rebase shared history,
-   push, or touch the main checkout at `/home/jakedevar/dictate_agent`.
+   push, or touch the main checkout at `/home/jakedevar/dictate_agent`. The
+   Issue-binding launch text asks you to push your assigned branch before the
+   handoff: in this project skip that step (the repo is public; hub sandboxes
+   share one object store) and name the full commit SHA in the handoff (#3542).
 3. Do the work yourself. Do not launch provider-native subagents, background
    agents, or parallel agents; do not spawn RSI children.
 
@@ -39,7 +42,10 @@ slice section of
   If a command times out, rerun it; cargo resumes.
 - **Gates run as durable RSI jobs (RSI #1477).** `.rsi/jobs.toml` declares the
   recipes `check-cpu`, `check-cuda`, `e2e` and `cutover-test`. Submit with
-  `AgentSubmitJob {"kind":"test","name":"...","params":{"recipe":"check-cpu","timeout_minutes":60}}`
+  `AgentSubmitJob {"kind":"test","name":"...","params":{"recipe":"check-cpu"}}`
+  (no `timeout_minutes`: a worker is refused `job_timeout_not_authorized`; if
+  the 20-minute default times out in admission, say so in the handoff and the
+  PM resubmits it with a longer budget, #3551)
   and end your turn. One resume wake carries the exit code, and the log path is
   in `AgentGetJob`. The job survives your turn ending and a daemon restart.
   For quick touched-crate runs while iterating, foreground
