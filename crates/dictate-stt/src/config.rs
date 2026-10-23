@@ -12,7 +12,7 @@ pub struct WhisperConfig {
     /// An explicit path opts out of catalog download and checksum management.
     /// The default remains for compatibility with existing configurations.
     pub model_path: String,
-    /// "cuda" or "cpu"
+    /// "cuda", "metal" (Apple GPU), or "cpu".
     pub device: String,
     /// Threshold for filtering non-speech (0.0-1.0, higher = stricter)
     pub no_speech_threshold: f32,

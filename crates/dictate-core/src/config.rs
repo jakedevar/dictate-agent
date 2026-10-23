@@ -506,6 +506,7 @@ fn finalize(mut config: Config) -> Config {
         .into_owned();
     for path in [
         &mut config.api.token_file,
+        &mut config.api.socket,
         &mut config.api.tls_cert,
         &mut config.api.tls_key,
     ] {
@@ -554,9 +555,9 @@ fn validate(config: &Config) -> Vec<String> {
     // startup error, reported by `--check-config` before a restart.
     errors.extend(config.api.validate());
     let device = config.whisper.device.to_ascii_lowercase();
-    if device != "cuda" && device != "cpu" {
+    if !matches!(device.as_str(), "cuda" | "metal" | "cpu") {
         errors.push(format!(
-            "whisper.device must be \"cuda\" or \"cpu\", got \"{}\"",
+            "whisper.device must be \"cuda\", \"metal\" or \"cpu\", got \"{}\"",
             config.whisper.device
         ));
     }
