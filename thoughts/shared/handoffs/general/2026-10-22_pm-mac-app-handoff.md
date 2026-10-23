@@ -236,3 +236,16 @@ Friction: #3831, #3954, #3955
 - **Still running:** #3961 (d3d462c4) and #3957 (e90aaba0, based on d430a3df, which is now on master).
 
 Friction: #3831, #3954, #3955, #3963
+
+## Update 10-23 23:42Z: Mac-local dictation LIVE (Whisper Metal)
+
+- **Post-merge check-cpu on 2c87dcf:** green, 1168/0.
+- **#3961 merged** (ec0fe40; Swift 132, guard 59, second-client shell 12). DictateHub is installed with `endpoint=auto` (pid 50260).
+- **Second client:** `mac/scripts/local-transcribe.sh short.wav` returned the exact text in 1.6–2.2 s, with the hub dictated inactive.
+- **Operator to-do:** `dictatehub-local-try` (c129c4b6, P2), one Option+N. The `local-try` wake watches it. Close #3961 on it.
+- **Reported up:** live status.
+- **Still running:** #3957 Parakeet (Codex e90aaba0).
+  - After it: merge, reinstall the Mac dictated via `mac/scripts/dictated-launchagent.sh` (or the recipe named in its handoff), measure end to end, and report the final milestone.
+  - Then close #3943 and #3957.
+
+Friction: #3831, #3954, #3955, #3963
