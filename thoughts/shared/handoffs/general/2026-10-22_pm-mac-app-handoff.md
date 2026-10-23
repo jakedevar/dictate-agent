@@ -193,3 +193,18 @@ GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Cod
 - **Superseding the Codex-reviews-only line, for this request** (GM 10-23 21:50Z): prefer Codex gpt-6.1-sol for implementers ("Codex is open season"); Claude is throttled fleet-wide (directive 641b6dc8).
 
 Friction: #3831
+
+## Update 10-23 23:05Z: milestone 1 reported (engine = Parakeet v2)
+
+- **#3944 closed;** the benchmark is merged at ce675fd.
+  - Parakeet TDT v2 (Core ML): 1.22% WER at a 45 ms p50.
+  - Metal whisper: 2.89% at 860 ms.
+  - WhisperKit: 3.19% at 330 ms.
+  - Hub CUDA: 2.89% at 117 ms.
+- **Decision:** Parakeet runs as a Swift helper behind the SttProvider (#3957, filed by the bench worker). Launch it after #3945 lands, because both touch dictate-stt and dictated. whisper Metal stays as the fallback.
+- **Still running:** #3945 (Codex bcbbc7c6).
+  - After it: PM review, then a Codex gpt-6-luna pre-land security review of the UDS listener, then land.
+  - Then launch #3957 and file #D. #D can run in parallel with #3957, since it touches only mac/ Swift.
+- **Kaizen from the bench worker:** #3954, #3955 (the upstream Metal tensor probe).
+
+Friction: #3831, #3954, #3955
