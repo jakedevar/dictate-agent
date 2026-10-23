@@ -208,3 +208,21 @@ Friction: #3831
 - **Kaizen from the bench worker:** #3954, #3955 (the upstream Metal tensor probe).
 
 Friction: #3831, #3954, #3955
+
+## Update 10-23 23:30Z
+
+- **#3945 done:** source d430a3df, not on master yet.
+  - Check results: Linux check-cpu 1168/0, CUDA clippy ok, Mac 330/0.
+  - Already installed on the Mac by the worker: LaunchAgent `dev.jakedevar.dictated` running, socket `~/Library/Application Support/dictated/run/api.sock`, Whisper Metal.
+  - A synthetic clip over UDS curl takes about 1.5 s.
+- **Pre-land security review:** #3962, Claude Sonnet reviewer ef94a044 (vendor split). On approve, merge d430a3df to master and close #3945 and #3962. On changes-requested, continue the #3945 worker or launch a fix.
+- **Running:**
+  - #3961 DictateHub local-first, Codex d3d462c4 (base c50f0e2).
+  - #3957 Parakeet Swift helper, Codex e90aaba0 (base d430a3df). The PM design ruling is in its handoff.
+- **After all land:** install DictateHub (`remote.sh install`) and reinstall the Mac dictated with Parakeet. Then verify:
+  - a hotkey dictation with the hub unreachable (the hub dictated is already stopped, so any dictation now proves local use);
+  - the second client via `mac/scripts/local-transcribe.sh`;
+  - the hub fallback, which needs hub dictated running. It is stopped on purpose, so verify it with the stub tests and note that the live fallback needs the operator to start it.
+  - Then report milestone 2.
+
+Friction: #3831, #3954, #3955
