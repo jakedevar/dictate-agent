@@ -37,6 +37,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var targetApp: String?
     /// Last connection-test answer, shown under the status line.
     private var connectionLine: String?
+    private var lastEndpoint: EndpointUse?
 
     private var endpoint: String { options.endpointOverride ?? settings.endpoint }
 
@@ -190,7 +191,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func currentChecklist() -> OnboardingChecklist {
         OnboardingChecklist(microphone: OnboardingModel.microphoneState(),
                             accessibility: OnboardingModel.accessibilityState(),
-                            tokenPresent: tokens.load() != nil)
+                            tokenPresent: DictationClient.tokenPresent(endpoint: endpoint, hubTokens: tokens))
     }
 
     /// What the app can see about its own trust right now.
@@ -407,26 +408,27 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Encode → POST /v1/transcribe → (optionally) paste at the cursor.
     private func deliver(samples: [Float], app: String?, insert: Bool) async -> Delivery {
         guard !samples.isEmpty else { return .failed(HubError.emptyAudio.userMessage) }
-        let client: HubClient
-        do {
-            client = try makeClient()
-        } catch {
-            return .failed(hubError(fromTransport: error).userMessage)
-        }
+        let client = makeClient()
         let seconds = WAV.duration(sampleCount: samples.count)
         // Encode off the main actor: 120 s is ~3.8 MB.
         let wav = await Task.detached { WAV.encode(floatSamples: samples) }.value
         let started = Date()
         let transcript: Transcript
         do {
-            transcript = try await client.transcribe(wav: wav, app: app)
+            let result = try await client.transcribe(wav: wav, app: app)
+            transcript = result.0
+            usedEndpoint(result.1)
+        } catch let failure as EndpointRequestError {
+            usedEndpoint(failure.endpoint)
+            Log.error("transcribe endpoint=\(failure.endpoint.logName) failed")
+            return .failed(failure.userMessage)
         } catch {
             let e = hubError(fromTransport: error)
-            Log.error("transcribe: \(e.userMessage)")
+            Log.error("transcribe failed before endpoint selection")
             return .failed(e.userMessage)
         }
         let ms = Int(Date().timeIntervalSince(started) * 1000)
-        Log.info(String(format: "transcribed %.1f s clip in %d ms (%d chars)",
+        Log.info(String(format: "transcribed endpoint=\(lastEndpoint?.logName ?? "unknown") %.1f s clip in %d ms (%d chars)",
                         seconds, ms, transcript.text.count))
         guard insert, !transcript.text.isEmpty else {
             return .delivered(text: transcript.text, hubMs: ms, inserted: false)
@@ -438,9 +440,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         return .delivered(text: transcript.text, hubMs: ms, inserted: true)
     }
 
-    private func makeClient() throws -> HubClient {
-        guard let token = tokens.load() else { throw HubError.missingToken }
-        return HubClient(builder: try HubRequestBuilder(endpoint: endpoint, token: token))
+    private func makeClient() -> DictationClient {
+        DictationClient(endpoint: endpoint, hubTokens: tokens)
+    }
+
+    private func usedEndpoint(_ endpoint: EndpointUse) {
+        lastEndpoint = endpoint
+        settingsModel?.usingLine = endpoint.statusLine
+        refresh()
     }
 
     // MARK: file mode
@@ -481,23 +488,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     // MARK: connection test
 
     @objc private func testConnection() {
-        let client: HubClient
-        do {
-            client = try makeClient()
-        } catch {
-            showConnection("Test failed: " + hubError(fromTransport: error).userMessage)
-            return
-        }
+        let client = makeClient()
         connectionLine = "Testing \(endpoint)…"
         refresh()
         Task { [weak self] in
-            let line: String
-            do {
-                line = "Hub OK: " + (try await client.status()).summary
-            } catch {
-                line = "Test failed: " + hubError(fromTransport: error).userMessage
-            }
-            Log.info(line)
+            let line = await client.probe().joined(separator: "\n")
+            Log.info("connection probes completed")
             self?.showConnection(line)
         }
     }
@@ -517,6 +513,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         updateAnimation()
         if let button = statusItem.button {
             button.toolTip = "DictateHub: \(phase.statusLine(mode: hotkeys.choice.mode))"
+                + (lastEndpoint.map { "\n" + $0.statusLine } ?? "")
         }
 
         let menu = NSMenu()
@@ -587,6 +584,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil {
             let model = SettingsModel(settings: settings, tokens: tokens)
+            model.usingLine = lastEndpoint?.statusLine
             model.onHotkeyChange = { [weak self] choice in
                 self?.hotkeyChoiceChanged(choice)
             }

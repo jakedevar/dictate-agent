@@ -1,20 +1,75 @@
-# The Mac app (DictateHub) and its hub
+# The Mac app (DictateHub), local dictated and hub fallback
 
 DictateHub is a menu-bar dictation app for a Mac. You hold a hotkey and speak.
-It sends the clip to **this hub**, the Linux machine running `dictated`, which
-transcribes it with its local models (Silero VAD, Whisper on CUDA, the text
-chain, the optional Ollama pass). The Mac pastes the text at your cursor. No
-cloud service is involved.
+By default it sends the clip to **dictated on the Mac** through a private Unix
+socket. If the Mac daemon is unavailable, Auto can send it through the SSH
+tunnel to this Linux hub. Both run the same Rust text chain; the Mac pastes
+the text at your cursor. No cloud service is involved.
 
 ```
-Mac                                             Hub (this machine)
+Mac (Auto tries local first)                     Hub (fallback)
+DictateHub.app --> dictated/run/api.sock
 DictateHub.app -- HTTP/1.1 over private UDS        dictated
   run/hub.sock ======== reverse SSH -R =======>  127.0.0.1:7313 API
   (0700 directory, no TCP listener)               bearer token required
 ```
 
-This page covers the **hub side**. The Mac app's own build, install and
-permission notes live with it under `mac/`.
+The Mac app's build, install and permission notes live under `mac/`.
+The hub setup below is optional fallback provisioning. The hub's
+`dictated.service` is currently stopped intentionally; leave it stopped
+unless the operator explicitly authorizes enabling the fallback.
+
+## Mac-local endpoint and a second client
+
+The local daemon serves only `~/Library/Application Support/dictated/run/api.sock`
+(0700 parent, 0600 socket). Its separate token is
+`~/Library/Application Support/dictated/api-token` (0600), read directly by
+DictateHub on each request. Models live under
+`~/Library/Application Support/dictated/models/`. DictateHub records and pastes;
+dictated accepts uploaded audio without opening a microphone or injecting text.
+Each API client can transcribe only its own audio and has no history, config,
+context or dictionary access. Token rotation is owned by dictated.
+
+Another local app or shell can send a WAV to the same API:
+
+```bash
+mac/scripts/local-transcribe.sh clip.wav
+
+# Equivalent curl request: shell builtin printf passes the token on stdin.
+printf 'header = "Authorization: Bearer %s"\n' \
+  "$(cat "$HOME/Library/Application Support/dictated/api-token")" |
+  curl --disable --silent --show-error --fail-with-body --max-time 120 \
+    --unix-socket "$HOME/Library/Application Support/dictated/run/api.sock" \
+    -K - --header 'Host: 127.0.0.1:7313' \
+    --header 'Content-Type: audio/wav' --data-binary @clip.wav \
+    http://localhost/v1/transcribe
+```
+
+The wrapper prints the response JSON, propagates curl errors, validates token
+characters before building curl config, and never retries. It reads the token
+without copying it to another file or putting it in argv. `DICTATE_LOCAL_DIRECTORY`
+overrides the local daemon directory for isolated tests. `remote.sh test` runs
+the shell argv/stdin checks and the wrapper against a Swift UDS stub, without
+the local daemon or hub. Do not use `-H "Authorization: Bearer …"` with the token.
+The fixed Host header matches DictateHub's UDS transport and the API's default
+Host allow-list; `localhost` without the port is rejected with HTTP 421.
+
+## Endpoint selection
+
+Settings offers Auto / Mac only / Hub only / Custom URL. Auto retries the hub
+only for a missing socket, refused connection, a timeout before any request
+bytes are submitted, or an explicit HTTP 503 rejection (not ready). A local
+401 is an error. Once sending starts, a failure or timeout cannot cause fallback:
+the server may already have accepted the audio. A missing local token alongside
+an existing socket is an error; an absent installation can fall back. Custom
+URLs and the hub each use the saved hub token, never the Mac token.
+
+Saved `tunnel` and the old loopback default migrate to Auto once. Explicit Hub
+only selections persist. Settings and the status item tooltip show
+`Using: Mac (local)` or `Using: Hub (fallback)` from the last dictation. Logs
+record the endpoint without dictation text. Test connection probes both Mac
+and hub independently, including when one fails authentication; Custom probes
+only the selected URL. Probe results do not replace the last dictation endpoint.
 
 ## Security model
 
@@ -119,9 +174,9 @@ Mac TCP forward and no post-start checker that could stall while exposed.
 Configuration refusals exit 78 (not retried). SSH/link failures exit 1 and
 are retried. A stop signal terminates/reaps SSH and exits 0.
 
-The app defaults to **Hub (secure tunnel)**. Saved `http://127.0.0.1:7313`
+The app defaults to **Auto**. Saved `tunnel` and `http://127.0.0.1:7313`
 settings migrate to this default; custom HTTP(S) URLs remain available in
-Settings. File mode, onboarding and Test connection share `HubClient`.
+Settings. File mode and hotkey dictation share `DictationClient` and `HubClient`.
 HTTP over UDS sends `Host: 127.0.0.1:7313` with a per-request deadline.
 For isolated tests, `--endpoint unix:/absolute/path/hub.sock` selects another
 socket without changing saved settings.

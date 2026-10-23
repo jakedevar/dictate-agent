@@ -5,6 +5,7 @@ import Foundation
 public struct HubSettings: @unchecked Sendable {
     // UserDefaults is documented thread-safe; the wrapper only reads/writes it.
     public static let endpointKey = "hubEndpoint"
+    public static let endpointModeKey = "endpointMode"
     public static let hotkeyKey = "hotkey"
     public static let playSoundsKey = "playSounds"
     public static let keepMicWarmKey = "keepMicWarm"
@@ -21,12 +22,19 @@ public struct HubSettings: @unchecked Sendable {
             let s = defaults.string(forKey: Self.endpointKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if s.isEmpty || s == HubRequestBuilder.legacyEndpoint || s == HubRequestBuilder.legacyEndpoint + "/" {
-                defaults.set(HubRequestBuilder.defaultEndpoint, forKey: Self.endpointKey)
-                return HubRequestBuilder.defaultEndpoint
+                defaults.set(EndpointMode.auto.rawValue, forKey: Self.endpointKey)
+                return EndpointMode.auto.rawValue
+            }
+            if s == "tunnel", defaults.string(forKey: Self.endpointModeKey) == nil {
+                defaults.set(EndpointMode.auto.rawValue, forKey: Self.endpointKey)
+                return EndpointMode.auto.rawValue
             }
             return s
         }
-        nonmutating set { defaults.set(newValue, forKey: Self.endpointKey) }
+        nonmutating set {
+            defaults.set(newValue, forKey: Self.endpointKey)
+            defaults.set(EndpointMode(endpoint: newValue).rawValue, forKey: Self.endpointModeKey)
+        }
     }
 
     public var hotkey: HotkeyChoice {

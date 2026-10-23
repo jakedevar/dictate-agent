@@ -61,7 +61,7 @@ import Testing
             _ = try await client(path()).status()
             Issue.record("missing socket succeeded")
         } catch let error as HubError {
-            guard case .unreachable = error else { Issue.record("expected unreachable"); return }
+            #expect(error == .notSent(.missingSocket))
         }
     }
 
