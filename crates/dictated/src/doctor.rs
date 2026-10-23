@@ -1204,7 +1204,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn a_stale_unix_socket_is_reported_within_the_deadline() {
-        let path = PathBuf::from("/tmp").join(format!("dd-stale-{}.sock", std::process::id()));
+        let path =
+            std::path::PathBuf::from("/tmp").join(format!("dd-stale-{}.sock", std::process::id()));
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         drop(listener);
         let found = tokio::time::timeout(
