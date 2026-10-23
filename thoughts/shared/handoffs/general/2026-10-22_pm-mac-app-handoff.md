@@ -249,3 +249,20 @@ Friction: #3831, #3954, #3955, #3963
   - Then close #3943 and #3957.
 
 Friction: #3831, #3954, #3955, #3963
+
+## Update 10-23 23:57Z: Parakeet live on the Mac
+
+- **#3957 merged** at master b93ed3d.
+  - Worker gates: check-cpu 1175/0, check-cuda ok, Mac Rust 348/0.
+- **Mac dictated runs `provider = "parakeet"`** (LaunchAgent pid 3571).
+  - Second-client round trip on the synthetic fixture: 0.11–0.19 s, exact text. It was 1.6–2.2 s on Whisper Metal.
+  - Same-fixture numbers:
+    - helper: 1.216% WER, 37 ms p50
+    - end to end over the UDS API: 1.824% WER, 197 ms p50
+    - hub CUDA raw: 2.888%, 117 ms
+- **Post-merge check-cpu:** job c514f2a8, `postmerge-gate` wake. On green: close #3957, report the final milestone.
+- **Remaining:** the operator's Option+N (to-do `dictatehub-local-try`, `local-try` wake), then close #3961 and #3943.
+- No workers are running.
+- **Open follow-ups:** #3963 (UDS hardening), #3831 (mic tap test), #3968 (push guidance; harness).
+
+Friction: #3831, #3954, #3955, #3963, #3968
