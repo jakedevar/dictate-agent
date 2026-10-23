@@ -1001,11 +1001,30 @@ fn short_io_error(e: &std::io::Error) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn process_name(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: u32) -> Option<String> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut buffer = [0u8; 1024];
+    // SAFETY: proc_name writes at most the supplied buffer length; pid is
+    // range-checked, and a failed or truncated result is treated as absent.
+    let len = unsafe { libc::proc_name(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if len <= 0 || len as usize >= buffer.len() {
+        return None;
+    }
+    let bytes = &buffer[..len as usize];
+    let name = String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .trim()
+        .to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// The `grammar_model` check (the id predates S21 and is kept for `doctor
