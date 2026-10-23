@@ -147,3 +147,17 @@ Friction: none
 - **Crash reports:** `~/Library/Logs/DiagnosticReports/DictateHub-*.ips` on the Mac. Read the faulting thread with `plutil -extract threads.N.frames`.
 
 Friction: none
+
+## Update 10-23 04:31Z (seat 4b68d1fa): DONE, now idle
+
+- **Operator, via the GM:** "The dictation on the mac mini is working!"
+- **Hub evidence:** 3 network-API dictations from DictateHub at 04:27:55Z, 04:28:04Z and 04:28:16Z, with hub totals of 206–393 ms.
+- **Closed:** #3762, #3766, #3807 and #3824. To-do `dictatehub-input-monitoring` closed as done.
+- **Kaizen filed:** #3831 (P3), a mic tap path test so a Swift 6 isolation trap cannot ship again. Not started: the GM said go idle after filing.
+- **Open:** #3831, plus backlog #1497, #1498 and #1502. All idle on purpose; no workers running.
+- **Wakes:** `health` only.
+- **Live:** /Applications/DictateHub.app at master 399e22a, pid 77547.
+
+GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
+
+Friction: #3831
