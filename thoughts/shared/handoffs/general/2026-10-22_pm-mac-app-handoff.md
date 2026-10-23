@@ -266,3 +266,13 @@ Friction: #3831, #3954, #3955, #3963
 - **Open follow-ups:** #3963 (UDS hardening), #3831 (mic tap test), #3968 (push guidance; harness).
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24 00:20Z: final engineering milestone reported
+
+- **Post-merge check-cpu on b93ed3d:** green, 1175/0. #3957 closed.
+- **Final milestone reported up:** numbers, paths and restart command.
+- **Remaining:** the operator's Option+N (to-do `dictatehub-local-try`, `local-try` wake).
+  - Check DictateHub launch.log for `endpoint=local` (never text), then close #3961 and #3943 and go idle.
+- **Wakes:** `health`, `local-try`. No workers.
+
+Friction: #3831, #3954, #3955, #3963, #3968
