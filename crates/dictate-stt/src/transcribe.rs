@@ -51,6 +51,8 @@ impl Transcriber {
         let model_name = config.model.clone();
         let requested_backend = if config.device.eq_ignore_ascii_case("cpu") {
             "cpu"
+        } else if config.device.eq_ignore_ascii_case("metal") {
+            "metal"
         } else {
             "cuda"
         }
@@ -245,7 +247,7 @@ fn ensure_model_loaded<'a>(
             ModelManager::new(cache_dir.to_path_buf()).ensure(model_name)?
         };
         info!(path = %path.display(), backend = requested_backend, "loading Whisper model");
-        let loaded = load_worker_model(&path, requested_backend == "cuda")?;
+        let loaded = load_worker_model(&path, requested_backend != "cpu")?;
         let load_ms = start.elapsed().as_secs_f64() * 1000.0;
         if let Ok(mut value) = status.lock() {
             value.loaded = true;

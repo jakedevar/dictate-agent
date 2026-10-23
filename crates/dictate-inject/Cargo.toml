@@ -12,9 +12,11 @@ x11-tests = []
 anyhow = { workspace = true }
 arboard = { workspace = true }
 dictate-proto = { workspace = true }
-enigo = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo = { workspace = true }
 x11rb = { workspace = true, features = ["xtest"] }
 
 [dev-dependencies]

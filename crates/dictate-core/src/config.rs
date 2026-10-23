@@ -190,10 +190,15 @@ impl Default for HotkeyConfig {
 
 /// Returns the config directory: XDG_CONFIG_HOME/dictate-agent or ~/.config/dictate-agent
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_path_home().join(".config"));
-    base.join(CONFIG_DIR)
+    #[cfg(target_os = "macos")]
+    return dirs_path_home().join("Library/Application Support/dictated");
+    #[cfg(not(target_os = "macos"))]
+    {
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs_path_home().join(".config"));
+        base.join(CONFIG_DIR)
+    }
 }
 
 /// Returns the PID file path

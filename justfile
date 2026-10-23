@@ -191,3 +191,13 @@ mac-transport-verify:
     mac/scripts/remote.sh dr-check
     mac/scripts/remote.sh install
     DICTATED="${CARGO_TARGET_DIR:-target}/debug/dictated" DICTATE="${CARGO_TARGET_DIR:-target}/debug/dictate" scripts/mac-tunnel-smoke.sh
+
+# Mac-local Rust engine; separate from the Swift app's build and settings.
+mac-dictated-setup:
+    mac/scripts/dictated-remote.sh setup
+mac-dictated-build:
+    mac/scripts/dictated-remote.sh build
+mac-dictated-test:
+    mac/scripts/dictated-remote.sh test
+mac-dictated-install:
+    mac/scripts/dictated-remote.sh install

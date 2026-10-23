@@ -32,7 +32,9 @@ impl Default for WhisperConfig {
                 "large-v3-turbo"
             }
             .into(),
-            model_path: if cfg!(feature = "cpu-tiny-ci") {
+            model_path: if cfg!(target_os = "macos") {
+                "~/Library/Application Support/dictated/models/ggml-large-v3-turbo.bin"
+            } else if cfg!(feature = "cpu-tiny-ci") {
                 "~/.local/share/dictate-agent/models/ggml-tiny.en.bin"
             } else {
                 "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
@@ -40,6 +42,8 @@ impl Default for WhisperConfig {
             .into(),
             device: if cfg!(feature = "cpu-tiny-ci") {
                 "cpu"
+            } else if cfg!(target_os = "macos") {
+                "metal"
             } else {
                 "cuda"
             }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 # Build the daemon with the whisper.cpp CUDA backend (what `just install` and
 # `just release` ship). Off by default: see crates/dictate-stt/Cargo.toml.
 cuda = ["dictate-core/cuda"]
+metal = ["dictate-core/metal"]
 # Real-hardware end-to-end tests (`tests/e2e_real.rs`): real Whisper on CUDA with
 # the installed model, real Silero VAD, a real in-process daemon. Off by default
 # so no ordinary `cargo test` needs a GPU or a model; run with `just e2e`.
@@ -33,7 +34,6 @@ dictate-core = { workspace = true }
 dictate-vad = { workspace = true }
 dictate-fmt = { workspace = true }
 dictate-history = { workspace = true }
-dictate-hotkey = { workspace = true }
 dictate-proto = { workspace = true }
 dictate-server = { workspace = true }
 dictate-stt = { workspace = true }
@@ -46,6 +46,9 @@ tokio-stream = { workspace = true }
 toml_edit = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dictate-hotkey = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }

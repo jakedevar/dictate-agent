@@ -1,10 +1,12 @@
 //! Bounded focus capture and per-session profile resolution at start and stop.
 //! X11 I/O lives on a dedicated thread; absent context is an ordinary value.
 mod profiles;
+#[cfg(target_os = "linux")]
 mod x11;
 
 pub use dictate_proto::ResolvedProfile;
 pub use profiles::{ContextConfig, Profile};
+#[cfg(target_os = "linux")]
 pub use x11::X11Context;
 
 use std::sync::{Arc, Mutex};
@@ -61,6 +63,7 @@ impl ContextEngine {
     }
     pub fn from_config(config: ContextConfig) -> Self {
         let provider: Arc<dyn ContextProvider> = match std::env::var("DISPLAY") {
+            #[cfg(target_os = "linux")]
             Ok(display) if !display.is_empty() && config.enabled => {
                 Arc::new(X11Context::new(display))
             }

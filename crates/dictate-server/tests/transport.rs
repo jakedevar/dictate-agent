@@ -219,7 +219,7 @@ impl Running {
         .expect("the API starts")
         .expect("the API is enabled");
         Self {
-            addr: server.local_addr(),
+            addr: server.local_addr().unwrap(),
             server: Some(server),
             token,
             token_file,

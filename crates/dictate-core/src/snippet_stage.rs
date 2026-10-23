@@ -127,6 +127,7 @@ impl SnippetVariables for SystemVariables {
 /// An unavailable clipboard (no display, Wayland without a bridge, an empty or
 /// non-text selection) is an empty value, never an error: the dictation must
 /// still be typed. The content is never logged.
+#[cfg(target_os = "linux")]
 fn read_text(primary: bool) -> String {
     use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind};
     let kind = if primary {
@@ -340,4 +341,9 @@ mod tests {
         assert_eq!(run.doc.restore(), "1 and 2 and 1");
         assert_eq!(run.doc.spans().len(), 3);
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_text(_: bool) -> String {
+    String::new()
 }

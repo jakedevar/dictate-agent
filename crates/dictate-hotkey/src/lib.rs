@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Linux global hotkeys backed by evdev.
 //!
 //! One OS thread owns every opened input device. It never calls

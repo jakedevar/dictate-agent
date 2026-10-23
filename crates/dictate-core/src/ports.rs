@@ -689,6 +689,7 @@ pub trait MediaController: Send + Sync + 'static {
 #[derive(Debug, Default)]
 pub struct PlayerctlMedia;
 
+#[cfg(target_os = "linux")]
 impl MediaController for PlayerctlMedia {
     fn pause_if_playing(&self) -> bool {
         let is_playing = std::process::Command::new("playerctl")
@@ -1587,5 +1588,15 @@ mod tests {
         let outcome = i.inject("hello there", None).await;
         assert!(matches!(outcome, InjectionOutcome::Injected { .. }));
         assert_eq!(i.injected(), vec!["hello there".to_string()]);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl MediaController for PlayerctlMedia {
+    fn pause_if_playing(&self) -> bool {
+        false
+    }
+    fn resume_if_needed(&self) -> bool {
+        false
     }
 }

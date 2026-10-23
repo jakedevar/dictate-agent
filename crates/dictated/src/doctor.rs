@@ -704,6 +704,7 @@ fn network_api_verdict(
     const ID: &str = "network_api";
     const TITLE: &str = "Network API";
     match (enabled, status) {
+        (_, ApiStatus::Unix(path)) => DiagnosticCheck::ok(ID, TITLE, format!("listening on {} (private Unix socket; no TCP)", path.display())),
         (_, ApiStatus::Listening(addr)) => match unreachable {
             None => DiagnosticCheck::ok(
                 ID,

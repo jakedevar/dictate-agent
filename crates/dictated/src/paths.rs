@@ -170,9 +170,14 @@ pub fn ensure_private_dir(dir: &Path) -> Result<()> {
 /// directory another user got to first.
 #[must_use]
 pub fn runtime_dir() -> PathBuf {
-    // SAFETY: `geteuid` has no preconditions and cannot fail.
-    let uid = unsafe { libc::geteuid() };
-    runtime_dir_for(std::env::var_os("XDG_RUNTIME_DIR"), uid)
+    #[cfg(target_os = "macos")]
+    return home().join("Library/Application Support/dictated/run");
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        runtime_dir_for(std::env::var_os("XDG_RUNTIME_DIR"), uid)
+    }
 }
 
 fn runtime_dir_for(xdg: Option<std::ffi::OsString>, euid: u32) -> PathBuf {
@@ -185,6 +190,9 @@ fn runtime_dir_for(xdg: Option<std::ffi::OsString>, euid: u32) -> PathBuf {
 /// `$XDG_CONFIG_HOME/dictate-agent`, shared with the reference daemon.
 #[must_use]
 pub fn config_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return home().join("Library/Application Support/dictated");
+    #[cfg(not(target_os = "macos"))]
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".config"))
@@ -200,6 +208,9 @@ pub fn config_dir() -> PathBuf {
 /// at the legacy file if you want them merged.
 #[must_use]
 pub fn default_history_db() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return home().join("Library/Application Support/dictated/history.db");
+    #[cfg(not(target_os = "macos"))]
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local/share"))

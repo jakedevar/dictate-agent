@@ -17,9 +17,11 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_PORT: u16 = 7313;
 
 /// The file holding the bearer token, under this daemon's data directory.
+#[cfg(not(target_os = "macos"))]
 const TOKEN_FILE: &str = "api-token";
 /// This daemon's data directory name (shared with `dictated`'s history path;
 /// deliberately not the Python daemon's `dictate-agent`).
+#[cfg(not(target_os = "macos"))]
 const DATA_DIR: &str = "dictated";
 
 /// `[api]` configuration.
@@ -32,6 +34,9 @@ pub struct ApiConfig {
     /// `IP:port` to listen on. Loopback unless `allow_lan`. A hostname is
     /// refused (it could resolve to anything).
     pub bind: String,
+    /// Private HTTP Unix socket. When set this replaces TCP entirely. TLS
+    /// keys and a non-default TCP bind are refused rather than ignored.
+    pub socket: String,
     /// Permit a non-loopback `bind`. Required, together with TLS or
     /// `allow_plaintext_lan`, for anything that leaves this host.
     pub allow_lan: bool,
@@ -77,6 +82,7 @@ impl Default for ApiConfig {
         Self {
             enabled: false,
             bind: format!("127.0.0.1:{DEFAULT_PORT}"),
+            socket: String::new(),
             allow_lan: false,
             allow_plaintext_lan: false,
             tls_cert: String::new(),
@@ -112,6 +118,8 @@ pub enum Transport {
 /// The address the API may listen on, once every rule has been checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindPlan {
+    /// UDS-only mode; `addr` then describes the HTTP Host convention only.
+    pub socket: Option<PathBuf>,
     /// Where to listen.
     pub addr: SocketAddr,
     /// Whether `addr` is a loopback address (after canonicalizing an
@@ -125,6 +133,9 @@ pub struct BindPlan {
 /// downgrade to "no API".
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BindRefusal {
+    /// Ambiguous transport or an unsafe Unix path.
+    #[error("api.socket requires an absolute path, no TLS/LAN options, and an empty or default api.bind")]
+    InvalidSocket,
     /// `bind` is not an `IP:port` literal.
     #[error("api.bind '{0}' is not an IP:port address (hostnames are refused: they can resolve to a non-loopback address)")]
     InvalidAddress(String),
@@ -170,6 +181,30 @@ impl ApiConfig {
                 return Err(BindRefusal::ZeroLimit(name));
             }
         }
+        if !self.socket.is_empty() {
+            let path = PathBuf::from(&self.socket);
+            if !path.is_absolute()
+                || self.socket.contains('\0')
+                || path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                || (!self.bind.is_empty() && self.bind != Self::default().bind)
+                || !self.tls_cert.is_empty()
+                || !self.tls_key.is_empty()
+                || self.allow_lan
+                || self.allow_plaintext_lan
+            {
+                return Err(BindRefusal::InvalidSocket);
+            }
+            return Ok(Some(BindPlan {
+                socket: Some(path),
+                addr: format!("127.0.0.1:{DEFAULT_PORT}")
+                    .parse()
+                    .expect("literal address"),
+                loopback: true,
+                transport: Transport::Plain,
+            }));
+        }
         let addr: SocketAddr = self
             .bind
             .trim()
@@ -197,6 +232,7 @@ impl ApiConfig {
             }
         }
         Ok(Some(BindPlan {
+            socket: None,
             addr,
             loopback,
             transport,
@@ -291,6 +327,12 @@ pub fn network_ceiling(mut caps: Capabilities) -> Capabilities {
 /// `$XDG_DATA_HOME/dictated/api-token`.
 #[must_use]
 pub fn default_token_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/nonexistent"))
+        .join("Library/Application Support/dictated/api-token");
+    #[cfg(not(target_os = "macos"))]
     std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -563,5 +605,41 @@ mod tests {
         let config: ApiConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert!(config.enabled);
         assert_eq!(config.bind, ApiConfig::default().bind);
+    }
+}
+
+#[cfg(test)]
+mod unix_policy_tests {
+    use super::*;
+    #[test]
+    fn unix_is_exclusive_and_does_not_inherit_a_tcp_listener() {
+        for bind in ["", "127.0.0.1:7313"] {
+            let config = ApiConfig {
+                enabled: true,
+                socket: "/private/run/api.sock".into(),
+                bind: bind.into(),
+                ..Default::default()
+            };
+            let plan = config.bind_plan().unwrap().unwrap();
+            assert_eq!(plan.socket, Some(PathBuf::from("/private/run/api.sock")));
+            assert_eq!(plan.transport, Transport::Plain);
+        }
+        for (socket, bind, tls, lan) in [
+            ("relative/api.sock", "", "", false),
+            ("/tmp/../run/api.sock", "", "", false),
+            ("/private/run/api.sock", "127.0.0.1:8888", "", false),
+            ("/private/run/api.sock", "", "cert", false),
+            ("/private/run/api.sock", "", "", true),
+        ] {
+            let config = ApiConfig {
+                enabled: true,
+                socket: socket.into(),
+                bind: bind.into(),
+                tls_cert: tls.into(),
+                allow_lan: lan,
+                ..Default::default()
+            };
+            assert_eq!(config.bind_plan(), Err(BindRefusal::InvalidSocket));
+        }
     }
 }

@@ -2,12 +2,13 @@
 //! connection's TLS handshake (if any) and HTTP/1.1 in its own task.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UnixListener};
 use tokio::sync::{watch, Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
@@ -33,6 +34,9 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// config validation error.
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
+    /// A private Unix listener could not be secured or bound.
+    #[error("network API Unix socket refused: {0}")]
+    Unix(#[from] std::io::Error),
     /// The configuration asks for more exposure than it opted into.
     #[error("network API refused: {0}")]
     Refused(#[from] BindRefusal),
@@ -54,7 +58,8 @@ pub enum StartError {
 
 /// A running network API.
 pub struct ApiServer {
-    addr: SocketAddr,
+    addr: Option<SocketAddr>,
+    unix: Option<crate::unix::PrivateSocket>,
     loopback: bool,
     tls_fingerprint: Option<String>,
     stop: Arc<Notify>,
@@ -86,18 +91,36 @@ impl ApiServer {
                 (Some(acceptor), Some(fp))
             }
         };
-        let listener = TcpListener::bind(plan.addr)
-            .await
+        let unix = plan
+            .socket
+            .as_deref()
+            .map(crate::unix::PrivateSocket::bind)
+            .transpose()?;
+        let listener = if unix.is_none() {
+            Some(
+                TcpListener::bind(plan.addr)
+                    .await
+                    .map_err(|source| StartError::Bind {
+                        addr: plan.addr,
+                        source,
+                    })?,
+            )
+        } else {
+            None
+        };
+        let addr = listener
+            .as_ref()
+            .map(TcpListener::local_addr)
+            .transpose()
             .map_err(|source| StartError::Bind {
                 addr: plan.addr,
                 source,
             })?;
-        let addr = listener.local_addr().map_err(|source| StartError::Bind {
-            addr: plan.addr,
-            source,
-        })?;
         // The Host policy uses the port actually bound (port 0 in tests).
-        let bound = BindPlan { addr, ..plan };
+        let bound = BindPlan {
+            addr: addr.unwrap_or(plan.addr),
+            ..plan
+        };
 
         let (closing, closing_rx) = watch::channel(false);
         let ws_tasks = Arc::new(WsTasks::new());
@@ -118,11 +141,20 @@ impl ApiServer {
         let app = router(state);
 
         let scheme = if tls.is_some() { "https" } else { "http" };
-        if bound.loopback {
-            info!("network API listening on {scheme}://{addr} (loopback only)");
+        if let Some(path) = &bound.socket {
+            info!(
+                "network API listening on private Unix socket {} (no TCP)",
+                path.display()
+            );
+        } else if bound.loopback {
+            info!(
+                "network API listening on {scheme}://{} (loopback only)",
+                bound.addr
+            );
         } else {
             warn!(
-                "network API listening BEYOND this host on {scheme}://{addr} ({})",
+                "network API listening BEYOND this host on {scheme}://{} ({})",
+                bound.addr,
                 if tls.is_some() {
                     "TLS"
                 } else {
@@ -134,6 +166,7 @@ impl ApiServer {
         let stop = Arc::new(Notify::new());
         let task = tokio::spawn(accept_loop(
             listener,
+            unix.as_ref().map(|u| u.listener()).transpose()?,
             app,
             tls,
             Arc::new(Semaphore::new(config.max_connections as usize)),
@@ -141,6 +174,7 @@ impl ApiServer {
         ));
         Ok(Some(Self {
             addr,
+            unix,
             loopback: bound.loopback,
             tls_fingerprint,
             stop,
@@ -152,8 +186,13 @@ impl ApiServer {
 
     /// The bound address.
     #[must_use]
-    pub fn local_addr(&self) -> SocketAddr {
+    pub fn local_addr(&self) -> Option<SocketAddr> {
         self.addr
+    }
+
+    /// The HTTP Unix socket, when TCP is absent.
+    pub fn socket_path(&self) -> Option<&Path> {
+        self.unix.as_ref().map(|u| u.path())
     }
 
     /// Whether the listener is loopback-only.
@@ -188,7 +227,8 @@ impl ApiServer {
 }
 
 async fn accept_loop(
-    listener: TcpListener,
+    listener: Option<TcpListener>,
+    unix: Option<UnixListener>,
     app: axum::Router,
     tls: Option<TlsAcceptor>,
     slots: Arc<Semaphore>,
@@ -198,7 +238,7 @@ async fn accept_loop(
     loop {
         tokio::select! {
             () = stop.notified() => break,
-            accepted = listener.accept() => {
+            accepted = async { listener.as_ref().expect("TCP branch").accept().await }, if listener.is_some() => {
                 let (tcp, peer) = match accepted {
                     Ok(a) => a,
                     Err(e) => {
@@ -220,6 +260,24 @@ async fn accept_loop(
                     drop(permit);
                 });
             }
+            accepted = async { unix.as_ref().expect("Unix branch").accept().await }, if unix.is_some() => {
+                match accepted {
+                    Ok((stream, _)) => {
+                        let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
+                        let app = app.clone();
+                        connections.spawn(async move {
+                            // One shared throttle bucket for local UDS callers. Their
+                            // grant remains the network grant, never local_trusted.
+                            serve_plain(stream, "127.0.0.1:0".parse().expect("literal"), app).await;
+                            drop(permit);
+                        });
+                    }
+                    Err(e) => {
+                        warn!("network API Unix accept failed: {e}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
@@ -233,6 +291,22 @@ async fn serve_connection(
     tls: Option<TlsAcceptor>,
 ) {
     let _ = tcp.set_nodelay(true);
+    match tls {
+        None => serve_plain(tcp, peer, app).await,
+        Some(acceptor) => {
+            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
+                Ok(Ok(stream)) => serve_plain(stream, peer, app).await,
+                Ok(Err(e)) => debug!(peer = %peer.ip(), "TLS handshake failed: {e}"),
+                Err(_) => debug!(peer = %peer.ip(), "TLS handshake timed out"),
+            }
+        }
+    }
+}
+
+async fn serve_plain<T>(stream: T, peer: SocketAddr, app: axum::Router)
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let service = hyper::service::service_fn(move |mut request: hyper::Request<Incoming>| {
         request.extensions_mut().insert(PeerAddr(peer));
         app.clone().oneshot(request)
@@ -249,30 +323,10 @@ async fn serve_connection(
         .header_read_timeout(HEADER_TIMEOUT)
         .keep_alive(true)
         .half_close(false);
-    let result = match tls {
-        None => {
-            http.serve_connection(TokioIo::new(tcp), service)
-                .with_upgrades()
-                .await
-        }
-        Some(acceptor) => {
-            match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
-                Ok(Ok(stream)) => {
-                    http.serve_connection(TokioIo::new(stream), service)
-                        .with_upgrades()
-                        .await
-                }
-                Ok(Err(e)) => {
-                    debug!(peer = %peer.ip(), "TLS handshake failed: {e}");
-                    return;
-                }
-                Err(_) => {
-                    debug!(peer = %peer.ip(), "TLS handshake timed out");
-                    return;
-                }
-            }
-        }
-    };
+    let result = http
+        .serve_connection(TokioIo::new(stream), service)
+        .with_upgrades()
+        .await;
     if let Err(e) = result {
         debug!(peer = %peer.ip(), "network API connection ended: {e}");
     }
