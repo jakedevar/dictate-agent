@@ -597,6 +597,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metal_backend_and_tilde_socket_are_valid_configuration() {
+        let (config, report) = parse_config("[whisper]\ndevice = \"metal\"\n[api]\nenabled = true\nsocket = \"~/Library/Application Support/dictated/run/api.sock\"\n").unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(Path::new(&config.api.socket).is_absolute());
+        assert_eq!(config.whisper.device, "metal");
+    }
+
+    #[test]
     fn test_default_values() {
         let config = Config::default();
         assert_eq!(config.whisper.device, "cuda");

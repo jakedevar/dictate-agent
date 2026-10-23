@@ -201,3 +201,5 @@ mac-dictated-test:
     mac/scripts/dictated-remote.sh test
 mac-dictated-install:
     mac/scripts/dictated-remote.sh install
+mac-dictated-smoke:
+    mac/scripts/dictated-remote.sh smoke

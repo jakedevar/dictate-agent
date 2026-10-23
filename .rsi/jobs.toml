@@ -60,3 +60,9 @@ runner = "just"
 target = "mac-dictated-install"
 timeout_minutes = 60
 cpu_quota_percent = 100
+
+[recipes.mac-dictated-smoke]
+runner = "just"
+target = "mac-dictated-smoke"
+timeout_minutes = 10
+cpu_quota_percent = 100
