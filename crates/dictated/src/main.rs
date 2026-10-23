@@ -185,7 +185,11 @@ fn api_token(path: Option<&std::path::Path>, rotate: bool) -> Result<()> {
         "https"
     };
     if api.enabled {
-        eprintln!("API         : {scheme}://{}/v1/", api.bind.trim());
+        if api.socket.is_empty() {
+            eprintln!("API         : {scheme}://{}/v1/", api.bind.trim());
+        } else {
+            eprintln!("API         : Unix socket {} (no TCP)", api.socket);
+        }
     } else {
         eprintln!("API         : disabled (set [api] enabled = true)");
     }

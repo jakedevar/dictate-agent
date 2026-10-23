@@ -60,3 +60,33 @@ runner = "just"
 target = "mac-stt-bench-verify"
 timeout_minutes = 20
 cpu_quota_percent = 200
+
+[recipes.mac-dictated-setup]
+runner = "just"
+target = "mac-dictated-setup"
+timeout_minutes = 20
+cpu_quota_percent = 100
+
+[recipes.mac-dictated-build]
+runner = "just"
+target = "mac-dictated-build"
+timeout_minutes = 60
+cpu_quota_percent = 100
+
+[recipes.mac-dictated-test]
+runner = "just"
+target = "mac-dictated-test"
+timeout_minutes = 60
+cpu_quota_percent = 100
+
+[recipes.mac-dictated-install]
+runner = "just"
+target = "mac-dictated-install"
+timeout_minutes = 60
+cpu_quota_percent = 100
+
+[recipes.mac-dictated-smoke]
+runner = "just"
+target = "mac-dictated-smoke"
+timeout_minutes = 10
+cpu_quota_percent = 100

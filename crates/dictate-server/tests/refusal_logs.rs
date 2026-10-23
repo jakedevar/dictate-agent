@@ -128,7 +128,7 @@ async fn a_flood_of_refused_requests_writes_a_bounded_number_of_warnings() {
     .await
     .unwrap()
     .unwrap();
-    let addr = server.local_addr();
+    let addr = server.local_addr().unwrap();
 
     // No `Connection: close` from the client: the server must close on its
     // own after every refusal.

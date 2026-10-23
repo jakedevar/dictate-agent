@@ -704,6 +704,7 @@ fn network_api_verdict(
     const ID: &str = "network_api";
     const TITLE: &str = "Network API";
     match (enabled, status) {
+        (_, ApiStatus::Unix(path)) => DiagnosticCheck::ok(ID, TITLE, format!("listening on {} (private Unix socket; no TCP)", path.display())),
         (_, ApiStatus::Listening(addr)) => match unreachable {
             None => DiagnosticCheck::ok(
                 ID,
@@ -1000,11 +1001,30 @@ fn short_io_error(e: &std::io::Error) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn process_name(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: u32) -> Option<String> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut buffer = [0u8; 1024];
+    // SAFETY: proc_name writes at most the supplied buffer length; pid is
+    // range-checked, and a failed or truncated result is treated as absent.
+    let len = unsafe { libc::proc_name(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if len <= 0 || len as usize >= buffer.len() {
+        return None;
+    }
+    let bytes = &buffer[..len as usize];
+    let name = String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .trim()
+        .to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// The `grammar_model` check (the id predates S21 and is kept for `doctor
@@ -1136,6 +1156,7 @@ mod tests {
 
     /// A unix socket that is listening but will never accept: backlog 0, and
     /// already holding the one queued connection Linux allows it.
+    #[cfg(target_os = "linux")]
     fn wedged_socket(path: &Path) -> (std::os::fd::OwnedFd, std::os::unix::net::UnixStream) {
         use std::os::fd::FromRawFd;
         use std::os::unix::ffi::OsStrExt;
@@ -1167,6 +1188,9 @@ mod tests {
 
     /// `doctor_unbounded_connect`: a blocking connect to a server that never
     /// accepts waited forever; the probe must answer within its deadline.
+    /// Darwin permits further connects at backlog zero, so this X11/Linux
+    /// regression fixture cannot manufacture an unreachable socket there.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_socket_that_never_accepts_is_reported_within_the_deadline() {
         // Under /tmp: the harness TMPDIR can be too long for sun_path.
@@ -1194,6 +1218,23 @@ mod tests {
             "a server that never accepts is unreachable: {found:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_stale_unix_socket_is_reported_within_the_deadline() {
+        let path =
+            std::path::PathBuf::from("/tmp").join(format!("dd-stale-{}.sock", std::process::id()));
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(listener);
+        let found = tokio::time::timeout(
+            Duration::from_secs(1),
+            socket_unreachable(&path, Duration::from_millis(300)),
+        )
+        .await
+        .expect("the probe must finish within its deadline");
+        assert!(found.is_some(), "stale listener must be unreachable");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

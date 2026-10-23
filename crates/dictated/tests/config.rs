@@ -61,13 +61,12 @@ fn detail_path(e: &ProtoError) -> Option<String> {
 }
 
 async fn harness_with_file(contents: Option<&str>) -> (Harness, std::path::PathBuf) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "dictated-config-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");

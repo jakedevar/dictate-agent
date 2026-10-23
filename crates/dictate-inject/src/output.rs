@@ -1,13 +1,23 @@
 use std::future::Future;
 use std::pin::Pin;
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use anyhow::{anyhow, Context, Result};
-use dictate_proto::{ErrorCode, InjectMethod, InjectionOutcome, ProtoError, SkipReason};
+#[cfg(target_os = "linux")]
+use dictate_proto::{ErrorCode, ProtoError};
+use dictate_proto::{InjectionOutcome, SkipReason};
+#[cfg(target_os = "linux")]
 use enigo::{Enigo, Keyboard, Settings};
+#[cfg(target_os = "linux")]
 use tracing::{info, warn};
 
 use crate::config::InjectionPolicy;
+#[cfg(not(target_os = "linux"))]
+pub use crate::selection::X11Injector;
+#[cfg(target_os = "linux")]
+use dictate_proto::InjectMethod;
 
 /// Runtime facts that policy resolution needs. A backend must never select
 /// paste merely because configuration asked for it: paste is only safe when
@@ -81,6 +91,7 @@ pub trait Injector: Send + Sync + 'static {
 
 /// X11 implementation. It has no user-consent flow, but shares the async
 /// contract required by Wayland portal backends.
+#[cfg(target_os = "linux")]
 #[derive(Clone)]
 pub struct X11Injector {
     pub(crate) enabled: bool,
@@ -90,6 +101,7 @@ pub struct X11Injector {
     pub(crate) clipboard: Arc<Mutex<()>>,
 }
 
+#[cfg(target_os = "linux")]
 impl std::fmt::Debug for X11Injector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("X11Injector")
@@ -100,6 +112,7 @@ impl std::fmt::Debug for X11Injector {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl X11Injector {
     #[must_use]
     pub fn new(config: &crate::config::OutputConfig) -> Self {
@@ -238,6 +251,7 @@ impl X11Injector {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Injector for X11Injector {
     fn capabilities(&self) -> BackendCapabilities {
         if !self.enabled || std::env::var_os("DISPLAY").is_none() {

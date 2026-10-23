@@ -52,7 +52,7 @@ model = "large-v3-turbo"
 # catalog location for `model`; custom existing paths are not downloaded.
 model_path = "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
 
-# Device: "cuda" for GPU (RTX), "cpu" for CPU-only
+# Device: "cuda" for Nvidia GPU, "metal" for Apple GPU, "cpu" for CPU-only
 device = "cuda"
 
 # Threshold for filtering non-speech (0.0-1.0, higher = stricter)
@@ -402,3 +402,8 @@ max_connections = 16
 max_ws_sessions = 4
 requests_per_minute = 120
 burst = 20
+
+# Mac-local S33 HTTP API: set these in the existing [api] section (no TCP).
+# socket = "/Users/you/Library/Application Support/dictated/run/api.sock"
+# bind = "" # omit or leave default as well; non-default TCP binds are refused
+# UDS keeps bearer authentication, Origin rejection and the remote-only grant.

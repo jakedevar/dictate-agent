@@ -133,8 +133,8 @@ async fn http(api: &Api, method: &str, path_and_query: &str, body: &[u8]) -> Rep
 }
 
 /// A network peer on the WebSocket.
-struct Ws {
-    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+struct Ws<S = TcpStream> {
+    ws: tokio_tungstenite::WebSocketStream<S>,
     next_id: u64,
     events: Vec<Event>,
 }
@@ -161,7 +161,9 @@ impl Ws {
             events: Vec::new(),
         }
     }
+}
 
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Ws<S> {
     async fn read(&mut self) -> Option<Message> {
         loop {
             match self.ws.next().await? {
@@ -889,4 +891,111 @@ async fn rotating_the_token_ends_an_open_websocket_session() {
         "no answer: the session is closed"
     );
     h.stop().await;
+}
+
+/// UDS is the S33 transport, not the privileged local control plane.
+#[tokio::test]
+async fn unix_http_keeps_authentication_and_the_remote_grant() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::net::UnixStream;
+    let mut h = Harness::start().await;
+    // canonicalize the fixture root: /tmp is itself a symlink on Darwin.
+    let dir = h.dir().canonicalize().unwrap();
+    let socket = dir.join("api/run/api.sock");
+    let config = api_config(&h, |c| {
+        c.bind.clear();
+        c.socket = socket.to_string_lossy().into_owned();
+    });
+    let (token, _) = dictate_server::token::ensure(&config.token_path()).unwrap();
+    let status = h
+        .daemon
+        .serve_network_api(&config, &Default::default())
+        .await;
+    assert_eq!(status, dictated::network::ApiStatus::Unix(socket.clone()));
+    assert!(h.daemon.network_api_addr().is_none(), "no TCP was bound");
+    assert_eq!(
+        std::fs::metadata(socket.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    async fn request(
+        socket: &std::path::Path,
+        token: Option<&str>,
+        extra: &str,
+        body: &[u8],
+    ) -> String {
+        within("UDS HTTP", async {
+            let mut stream = UnixStream::connect(socket).await.unwrap();
+            let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+            let method = if body.is_empty() { "GET /v1/status" } else { "POST /v1/transcribe" };
+            stream.write_all(format!("{method} HTTP/1.1\r\nHost: 127.0.0.1:7313\r\nConnection: close\r\n{auth}{extra}Content-Type: audio/wav\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).await.unwrap();
+            String::from_utf8(bytes).unwrap()
+        }).await
+    }
+    assert!(request(&socket, None, "", b"")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    assert!(request(
+        &socket,
+        Some(&token),
+        "Origin: http://evil.example\r\n",
+        b""
+    )
+    .await
+    .starts_with("HTTP/1.1 403"));
+    let reply = request(&socket, Some(&token), "", &wav(1.0)).await;
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    assert!(reply.contains("Hello there"), "{reply}");
+    let mut req = "ws://127.0.0.1:7313/v1/ws".into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (ws, _) = tokio_tungstenite::client_async(req, UnixStream::connect(&socket).await.unwrap())
+        .await
+        .unwrap();
+    let mut ws = Ws {
+        ws,
+        next_id: 1,
+        events: Vec::new(),
+    };
+    let caps = ws.handshake().await;
+    assert!(caps.features.transcribe_upload);
+    assert!(!caps.features.host_capture && !caps.features.text_injection);
+    for cmd in [
+        Command::GetContext,
+        Command::GetConfig { path: None },
+        Command::ListDictionary {
+            query: None,
+            limit: None,
+        },
+        Command::QueryHistory {
+            query: Default::default(),
+        },
+        Command::Diagnose { quick: true },
+        Command::Toggle,
+    ] {
+        let name = cmd.name();
+        expect_code(ws.request(cmd).await, ErrorCode::Forbidden, name);
+    }
+    drop(ws);
+    let new = dictate_server::token::rotate(&config.token_path()).unwrap();
+    assert!(request(&socket, Some(&token), "", b"")
+        .await
+        .starts_with("HTTP/1.1 401"));
+    assert!(request(&socket, Some(&new), "", b"")
+        .await
+        .starts_with("HTTP/1.1 200"));
+    assert!(h.injector.injected().is_empty());
+    h.stop().await;
+    assert!(!socket.exists(), "shutdown removes our socket");
 }

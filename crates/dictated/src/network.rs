@@ -27,6 +27,8 @@ pub enum ApiStatus {
     Disabled,
     /// Listening on this address.
     Listening(SocketAddr),
+    /// Listening on the private HTTP Unix socket, with no TCP listener.
+    Unix(std::path::PathBuf),
     /// Enabled, but it did not start; the startup error, as logged.
     Down(String),
 }

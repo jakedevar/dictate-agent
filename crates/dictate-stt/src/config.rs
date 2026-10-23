@@ -12,7 +12,7 @@ pub struct WhisperConfig {
     /// An explicit path opts out of catalog download and checksum management.
     /// The default remains for compatibility with existing configurations.
     pub model_path: String,
-    /// "cuda" or "cpu"
+    /// "cuda", "metal" (Apple GPU), or "cpu".
     pub device: String,
     /// Threshold for filtering non-speech (0.0-1.0, higher = stricter)
     pub no_speech_threshold: f32,
@@ -32,7 +32,9 @@ impl Default for WhisperConfig {
                 "large-v3-turbo"
             }
             .into(),
-            model_path: if cfg!(feature = "cpu-tiny-ci") {
+            model_path: if cfg!(target_os = "macos") {
+                "~/Library/Application Support/dictated/models/ggml-large-v3-turbo.bin"
+            } else if cfg!(feature = "cpu-tiny-ci") {
                 "~/.local/share/dictate-agent/models/ggml-tiny.en.bin"
             } else {
                 "~/.local/share/dictate-agent/models/ggml-large-v3-turbo.bin"
@@ -40,6 +42,8 @@ impl Default for WhisperConfig {
             .into(),
             device: if cfg!(feature = "cpu-tiny-ci") {
                 "cpu"
+            } else if cfg!(target_os = "macos") {
+                "metal"
             } else {
                 "cuda"
             }

@@ -219,11 +219,14 @@ impl Daemon {
         api: &dictate_server::ApiConfig,
     ) -> Result<Option<std::net::SocketAddr>, dictate_server::StartError> {
         if let Some(running) = &self.api {
-            return Ok(Some(running.local_addr()));
+            return Ok(running.local_addr());
         }
         let backend = Arc::new(network::NetworkBackend::new(self.deps.clone(), api));
         self.api = dictate_server::ApiServer::start(api, backend).await?;
-        Ok(self.api.as_ref().map(dictate_server::ApiServer::local_addr))
+        Ok(self
+            .api
+            .as_ref()
+            .and_then(dictate_server::ApiServer::local_addr))
     }
 
     /// Start the network API the way the daemon does at startup: a failure
@@ -238,7 +241,10 @@ impl Daemon {
     ) -> network::ApiStatus {
         let outcome = match self.start_network_api(api).await {
             Ok(Some(addr)) => network::ApiStatus::Listening(addr),
-            Ok(None) => network::ApiStatus::Disabled,
+            Ok(None) => match self.api.as_ref().and_then(|a| a.socket_path()) {
+                Some(path) => network::ApiStatus::Unix(path.to_path_buf()),
+                None => network::ApiStatus::Disabled,
+            },
             Err(e) => {
                 warn!(
                     "{e}; the network API is DOWN, dictation and the local socket \
@@ -254,7 +260,9 @@ impl Daemon {
     /// The network API's address, while it is running.
     #[must_use]
     pub fn network_api_addr(&self) -> Option<std::net::SocketAddr> {
-        self.api.as_ref().map(dictate_server::ApiServer::local_addr)
+        self.api
+            .as_ref()
+            .and_then(dictate_server::ApiServer::local_addr)
     }
 
     /// Stop accepting, cancel any session in flight, and wait for the tasks.
@@ -415,12 +423,30 @@ pub async fn run(config: Config) -> Result<()> {
 ///
 /// As [`run`].
 pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()> {
+    // Mac is an API-only engine. These capabilities cannot be enabled by an
+    // accidentally copied Linux config. DictateHub owns recording and paste.
+    #[cfg(target_os = "macos")]
+    let config = {
+        let mut config = config;
+        anyhow::ensure!(
+            !config.api.enabled || !config.api.socket.is_empty(),
+            "macOS requires api.socket: TCP listeners are disabled"
+        );
+        config.audio.capture = false;
+        config.audio.earcons.enabled = false;
+        config.output.auto_type = false;
+        config.notifications.enabled = false;
+        config.hotkey.enabled = false;
+        config
+    };
     let runtime = RuntimePaths::from_env();
     runtime.ensure_dirs()?;
 
+    #[allow(unused_mut)]
     let mut pid = PidFile::acquire(&runtime.pid)?;
     // Claim-if-free: keeps `dictate-toggle` working against this daemon
     // without ever stealing the reference daemon's signal channel.
+    #[cfg(target_os = "linux")]
     if !pid.claim_legacy(&runtime.legacy_pid) {
         warn!(
             "another daemon holds {}; scripts/dictate-toggle will drive that process, not this one",
@@ -435,7 +461,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     // whether the configured model exists, and say so — in the log, in
     // `get_status`, and with one desktop notification — before the first
     // dictation rather than never.
-    {
+    if config.format.llm.enabled {
         let (host, port) = dictate_fmt::llm::parse_host_port(&config.format.llm.host);
         let formatter = pipeline.formatter.clone();
         tokio::spawn(async move {
@@ -492,6 +518,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
 
     // Evdev is optional and deliberately degrades to this unchanged signal
     // path when input-device permissions have not been granted.
+    #[cfg(target_os = "linux")]
     let hotkey = dictate_hotkey::HotkeyService::start(
         &config.hotkey,
         daemon.engine().clone(),
@@ -500,6 +527,7 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
 
     // The signal shim owns the daemon's lifetime: it returns on SIGINT/SIGTERM.
     signals::listen(daemon.engine().clone(), signal_options).await?;
+    #[cfg(target_os = "linux")]
     hotkey.shutdown();
     daemon.shutdown().await;
     Ok(())

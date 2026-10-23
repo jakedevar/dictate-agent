@@ -13,6 +13,7 @@ pub use dictate_stt::WhisperConfig;
 pub use dictate_vad::VadConfig;
 
 // XDG paths
+#[cfg(not(target_os = "macos"))]
 const CONFIG_DIR: &str = "dictate-agent";
 const CONFIG_FILE: &str = "config.toml";
 const PID_FILE: &str = "dictate.pid";
@@ -190,10 +191,15 @@ impl Default for HotkeyConfig {
 
 /// Returns the config directory: XDG_CONFIG_HOME/dictate-agent or ~/.config/dictate-agent
 pub fn config_dir() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs_path_home().join(".config"));
-    base.join(CONFIG_DIR)
+    #[cfg(target_os = "macos")]
+    return dirs_path_home().join("Library/Application Support/dictated");
+    #[cfg(not(target_os = "macos"))]
+    {
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs_path_home().join(".config"));
+        base.join(CONFIG_DIR)
+    }
 }
 
 /// Returns the PID file path
@@ -500,6 +506,7 @@ fn finalize(mut config: Config) -> Config {
         .into_owned();
     for path in [
         &mut config.api.token_file,
+        &mut config.api.socket,
         &mut config.api.tls_cert,
         &mut config.api.tls_key,
     ] {
@@ -548,9 +555,9 @@ fn validate(config: &Config) -> Vec<String> {
     // startup error, reported by `--check-config` before a restart.
     errors.extend(config.api.validate());
     let device = config.whisper.device.to_ascii_lowercase();
-    if device != "cuda" && device != "cpu" {
+    if !matches!(device.as_str(), "cuda" | "metal" | "cpu") {
         errors.push(format!(
-            "whisper.device must be \"cuda\" or \"cpu\", got \"{}\"",
+            "whisper.device must be \"cuda\", \"metal\" or \"cpu\", got \"{}\"",
             config.whisper.device
         ));
     }
@@ -588,6 +595,14 @@ fn soft_checks(config: &Config) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metal_backend_and_tilde_socket_are_valid_configuration() {
+        let (config, report) = parse_config("[whisper]\ndevice = \"metal\"\n[api]\nenabled = true\nsocket = \"~/Library/Application Support/dictated/run/api.sock\"\n").unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(Path::new(&config.api.socket).is_absolute());
+        assert_eq!(config.whisper.device, "metal");
+    }
 
     #[test]
     fn test_default_values() {

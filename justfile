@@ -205,3 +205,15 @@ mac-stt-bench-hub:
 mac-stt-bench-verify:
     mac/bench/run.sh verify
     cargo run --quiet --locked --manifest-path mac/bench/score/Cargo.toml -- mac/bench/work/samples/manifest.tsv mac/bench/results/validation/FluidBench.jsonl mac/bench/results/validation/whisper-metal.jsonl > mac/bench/results/validation/summary.jsonl
+
+# Mac-local Rust engine; separate from the Swift app's build and settings.
+mac-dictated-setup:
+    mac/scripts/dictated-remote.sh setup
+mac-dictated-build:
+    mac/scripts/dictated-remote.sh build
+mac-dictated-test:
+    mac/scripts/dictated-remote.sh test
+mac-dictated-install:
+    mac/scripts/dictated-remote.sh install
+mac-dictated-smoke:
+    mac/scripts/dictated-remote.sh smoke

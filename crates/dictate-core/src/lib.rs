@@ -35,6 +35,7 @@ pub mod event_bus;
 pub mod formatter_health;
 pub mod llm_formatter;
 pub mod local_executor;
+#[cfg(target_os = "linux")]
 pub mod notify;
 pub mod ollama;
 pub mod pipeline;
@@ -58,3 +59,7 @@ pub use dictate_context::{
     ContextConfig, ContextEngine, ContextProvider, NoContext, TestContext, WindowInfo,
 };
 pub use dictate_inject::InjectionPolicy;
+
+#[cfg(not(target_os = "linux"))]
+#[path = "notify_unavailable.rs"]
+pub mod notify;

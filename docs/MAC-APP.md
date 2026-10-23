@@ -186,3 +186,67 @@ dictated --rotate-api-token >/dev/null   # invalidate the Mac's copy
 ```
 
 Then set `[api] enabled = false` and restart `dictated` to close the port.
+
+## Mac-local engine (slice #3945)
+
+The existing Rust daemon can run on the Mac with whisper.cpp Metal. The model
+and deterministic text chain are the same as Linux. DictateHub remains the
+recorder/paste client; its local-first endpoint selection is a separate slice.
+The hub may stay stopped throughout this install. These commands do not touch
+the hub service, tunnel, installed app, app settings or TCC.
+
+From the repository on the hub, with `ssh mac-mini` working:
+
+```bash
+just mac-dictated-setup     # user-local rustup + Homebrew cmake; no sudo
+just mac-dictated-build     # release Metal daemon and tiny model-management CLI
+just mac-dictated-test      # server + daemon tests on the Mac
+just mac-dictated-install   # pinned model pull, binary/config/plist, bootstrap + restart
+```
+
+The Rust source and build live under
+`~/dictate-mac-build/<RSI_SESSION_ID or DICTATE_MAC_BUILD_ID>.noindex/rust/`,
+separate from Swift builds. Builds use `nice -n 10`, at most six jobs. The real
+LaunchAgent is `~/Library/LaunchAgents/dev.jakedevar.dictated.plist`, with
+KeepAlive and RunAtLoad; stdout/stderr go to `~/Library/Logs/dictated/`.
+
+On the Mac, `mac/scripts/dictated-launchagent.sh restart|status|uninstall`
+controls this service. Uninstall removes only the service/plist and keeps state.
+The executable lives at `~/Library/Application Support/dictated/bin/dictated`.
+A first install creates `config.toml` beside it; reinstalls preserve that config.
+Microphone capture, injection, host context, desktop notifications and evdev
+hotkeys are disabled. The macOS daemon refuses an enabled API without a UDS.
+
+Models live in `~/Library/Application Support/dictated/models/`. The install
+uses `dictate model pull large-v3-turbo`, which verifies the pinned catalog
+SHA-256. `[whisper] model`, `model_path` and `device = "metal"` remain
+configurable for the benchmark's later selection. The formatter defaults off
+for this service; deterministic rules still run. History/state and the private
+0600 `api-token` are under the same Application Support directory.
+
+The API serves only
+`~/Library/Application Support/dictated/run/api.sock` (0700 directory, 0600
+socket). `[api] socket` selects UDS exclusively, even if `bind` was omitted;
+no TCP socket is opened. Non-default TCP binds or TLS/LAN flags alongside it
+are configuration errors. The listener rejects symlink components, insecure
+ancestors and non-owned/non-socket leftovers, refuses a live socket and locks
+the directory against concurrent starts. It removes only its own socket on
+shutdown. Host uses the existing `127.0.0.1:7313` convention, Origin rejection
+and bearer authentication still apply, and the grant stays transcription-only.
+
+A second local client can send a synthetic WAV without putting the token in
+process arguments (run on the Mac; substitute a local WAV):
+
+```bash
+data="$HOME/Library/Application Support/dictated"
+printf 'header = "Authorization: Bearer %s"\n' "$(cat "$data/api-token")" |
+  curl --fail-with-body --silent --show-error --unix-socket "$data/run/api.sock" \
+    -K - -H 'Content-Type: audio/wav' --data-binary @synthetic.wav \
+    -w '\nlatency=%{time_total}s\n' http://127.0.0.1:7313/v1/transcribe
+"$data/bin/dictated" --config "$data/config.toml" --rotate-api-token >/dev/null
+```
+
+Rotation invalidates the old token from the next request without restarting.
+Use `--api-token >/dev/null` to create/check it without printing it. There is
+no privileged control grant on the HTTP UDS: history/config/context/dictionary
+reads, host capture and injection remain refused, just as on the hub API.
