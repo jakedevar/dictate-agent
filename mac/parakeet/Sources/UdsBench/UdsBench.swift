@@ -44,7 +44,7 @@ func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, 
 }
 
 @main struct UdsBench {
-    static func main() throws {
+    static func main() async throws {
         let args = CommandLine.arguments
         guard args.count == 2 else { throw CocoaError(.fileReadInvalidFileName) }
         let manifest = URL(fileURLWithPath: args[1])
@@ -59,7 +59,12 @@ func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, 
         }
         guard clips.count == 33, Set(clips.map(\.id)).count == clips.count else { throw CocoaError(.fileReadCorruptFile) }
         let socket = root.appendingPathComponent("run/api.sock").path
-        for clip in clips { _ = try transcribe(clip, socket: socket, token: token) }
+        for clip in clips {
+            _ = try transcribe(clip, socket: socket, token: token)
+            // Respect the unchanged S33 120 requests/minute limit. This pause
+            // is outside curl's measured HTTP time.
+            try await Task.sleep(for: .milliseconds(510))
+        }
         var times: [String: [Double]] = [:]
         var errors: [String: [Int]] = [:], counts: [String: [Int]] = [:]
         for pass in 0..<3 {
@@ -70,6 +75,7 @@ func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, 
                 errors[clip.set, default: [0, 0, 0]][pass] += distance
                 counts[clip.set, default: [0, 0, 0]][pass] += clip.reference.count
                 try emit(["kind": "clip", "id": clip.id, "set": clip.set, "pass": pass, "text": text, "ms": ms, "edits": distance, "words": clip.reference.count])
+                try await Task.sleep(for: .milliseconds(510))
             }
         }
         for set in times.keys.sorted() {
