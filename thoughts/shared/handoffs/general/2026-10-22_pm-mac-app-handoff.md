@@ -77,3 +77,24 @@ Filed or seen this session: #3551, #3575 (harness), #3690 (done), #3555–#3557/
   - Confirm the launch line shows `accessibility=true` after the operator re-adds the grant.
 - **Close-out:** when a live Option+N dictation is in hub history (check with jq on app/route/timings, never text), close #3762 and #3766. Then send ONE AgentReportUp to the GM; it relays to the Mac via the Rsi PM.
 - **AeroSpace:** the Mac lane commented out AeroSpace's `alt-n` binding in ~/.config/aerospace/aerospace.toml on the Mac. Never edit it from here.
+
+## Update 10-23 02:35Z (seat 4b68d1fa, Claude Opus 5.5; read this first)
+
+The GM appointed this seat after ac4d1e94 was interrupted with no successor.
+
+- **Wakes:** `health` (when health_anomaly; ignores `hub_disk_high:/` and `cpu_hot:hub`) and `optn-todo` (when todo_closed on `1389f351-3dae-43cb-bbce-938e4d4f72e6`, to-do `dictatehub-option-n`, 24 h timeout). The earlier seat's wakes did not carry over, so both were re-armed. Confirm them with AgentListWakes.
+- **#3762 / #3766:** waiting on the operator's step: remove DictateHub with − in Accessibility and Input Monitoring, re-add it, reopen.
+  - When the to-do closes, look in hub history for a Mac-origin row: `dictate history --json --limit 20 | jq -r '.items[] | [(.ts_ms/1000|todate), .app, .route, .timings.inject.status] | @tsv'`. Never print text.
+  - If a row is there, close both Issues and send ONE AgentReportUp. If not, ask the GM to relay a check of the Mac launch.log for `accessibility=true`.
+  - As of 02:30Z there is no Mac dictation in history. The newest rows are Ghostty at 10-22 06:08Z and textedit (the pm-e2e test) at 09:35Z.
+- **Closed this seat:**
+  - #3133: fixed, with isolated Ghostty evidence. Decision: keep the `ghostty-typing` profile.
+  - #3551 and #3542: worker-contract fix at master 0b27a30. Workers send no timeout_minutes and do not push.
+  - #1430, #1436, #1472, #1481, #1489, #1505: obsolete, or harness items.
+  - #2484 and #3801: storage, acknowledged.
+- **Still open:** #3762 and #3766 (operator step), plus backlog #1497, #1498 and #1502 (P3/P4 features, idle on purpose per the GM throttle). No workers are running.
+- **Kaizen:** none filed this seat. Fixed: #3551, #3542. Open: none in this project (harness #3575 is still the governor starvation).
+
+GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
+
+Friction: none
