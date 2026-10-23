@@ -1,0 +1,6 @@
+LaunchAgent pid=3571; TCP listeners=0
+700 /Users/jakedevar/Library/Application Support/dictated/run
+600 /Users/jakedevar/Library/Application Support/dictated/run/api.sock
+600 /Users/jakedevar/Library/Application Support/dictated/api-token
+600 /Users/jakedevar/Library/Application Support/dictated/config.toml
+ 3572  3571 /Users/jakedevar/Library/Application Support/dictated/bin/dictate-parakeet --models /Users/jakedevar/Library/Application Support/dictated/models/parakeet-tdt-0.6b-v2

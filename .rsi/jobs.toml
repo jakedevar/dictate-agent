@@ -16,6 +16,12 @@ target = "mac-parakeet-bench"
 timeout_minutes = 15
 cpu_quota_percent = 100
 
+[recipes.mac-parakeet-helper-bench]
+runner = "just"
+target = "mac-parakeet-helper-bench"
+timeout_minutes = 15
+cpu_quota_percent = 100
+
 # Worker gate: tests + clippy (3 feature lines) + fmt + dictate-cli tree check. CPU only.
 [recipes.check-cpu]
 runner = "just"

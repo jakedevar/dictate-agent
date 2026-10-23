@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import ParakeetProtocol
 
 func words(_ text: String) -> [String] {
     String(text.lowercased().map { c in c.isASCII && (c.isLetter || c.isNumber || c == "'") ? c : " " }).split(whereSeparator: { $0.isWhitespace }).map(String.init)
@@ -25,6 +27,56 @@ struct Clip {
     let wav: URL
     let reference: [String]
 }
+
+// Diagnostic mode isolates the installed helper from server VAD and text rules,
+// keeping exactly the same model and binary used by the live UDS run.
+final class HelperClient {
+    let task = Process()
+    let input = Pipe(), output = Pipe()
+    var id: UInt64 = 0
+    init(root: URL) throws {
+        task.executableURL = root.appendingPathComponent("bin/dictate-parakeet")
+        task.arguments = ["--models", root.appendingPathComponent("models/parakeet-tdt-0.6b-v2").path]
+        task.standardInput = input; task.standardOutput = output; task.standardError = FileHandle.standardError
+        try task.run()
+        guard try line() == Data("{\"ready\":true}\n".utf8) else { throw CocoaError(.fileReadCorruptFile) }
+    }
+    deinit {
+        try? input.fileHandleForWriting.close()
+        if task.isRunning { task.terminate() }
+        task.waitUntilExit()
+    }
+    func line() throws -> Data {
+        var bytes = Data()
+        while bytes.last != 10 {
+            // Darwin FileHandle can fill the requested count before returning;
+            // a line reader must not wait for bytes from the next request.
+            guard let part = try readExactly(output.fileHandleForReading, count: 1), !part.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+            bytes.append(part)
+            guard bytes.count <= 64 * 1024, bytes.last == 10 || bytes.count < 64 * 1024 else { throw CocoaError(.fileReadCorruptFile) }
+        }
+        return bytes
+    }
+    func transcribe(_ clip: Clip) throws -> (String, Double) {
+        let audio = try AVAudioFile(forReading: clip.wav)
+        guard audio.processingFormat.sampleRate == 16000, audio.processingFormat.channelCount == 1, audio.length <= Frame.maxSamples else { throw CocoaError(.fileReadCorruptFile) }
+        let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(audio.length))!
+        try audio.read(into: buffer)
+        let samples = UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength))
+        id += 1
+        let header = Data("{\"id\":\(id),\"sample_rate\":16000}".utf8)
+        func u32(_ n: Int) -> Data { withUnsafeBytes(of: UInt32(n).littleEndian) { Data($0) } }
+        // ARM Mac floats are little-endian, matching the production pipe.
+        let pcm = samples.withMemoryRebound(to: UInt8.self) { Data($0) }
+        let frame = u32(4 + header.count + pcm.count) + u32(header.count) + header + pcm
+        let started = ContinuousClock.now
+        try input.fileHandleForWriting.write(contentsOf: frame)
+        let event = try JSONSerialization.jsonObject(with: line()) as? [String: Any]
+        let elapsed = started.duration(to: .now).components
+        guard (event?["id"] as? UInt64) == id, let text = event?["text"] as? String else { throw CocoaError(.fileReadCorruptFile) }
+        return (text, Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15)
+    }
+}
 func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, Double) {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
@@ -46,10 +98,11 @@ func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, 
 @main struct UdsBench {
     static func main() async throws {
         let args = CommandLine.arguments
-        guard args.count == 2 else { throw CocoaError(.fileReadInvalidFileName) }
+        guard args.count == 2 || (args.count == 3 && args[2] == "--helper") else { throw CocoaError(.fileReadInvalidFileName) }
+        let helperMode = args.count == 3
         let manifest = URL(fileURLWithPath: args[1])
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/dictated")
-        let token = try String(contentsOf: root.appendingPathComponent("api-token"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = helperMode ? "" : try String(contentsOf: root.appendingPathComponent("api-token"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         guard token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { throw CocoaError(.fileReadCorruptFile) }
         let clips = try String(contentsOf: manifest, encoding: .utf8).split(separator: "\n").map { line -> Clip in
             let fields = line.split(separator: "\t").map(String.init)
@@ -59,23 +112,28 @@ func transcribe(_ clip: Clip, socket: String, token: String) throws -> (String, 
         }
         guard clips.count == 33, Set(clips.map(\.id)).count == clips.count else { throw CocoaError(.fileReadCorruptFile) }
         let socket = root.appendingPathComponent("run/api.sock").path
+        let helper = helperMode ? try HelperClient(root: root) : nil
+        func decode(_ clip: Clip) throws -> (String, Double) {
+            if let helper { return try helper.transcribe(clip) }
+            return try transcribe(clip, socket: socket, token: token)
+        }
         for clip in clips {
-            _ = try transcribe(clip, socket: socket, token: token)
+            _ = try decode(clip)
             // Respect the unchanged S33 120 requests/minute limit. This pause
             // is outside curl's measured HTTP time.
-            try await Task.sleep(for: .milliseconds(510))
+            if !helperMode { try await Task.sleep(for: .milliseconds(510)) }
         }
         var times: [String: [Double]] = [:]
         var errors: [String: [Int]] = [:], counts: [String: [Int]] = [:]
         for pass in 0..<3 {
             for clip in clips {
-                let (text, ms) = try transcribe(clip, socket: socket, token: token)
+                let (text, ms) = try decode(clip)
                 let distance = edits(clip.reference, words(text))
                 times[clip.set, default: []].append(ms)
                 errors[clip.set, default: [0, 0, 0]][pass] += distance
                 counts[clip.set, default: [0, 0, 0]][pass] += clip.reference.count
                 try emit(["kind": "clip", "id": clip.id, "set": clip.set, "pass": pass, "text": text, "ms": ms, "edits": distance, "words": clip.reference.count])
-                try await Task.sleep(for: .milliseconds(510))
+                if !helperMode { try await Task.sleep(for: .milliseconds(510)) }
             }
         }
         for set in times.keys.sorted() {

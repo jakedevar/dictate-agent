@@ -1,0 +1,2 @@
+{"type":"transcript","text":"Please schedule the review meeting for Thursday afternoon.","route":"type","timings":{"capture":{"status":"ran","ms":0.680958},"vad":{"status":"ran","ms":96.737167},"stt":{"status":"ran","ms":176.399709},"fmt_rules":{"status":"ran","ms":0.063333},"fmt_llm":{"status":"skipped","reason":"disabled"},"inject":{"status":"skipped","reason":"not_permitted"},"total_ms":274.20620799999995,"audio_ms":3304.3125},"injection":{"status":"delivered"},"word_count":8,"model":"parakeet-tdt-0.6b-v2"}
+latency=0.276289s http=200

@@ -10,7 +10,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "ParakeetProtocol"),
-        .executableTarget(name: "UdsBench"),
+        .executableTarget(name: "UdsBench", dependencies: ["ParakeetProtocol"]),
         .executableTarget(name: "DictateParakeet", dependencies: ["ParakeetProtocol", .product(name: "FluidAudio", package: "FluidAudio")]),
         .testTarget(name: "ParakeetProtocolTests", dependencies: ["ParakeetProtocol"]),
     ]

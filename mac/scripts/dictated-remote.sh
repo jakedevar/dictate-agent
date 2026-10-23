@@ -35,6 +35,12 @@ parakeet-bench)
     mkdir -p "$ROOT/mac/parakeet/results"
     rsync -a "$HOST:$DIR/build/parakeet-results/" "$ROOT/mac/parakeet/results/"
     ;;
+parakeet-helper-bench)
+    remote 'swift build --package-path mac/parakeet -c release --jobs 6'
+    remote 'mkdir -p build/parakeet-results && mac/parakeet/.build/release/UdsBench build/parakeet-fixtures/manifest.tsv --helper > build/parakeet-results/helper.jsonl'
+    mkdir -p "$ROOT/mac/parakeet/results"
+    rsync -a "$HOST:$DIR/build/parakeet-results/" "$ROOT/mac/parakeet/results/"
+    ;;
 install)
     remote 'swift build --package-path mac/parakeet -c release --jobs 6'
     remote 'cargo build --release --workspace --features dictated/metal -j 6'

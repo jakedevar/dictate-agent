@@ -110,3 +110,16 @@ pass totals and nearest-rank p50/p95; normalization matches `devtool wer`
 including server decode/VAD, helper IPC, Rust text chain and response, excluding
 curl process startup. These end-to-end numbers differ from #3944's raw STT.
 Only these public fixture results belong in git.
+
+`just mac-parakeet-helper-bench` runs the same fixtures through a separate
+instance of the installed helper using the production binary protocol. It
+records `results/helper.jsonl`, excluding VAD and Rust formatting, to separate
+provider accuracy from pipeline changes. Its latency includes helper IPC and
+response parsing; it excludes file I/O and frame construction. It has no API
+credential, service, settings or injection side effect. The service's own helper
+stays resident. A helper regression starts with one warm-up per clip and then
+three measured passes, like the API regression.
+
+The LibriSpeech fixtures are public audiobook excerpts, distributed under
+CC BY 4.0 by OpenSLR SLR12 (Panayotov, Chen, Povey and Khudanpur, ICASSP 2015).
+No operator recordings, history or vocabulary are regression inputs.
