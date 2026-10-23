@@ -76,8 +76,12 @@ CONFIG
 </dict></plist>
 PLIST
     mv -f "$plist_stage" "$PLIST"
-    launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "$DOMAIN" "$PLIST"
+    # These job properties are fixed (only the binary/config contents change
+    # on upgrade). Keep the registered job and restart it in place. A
+    # bootout immediately followed by bootstrap races launchd's job teardown.
+    if ! launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+        launchctl bootstrap "$DOMAIN" "$PLIST"
+    fi
     launchctl kickstart -k "$DOMAIN/$LABEL"
     ;;
 uninstall)

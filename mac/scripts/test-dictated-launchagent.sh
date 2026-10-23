@@ -8,9 +8,16 @@ export HOME="$root/home & test"
 mkdir -p "$HOME/Library" "$root/bin"
 export PATH="$root/bin:$PATH"
 export CALLS="$root/calls"
+export LOADED="$root/loaded"
 cat > "$root/bin/launchctl" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CALLS"
+case $1 in
+    print) [[ -f $LOADED ]] ;;
+    bootstrap) touch "$LOADED" ;;
+    bootout) rm -f "$LOADED" ;;
+    kickstart) [[ -f $LOADED ]] ;;
+esac
 STUB
 cat > "$root/bin/dictated" <<'STUB'
 #!/bin/bash
@@ -38,6 +45,8 @@ grep -q 'model pull large-v3-turbo' "$CALLS"
 printf '\n# preserve me\n' >> "$data/config.toml"
 "$HERE/dictated-launchagent.sh" install >/dev/null
 grep -q '# preserve me' "$data/config.toml"
+[[ $(grep -c '^bootstrap ' "$CALLS") == 1 ]]
+! grep -q '^bootout ' "$CALLS"
 "$HERE/dictated-launchagent.sh" restart
 "$HERE/dictated-launchagent.sh" status
 "$HERE/dictated-launchagent.sh" uninstall > /dev/null
