@@ -297,3 +297,22 @@ GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Cod
 - **For operator requests** (GM 10-23): prefer Codex gpt-6.1-sol implementers.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24 00:50Z: hub GPU gate for PlayboyAI (#3975)
+
+- **GM cross-project request** from the Mac PlayboyAI PM (their #672/#531/#677). Hub dictation must publish an authoritative on/off/starting status, and take PlayboyAI's GPU gate before every hub start.
+- **Facts:**
+  - dictated.service is inactive but enabled.
+  - The legacy dictate-agent is NOT running (no process, no PID file).
+  - No dictation process holds the GPU.
+- **Protocol v1 (PM decision):**
+  - Sent to the PlayboyAI PM via satellite message (peer 36af5bee-28ca-46f3-a8fa-23097f417031 → c1b0141e-6dea-47aa-9bb3-73f3799d04a7, msg de296f8b). Silence means accepted.
+  - Status socket `$XDG_RUNTIME_DIR/dictate-agent/gpu-status.sock` (socket-activated).
+  - `dictate-gpu-gate acquire` runs as ExecStartPre and sends `gpu_gate_acquire` to `$XDG_RUNTIME_DIR/playboy/control.sock`.
+  - Timeouts: missing or refused socket → start at once; 90 s with no reply → start anyway; always exit 0.
+  - The legacy run.sh is gated behind DICTATE_ALLOW_LEGACY=1.
+- **Worker:** Codex 2ce2dcb5 on #3975.
+- **Install after it lands:** install the units, daemon-reload, enable the socket. NEVER start dictated. Then report up.
+- **Forward** any PlayboyAI protocol reply to the worker, or to #3975 if it has finished.
+
+Friction: #3831, #3954, #3955, #3963, #3968
