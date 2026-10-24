@@ -331,3 +331,12 @@ Friction: #3831, #3954, #3955, #3963, #3968
 - **Wakes:** `health` only. No workers.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24 01:57Z
+
+- **The PlayboyAI PM corrected the interlock socket.** It is `$XDG_RUNTIME_DIR/playboy/gpu-gate.sock` (JSON lines), not control.sock (length-prefixed, with a stall risk).
+  - Fixed at master 2913d45. The rebuilt `~/.local/bin/dictate-gpu-gate` is installed and they are told.
+  - Their side is in implementation (their worker b584f97f). They send the live SHA when it ships; then nothing is needed from us.
+- **The inbox also carried Rsi-harness VERIFY requests** (Mac #676, #680, #656). They are not this project's: leave them to the Rsi PM.
+
+Friction: #3831, #3954, #3955, #3963, #3968
