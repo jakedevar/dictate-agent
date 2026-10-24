@@ -894,6 +894,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-gpu-gate"
+version = "0.2.0"
+dependencies = [
+ "dictate-proto",
+ "libc",
+ "serde",
+ "serde_json",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "dictate-history"
 version = "0.2.0"
 dependencies = [

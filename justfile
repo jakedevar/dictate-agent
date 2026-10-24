@@ -34,6 +34,7 @@ clippy:
 check-cpu:
     scripts/test-mac-hub.sh
     cargo test --workspace --all-targets
+    scripts/test-gpu-gate-units.sh
     cargo clippy --workspace --all-targets -- -D warnings
     cargo clippy -p dictated --features e2e-real --all-targets -- -D warnings
     cargo clippy -p dictate-context --features x11-tests --all-targets -- -D warnings

@@ -10,7 +10,10 @@ Wants=pipewire.service
 
 [Service]
 Type=simple
+ExecStartPre=%h/.local/bin/dictate-gpu-gate acquire
 ExecStart=%h/.local/bin/dictated
+# 90-second coordination deadline plus model startup headroom.
+TimeoutStartSec=180
 Restart=on-failure
 RestartSec=5
 
@@ -23,6 +26,8 @@ Environment=RUST_LOG=dictated=info,dictate_core=info,dictate_audio=info,dictate_
 # outlive the boot that made it meaningless.
 RuntimeDirectory=dictate-agent
 RuntimeDirectoryMode=0700
+# The read-only status socket shares this directory and outlives dictated.
+RuntimeDirectoryPreserve=yes
 
 # SIGTERM triggers the daemon's own shutdown: it cancels any in-flight session,
 # which is what releases the microphone. Give it room to do that.

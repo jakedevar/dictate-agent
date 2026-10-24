@@ -22,6 +22,7 @@ DESTDIR ?=
 # when you are ready.
 DAEMON_BIN := dictated
 CLI_BIN := dictate
+GPU_BINS := dictate-gpu-gate dictate-gpu-status
 UI_BIN := dictate-ui
 LEGACY_BIN := dictate-agent
 
@@ -75,9 +76,10 @@ install-files:
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DATADIR)/docs"
 	install -m 0755 "$(TARGET_DIR)/$(DAEMON_BIN)" "$(DESTDIR)$(BINDIR)/$(DAEMON_BIN)"
 	install -m 0755 "$(TARGET_DIR)/$(CLI_BIN)" "$(DESTDIR)$(BINDIR)/$(CLI_BIN)"
+	install -m 0755 $(foreach bin,$(GPU_BINS),"$(TARGET_DIR)/$(bin)") "$(DESTDIR)$(BINDIR)/"
 	install -m 0644 config/config.example.toml "$(DESTDIR)$(DATADIR)/config.example.toml"
 	install -m 0644 config/mac-hub-api.toml "$(DESTDIR)$(DATADIR)/mac-hub-api.toml"
-	install -m 0644 docs/protocol.md docs/INSTALL.md docs/MIGRATION-FROM-PYTHON.md docs/MAC-APP.md "$(DESTDIR)$(DATADIR)/docs/"
+	install -m 0644 docs/protocol.md docs/INSTALL.md docs/MIGRATION-FROM-PYTHON.md docs/MAC-APP.md docs/GPU-GATE.md "$(DESTDIR)$(DATADIR)/docs/"
 	@echo "Installed $(DESTDIR)$(BINDIR)/$(DAEMON_BIN) and $(DESTDIR)$(BINDIR)/$(CLI_BIN)"
 	@echo "Next: make install-unit && systemctl --user enable --now dictated"
 
@@ -86,10 +88,16 @@ install-files:
 install-unit:
 	install -d "$(DESTDIR)$(SYSTEMD_USER_DIR)"
 	sed -e 's|^ExecStart=.*|ExecStart=$(call unit_path,$(BINDIR))/$(DAEMON_BIN)|' \
+	    -e 's|^ExecStartPre=.*|ExecStartPre=$(call unit_path,$(BINDIR))/dictate-gpu-gate acquire|' \
 	    -e 's|^Documentation=.*|Documentation=file://$(call unit_path,$(DATADIR))/docs/protocol.md|' \
 	    systemd/dictated.service > "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service.tmp"
 	install -m 0644 "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service.tmp" "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service"
 	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service.tmp"
+	install -m 0644 systemd/dictate-gpu-status.socket "$(DESTDIR)$(SYSTEMD_USER_DIR)/"
+	sed 's|^ExecStart=.*|ExecStart=$(call unit_path,$(BINDIR))/dictate-gpu-status|' \
+	    systemd/dictate-gpu-status@.service > "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status@.service.tmp"
+	install -m 0644 "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status@.service.tmp" "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status@.service"
+	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status@.service.tmp"
 	@echo "Installed $(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service"
 	@echo "Run: systemctl --user daemon-reload && systemctl --user enable --now dictated"
 
@@ -147,16 +155,18 @@ clean:
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/$(DAEMON_BIN)" "$(DESTDIR)$(BINDIR)/$(CLI_BIN)"
+	rm -f $(foreach bin,$(GPU_BINS),"$(DESTDIR)$(BINDIR)/$(bin)")
 	# DATADIR is ~/.local/share/dictate-agent by default, which also holds the
 	# models and history.db: remove only the files install-files put there,
 	# never the directory.
 	rm -f "$(DESTDIR)$(DATADIR)/config.example.toml" "$(DESTDIR)$(DATADIR)/mac-hub-api.toml" \
 	      "$(DESTDIR)$(DATADIR)/docs/protocol.md" "$(DESTDIR)$(DATADIR)/docs/INSTALL.md" \
-	      "$(DESTDIR)$(DATADIR)/docs/MIGRATION-FROM-PYTHON.md" "$(DESTDIR)$(DATADIR)/docs/MAC-APP.md"
+	      "$(DESTDIR)$(DATADIR)/docs/MIGRATION-FROM-PYTHON.md" "$(DESTDIR)$(DATADIR)/docs/MAC-APP.md" "$(DESTDIR)$(DATADIR)/docs/GPU-GATE.md"
 	-rmdir "$(DESTDIR)$(DATADIR)/docs" 2>/dev/null
 
 uninstall-unit:
 	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictated.service"
+	rm -f "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status.socket" "$(DESTDIR)$(SYSTEMD_USER_DIR)/dictate-gpu-status@.service"
 
 uninstall-ui:
 	rm -f "$(DESTDIR)$(BINDIR)/$(UI_BIN)" "$(DESTDIR)$(APPDIR)/dictate-ui.desktop" "$(DESTDIR)$(ICONDIR)/dictate-ui.png"

@@ -43,23 +43,31 @@ dest="$tmp/stage-tar"
 DESTDIR="$dest" "$root/install.sh" >/dev/null
 bin="$dest$HOME/.local/bin"
 need "$bin/dictated"; need "$bin/dictate"
+need "$bin/dictate-gpu-gate"; need "$bin/dictate-gpu-status"
 need "$dest$HOME/.local/share/dictate-agent/config.example.toml"
 need "$dest$HOME/.local/share/dictate-agent/docs/INSTALL.md"
 unit="$dest$HOME/.config/systemd/user/dictated.service"
 need "$unit"
 grep -qx 'ExecStart=%h/.local/bin/dictated' "$unit" || fail "default unit ExecStart is not %h/.local/bin/dictated: $(grep ExecStart "$unit")"
+grep -qx 'ExecStartPre=%h/.local/bin/dictate-gpu-gate acquire' "$unit" || fail "default unit gate path wrong"
+need "$dest$HOME/.config/systemd/user/dictate-gpu-status.socket"
+need "$dest$HOME/.config/systemd/user/dictate-gpu-status@.service"
 "$bin/dictate" --version | grep -q '^dictate ' || fail "installed dictate does not run"
 "$bin/dictated" --check-config --config "$root/share/dictate-agent/config.example.toml" >/dev/null || fail "installed dictated rejects the example config"
 
 # a non-default prefix must repoint the unit
 DESTDIR="$tmp/stage-usr" PREFIX=/usr SYSTEMD_USER_DIR=/usr/lib/systemd/user "$root/install.sh" >/dev/null
 grep -qx 'ExecStart=/usr/bin/dictated' "$tmp/stage-usr/usr/lib/systemd/user/dictated.service" || fail "PREFIX=/usr unit ExecStart wrong"
+grep -qx 'ExecStartPre=/usr/bin/dictate-gpu-gate acquire' "$tmp/stage-usr/usr/lib/systemd/user/dictated.service" || fail "PREFIX=/usr gate path wrong"
+grep -qx 'ExecStart=/usr/bin/dictate-gpu-status' "$tmp/stage-usr/usr/lib/systemd/user/dictate-gpu-status@.service" || fail "PREFIX=/usr status path wrong"
 say "tarball install ok"
 
 # --- 2. the Makefile path --------------------------------------------------
 mk="$tmp/stage-make"
 make -C "$repo" install-files install-unit DESTDIR="$mk" TARGET_DIR="$bindir" >/dev/null
-for f in .local/bin/dictated .local/bin/dictate .local/share/dictate-agent/config.example.toml \
+for f in .local/bin/dictated .local/bin/dictate .local/bin/dictate-gpu-gate .local/bin/dictate-gpu-status \
+    .config/systemd/user/dictate-gpu-status.socket .config/systemd/user/dictate-gpu-status@.service \
+    .local/share/dictate-agent/docs/GPU-GATE.md .local/share/dictate-agent/config.example.toml \
     .local/share/dictate-agent/docs/protocol.md .local/share/dictate-agent/docs/INSTALL.md \
     .local/share/dictate-agent/docs/MIGRATION-FROM-PYTHON.md .config/systemd/user/dictated.service; do
     need "$mk$HOME/$f"
@@ -68,6 +76,8 @@ done
 make -C "$repo" install-files install-unit DESTDIR="$tmp/stage-make-usr" PREFIX=/usr \
     SYSTEMD_USER_DIR=/usr/lib/systemd/user TARGET_DIR="$bindir" >/dev/null
 grep -qx 'ExecStart=/usr/bin/dictated' "$tmp/stage-make-usr/usr/lib/systemd/user/dictated.service" || fail "make PREFIX=/usr unit wrong"
+grep -qx 'ExecStartPre=/usr/bin/dictate-gpu-gate acquire' "$tmp/stage-make-usr/usr/lib/systemd/user/dictated.service" || fail "make PREFIX=/usr gate wrong"
+grep -qx 'ExecStart=/usr/bin/dictate-gpu-status' "$tmp/stage-make-usr/usr/lib/systemd/user/dictate-gpu-status@.service" || fail "make PREFIX=/usr status wrong"
 # The Mac tunnel unit: under DESTDIR it is only written, never enabled.
 make -C "$repo" install-mac-tunnel DESTDIR="$mk" >/dev/null
 tunnel="$mk$HOME/.config/systemd/user/dictate-mac-tunnel.service"
@@ -89,6 +99,10 @@ echo model >"$mk$HOME/.local/share/dictate-agent/models/ggml-x.bin"
 make -C "$repo" uninstall uninstall-unit DESTDIR="$mk" >/dev/null
 [ ! -e "$mk$HOME/.local/bin/dictated" ] || fail "uninstall left dictated"
 [ ! -e "$mk$HOME/.config/systemd/user/dictated.service" ] || fail "uninstall-unit left the unit"
+for file in "$mk$HOME/.local/bin/dictate-gpu-gate" "$mk$HOME/.local/bin/dictate-gpu-status" \
+    "$mk$HOME/.config/systemd/user/dictate-gpu-status.socket" "$mk$HOME/.config/systemd/user/dictate-gpu-status@.service"; do
+    [ ! -e "$file" ] || fail "uninstall left $file"
+done
 make -C "$repo" uninstall-mac-tunnel DESTDIR="$mk" >/dev/null
 [ ! -e "$tunnel" ] || fail "uninstall-mac-tunnel left the unit"
 [ ! -e "$mk$HOME/.local/bin/dictate-mac-tunnel" ] || fail "uninstall-mac-tunnel left the wrapper"
