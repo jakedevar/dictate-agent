@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::wire;
 
 pub const ACQUIRE_OP: &str = "gpu_gate_acquire";
-pub const PLAYBOY_SOCKET: &str = "playboy/control.sock";
+pub const PLAYBOY_SOCKET: &str = "playboy/gpu-gate.sock";
 pub const DEADLINE_MS: u64 = 90_000;
 
 #[derive(Debug, Deserialize)]

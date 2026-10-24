@@ -37,7 +37,7 @@ process without its PID file. `since` uses systemd's active-entry or state-chang
 time; it is a service transition estimate, not a model-ready timestamp. For a
 legacy observation or unavailable timestamp it equals `observed_at`.
 
-The start interlock connects to `$XDG_RUNTIME_DIR/playboy/control.sock` and sends:
+The start interlock connects to `$XDG_RUNTIME_DIR/playboy/gpu-gate.sock` (a dedicated JSON-lines socket agreed with PlayboyAI on 2026-10-24; not `control.sock`, which is length-prefixed with a Hello handshake) and sends:
 
 ```json
 {"op":"gpu_gate_acquire","v":1,"holder":"dictation","intent_id":"<fresh v4 UUID>","deadline_ms":90000}
@@ -56,7 +56,7 @@ Overrides (environment takes priority over config):
 
 | Setting | Default | Environment |
 | --- | --- | --- |
-| socket | `$XDG_RUNTIME_DIR/playboy/control.sock` | `DICTATE_GPU_GATE_SOCKET` |
+| socket | `$XDG_RUNTIME_DIR/playboy/gpu-gate.sock` | `DICTATE_GPU_GATE_SOCKET` |
 | op | `gpu_gate_acquire` | `DICTATE_GPU_GATE_OP` |
 | deadline_ms | `90000` | `DICTATE_GPU_GATE_DEADLINE_MS` |
 
