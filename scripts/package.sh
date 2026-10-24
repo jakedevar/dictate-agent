@@ -46,7 +46,7 @@ version="$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' "$re
 arch="$(uname -m)"
 name="dictate-agent-$version-linux-$arch-$variant"
 
-for b in dictated dictate; do
+for b in dictated dictate dictate-gpu-gate dictate-gpu-status; do
     [ -x "$bindir/$b" ] || fail "$bindir/$b is missing or not executable (build it first)"
 done
 [ -z "$ui" ] || [ -x "$ui" ] || fail "--ui $ui is not an executable file"
@@ -77,10 +77,10 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 root="$stage/$name"
 install -d "$root/bin" "$root/systemd" "$root/share/dictate-agent/docs" "$out"
-install -m 0755 "$bindir/dictated" "$bindir/dictate" "$root/bin/"
-install -m 0644 "$repo/systemd/dictated.service" "$root/systemd/"
+install -m 0755 "$bindir/dictated" "$bindir/dictate" "$bindir/dictate-gpu-gate" "$bindir/dictate-gpu-status" "$root/bin/"
+install -m 0644 "$repo/systemd/dictated.service" "$repo/systemd/dictate-gpu-status.socket" "$repo/systemd/dictate-gpu-status@.service" "$root/systemd/"
 install -m 0644 "$repo/config/config.example.toml" "$root/share/dictate-agent/"
-install -m 0644 "$repo/docs/protocol.md" "$repo/docs/INSTALL.md" "$repo/docs/MIGRATION-FROM-PYTHON.md" \
+install -m 0644 "$repo/docs/protocol.md" "$repo/docs/INSTALL.md" "$repo/docs/MIGRATION-FROM-PYTHON.md" "$repo/docs/GPU-GATE.md" \
     "$root/share/dictate-agent/docs/"
 install -m 0755 "$repo/packaging/install.sh" "$root/install.sh"
 install -m 0644 "$repo/LICENSE" "$repo/THIRD_PARTY.md" "$root/"

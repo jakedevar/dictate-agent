@@ -31,10 +31,12 @@ unit_path() {
 
 if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$DESTDIR$BINDIR/dictated" "$DESTDIR$BINDIR/dictate" "$DESTDIR$BINDIR/dictate-ui" \
+        "$DESTDIR$BINDIR/dictate-gpu-gate" "$DESTDIR$BINDIR/dictate-gpu-status" \
         "$DESTDIR$SYSTEMD_USER_DIR/dictated.service" \
+        "$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status.socket" "$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status@.service" \
         "$DESTDIR$APPDIR/dictate-ui.desktop" "$DESTDIR$ICONDIR/dictate-ui.png" \
         "$DESTDIR$DATADIR/config.example.toml" "$DESTDIR$DATADIR/docs/protocol.md" \
-        "$DESTDIR$DATADIR/docs/INSTALL.md" "$DESTDIR$DATADIR/docs/MIGRATION-FROM-PYTHON.md"
+        "$DESTDIR$DATADIR/docs/INSTALL.md" "$DESTDIR$DATADIR/docs/MIGRATION-FROM-PYTHON.md" "$DESTDIR$DATADIR/docs/GPU-GATE.md"
     rmdir "$DESTDIR$DATADIR/docs" 2>/dev/null || true
     echo "Removed. Your config, models and history were not touched."
     exit 0
@@ -47,15 +49,22 @@ fi
 
 install -d "$DESTDIR$BINDIR" "$DESTDIR$DATADIR/docs" "$DESTDIR$SYSTEMD_USER_DIR"
 install -m 0755 "$here/bin/dictated" "$here/bin/dictate" "$DESTDIR$BINDIR/"
+install -m 0755 "$here/bin/dictate-gpu-gate" "$here/bin/dictate-gpu-status" "$DESTDIR$BINDIR/"
 install -m 0644 "$here/share/dictate-agent/config.example.toml" "$DESTDIR$DATADIR/"
 install -m 0644 "$here"/share/dictate-agent/docs/*.md "$DESTDIR$DATADIR/docs/"
 
 tmp="$DESTDIR$SYSTEMD_USER_DIR/dictated.service.tmp"
 sed -e "s|^ExecStart=.*|ExecStart=$(unit_path "$BINDIR")/dictated|" \
+    -e "s|^ExecStartPre=.*|ExecStartPre=$(unit_path "$BINDIR")/dictate-gpu-gate acquire|" \
     -e "s|^Documentation=.*|Documentation=file://$(unit_path "$DATADIR")/docs/protocol.md|" \
     "$here/systemd/dictated.service" >"$tmp"
 install -m 0644 "$tmp" "$DESTDIR$SYSTEMD_USER_DIR/dictated.service"
 rm -f "$tmp"
+install -m 0644 "$here/systemd/dictate-gpu-status.socket" "$DESTDIR$SYSTEMD_USER_DIR/"
+sed "s|^ExecStart=.*|ExecStart=$(unit_path "$BINDIR")/dictate-gpu-status|" \
+    "$here/systemd/dictate-gpu-status@.service" >"$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status@.service.tmp"
+install -m 0644 "$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status@.service.tmp" "$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status@.service"
+rm -f "$DESTDIR$SYSTEMD_USER_DIR/dictate-gpu-status@.service.tmp"
 
 if [ -x "$here/bin/dictate-ui" ]; then
     install -d "$DESTDIR$APPDIR" "$DESTDIR$ICONDIR"

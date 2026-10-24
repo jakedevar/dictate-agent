@@ -1,0 +1,14 @@
+[Unit]
+Description=Hub dictation GPU status (read-only, never starts dictated)
+
+[Socket]
+ListenStream=%t/dictate-agent/gpu-status.sock
+SocketMode=0600
+DirectoryMode=0700
+Accept=yes
+# dictated shares this directory; stopping it must not unlink our listener.
+RemoveOnStop=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

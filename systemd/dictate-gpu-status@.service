@@ -1,0 +1,12 @@
+[Unit]
+Description=Hub dictation GPU status observation
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/dictate-gpu-status
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=5
+RuntimeMaxSec=5
+NoNewPrivileges=yes
