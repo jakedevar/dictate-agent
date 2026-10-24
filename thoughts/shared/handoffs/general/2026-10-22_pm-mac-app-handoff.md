@@ -276,3 +276,24 @@ Friction: #3831, #3954, #3955, #3963, #3968
 - **Wakes:** `health`, `local-try`. No workers.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24 00:30Z: Mac-local dictation ACCEPTED, idle
+
+- **Operator Option+N on the Mac at 00:28Z:** DictateHub `endpoint=local`, 2.1 s clip in 248 ms and 2.6 s clip in 162 ms. Mac dictated: Parakeet, stt 134 ms. The hub dictated was off.
+- **Closed:** #3943, #3944, #3945, #3957, #3961, #3962. Reported up DONE.
+- **Live on the Mac:**
+  - /Applications/DictateHub.app (Auto mode, pid 50260)
+  - LaunchAgent `dev.jakedevar.dictated`: Parakeet v2, socket `~/Library/Application Support/dictated/run/api.sock`
+  - restart: `mac/scripts/dictated-launchagent.sh restart`
+  - logs: `~/Library/Logs/dictated/`
+- **Hub dictated.service:** stays stopped (operator request). Do not start it.
+- **Open, low priority, not started:**
+  - #3963: UDS hardening
+  - #3831: mic tap test
+  - backlog: #1497, #1498, #1502
+- **Wakes:** `health` only. No workers.
+
+GM THROTTLE (verbatim): at most 2 live Sonnet high workers; no Opus workers; Codex for reviews only (gpt-6-luna); the hub is shared and warm, so prefer idling over low-value work. PM at most ~10 turns/h with batched `when` wakes. Brief: keep the work in Issues; decide non-gate questions yourself; escalate only real gates (main/releases, money, credentials, deleting user data) through the GM; report up with AgentReportUp only at milestones; rotate at the threshold your catalog states (write the handoff, commit it last, report its path and stop).
+- **For operator requests** (GM 10-23): prefer Codex gpt-6.1-sol implementers.
+
+Friction: #3831, #3954, #3955, #3963, #3968
