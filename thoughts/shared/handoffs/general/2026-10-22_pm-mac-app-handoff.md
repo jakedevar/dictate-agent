@@ -316,3 +316,18 @@ Friction: #3831, #3954, #3955, #3963, #3968
 - **Forward** any PlayboyAI protocol reply to the worker, or to #3975 if it has finished.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24 01:22Z: hub GPU gate installed (#3975 closed), idle
+
+- **Merged** at master ba6543d (check-cpu 1185/0).
+- **Installed:**
+  - `~/.local/bin/dictate-gpu-{gate,status}`
+  - `~/.config/systemd/user/dictate-gpu-status.{socket,@.service}`, with the socket enabled and active
+  - the drop-in `dictated.service.d/95-gpu-gate.conf`: ExecStartPre gate, TimeoutStartSec=180, RuntimeDirectoryPreserve
+- **The installed dictated.service was NOT replaced.** It carries local overrides, `Restart=always` plus `90-dictate-cutover.conf`, and the drop-in keeps them.
+- **Live status read:** state=off. dictated is still inactive (operator request).
+- **PlayboyAI PM:** sent the proposal and the live notice via satellite (msg ids de296f8b plus the live one). They still have to implement `gpu_gate_acquire` on their control.sock. Forward any protocol change request to a new Issue; the overrides live in docs/GPU-GATE.md.
+- **Worker 2ce2dcb5** pushed its branch and opened PR #1 against the brief. GitHub marks it merged because master now contains it. Consider a kaizen if it recurs.
+- **Wakes:** `health` only. No workers.
+
+Friction: #3831, #3954, #3955, #3963, #3968
