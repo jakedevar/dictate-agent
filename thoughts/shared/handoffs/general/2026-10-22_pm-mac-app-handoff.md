@@ -340,3 +340,12 @@ Friction: #3831, #3954, #3955, #3963, #3968
 - **The inbox also carried Rsi-harness VERIFY requests** (Mac #676, #680, #656). They are not this project's: leave them to the Rsi PM.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-24: GPU gate complete on both sides
+
+- **PlayboyAI #672 is live** (their main, 053f3f1). Both sockets exist (0600), and the status reads off.
+- **#3975 noted** and stays closed. Hub dictated stays OFF.
+- Nothing pending. Idle on the `health` wake.
+  - Its ignore list now also includes the Codex seven-day window: projected to run out about 06:18Z 10-24, resets 10-30. Avoid new Codex work until the reset unless it is urgent.
+
+Friction: #3831, #3954, #3955, #3963, #3968
