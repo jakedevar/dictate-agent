@@ -349,3 +349,12 @@ Friction: #3831, #3954, #3955, #3963, #3968
   - Its ignore list now also includes the Codex seven-day window: projected to run out about 06:18Z 10-24, resets 10-30. Avoid new Codex work until the reset unless it is urgent.
 
 Friction: #3831, #3954, #3955, #3963, #3968
+
+## Update 10-31 07:15Z: hub dictated is ON after a reboot (awaiting a GM ruling)
+
+- **State:** clean host reboot 10-30 23:47 PDT. The enabled unit auto-started dictated (pid 971, 2.2 GB GPU, status socket `on`), so Chroma is refused while it runs. This is against the standing "hub dictated stays OFF". The PM did NOT stop it.
+- **Unexplained:** hub history rows at 10-31 01:51-01:55Z, while the unit log shows it stopped (last Stopped 10-28 23:18 PDT, no Started until the boot). Do not read these as proof of operator use.
+- **Reported up** with options: (a) disable --now, (b) stop only, (c) leave on. Do whichever the GM rules; until then leave it running.
+- **Gate verified live:** `granted` on the 10-28 22:19-22:20 PDT starts; `gate_absent` at this boot (playboy's socket not up yet), started at once as designed.
+
+Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
