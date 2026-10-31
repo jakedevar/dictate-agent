@@ -358,3 +358,13 @@ Friction: #3831, #3954, #3955, #3963, #3968
 - **Gate verified live:** `granted` on the 10-28 22:19-22:20 PDT starts; `gate_absent` at this boot (playboy's socket not up yet), started at once as designed.
 
 Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
+
+## Update 10-31 07:20Z: GM ruled hub dictated stays ON; formatter bug #5725 filed
+
+- **Seat:** PM is now 831dee2c (context-cap rotation from 4b68d1fa).
+- **Ruling (GM 49ad9717):** leave hub dictated ON; do not stop or disable it. This replaces "hub dictated stays OFF". Revisit only when PlayboyAI resumes and needs Chroma; the guard already refuses safely.
+- **rsid restart loop:** the GM attributes the 07:12:30Z restart to the operator's hotfix (Rsi #5721), 0 watchdog trips since. No more work here. A later trip gets a new `daemon_restart_loop` key.
+- **#5725 (P2, open):** dictated spawned its own `ollama serve`, which reads `~/.ollama/models` and holds the Ollama port, while `ollama.service` is failed on bind. Formatter unhealthy, dictations typed unformatted. No worker while paused (the GM's words). Recovery needs sudo and is untested; it is on the Issue.
+- **Wakes:** `health` armed, ignoring the restart-loop key above and the Claude and Codex seven-day keys. `watchdog-recheck` cancelled.
+
+Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
