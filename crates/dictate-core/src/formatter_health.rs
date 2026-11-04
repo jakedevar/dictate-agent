@@ -22,6 +22,7 @@ use dictate_proto::{FormatterHealth, FormatterStatus};
 use tracing::{info, warn};
 
 use crate::ollama;
+use crate::ollama_host::OllamaHost;
 use crate::ports::{Notice, StatusNotifier};
 
 struct State {
@@ -35,6 +36,8 @@ pub struct HealthTracker {
     model: String,
     state: Mutex<State>,
     notifier: Option<Arc<dyn StatusNotifier>>,
+    /// Where else the model might be installed, and the endpoint asked (#5725).
+    stores: Option<(OllamaHost, String)>,
 }
 
 impl HealthTracker {
@@ -53,7 +56,17 @@ impl HealthTracker {
                 detail: None,
             }),
             notifier: None,
+            stores: None,
         }
+    }
+
+    /// When the model is missing from the server at `endpoint`, look in the
+    /// other Ollama model stores of `host` first: a model that exists in a
+    /// store the server does not read must not be answered with `ollama pull`.
+    #[must_use]
+    pub fn with_model_stores(mut self, host: OllamaHost, endpoint: impl Into<String>) -> Self {
+        self.stores = Some((host, endpoint.into()));
+        self
     }
 
     /// Raise a desktop notification through `notifier` on the first failure.
@@ -124,13 +137,20 @@ impl HealthTracker {
         if !self.enabled {
             return;
         }
-        let detail = format!(
-            "model '{}' is not installed in Ollama (installed: {}); \
-             `ollama pull {}` or list an installed model in [format.llm] models",
-            self.model,
-            ollama::describe_installed(installed),
-            self.model
-        );
+        let elsewhere = self
+            .stores
+            .as_ref()
+            .and_then(|(host, endpoint)| host.wrong_store_explanation(&self.model, endpoint));
+        let detail = match elsewhere {
+            Some(why) => why,
+            None => format!(
+                "model '{}' is not installed in Ollama (installed: {}); \
+                 `ollama pull {}` or list an installed model in [format.llm] models",
+                self.model,
+                ollama::describe_installed(&ollama::chat_models(installed)),
+                self.model
+            ),
+        };
         self.transition_bad(FormatterHealth::ModelMissing, detail);
     }
 
@@ -279,6 +299,24 @@ mod tests {
         assert!(detail.contains("gemma4:12b, qwen3.6:27b"), "{detail}");
         assert!(detail.contains("ollama pull qwen3:14b"), "{detail}");
         assert_eq!(errors(&n), 1);
+    }
+
+    #[test]
+    fn a_model_in_another_store_is_not_answered_with_a_pull() {
+        use crate::ollama_host::testing::Scratch;
+        use crate::ollama_host::UnitScope;
+        let dir = Scratch::new("health");
+        dir.manifest("sys-store", "registry.ollama.ai/library/qwen3/14b");
+        dir.write("units/ollama.service", "[Service]\n");
+        let host = OllamaHost::default()
+            .with_unit_dir(dir.path("units"), UnitScope::System)
+            .with_store_root(dir.path("sys-store"));
+        let t = HealthTracker::new(true, "qwen3:14b").with_model_stores(host, "http://127.0.0.1:1");
+        t.observe_model_missing(&[]);
+        let detail = t.status().detail.unwrap();
+        assert!(!detail.contains("ollama pull"), "{detail}");
+        assert!(detail.contains("sudo systemctl restart ollama"), "{detail}");
+        assert!(detail.contains("sys-store"), "{detail}");
     }
 
     #[test]

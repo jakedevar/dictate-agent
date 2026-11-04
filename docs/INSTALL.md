@@ -94,6 +94,28 @@ older daemons) do not overwrite it: `dictated` reads the Python-era shape and
 warns once per unknown key. The model download is the only network access the
 daemon makes by itself, and only when you run `dictate model pull`.
 
+### How to launch it
+
+`systemctl --user start dictated` is the only supported way to start the
+daemon (the i3 autostart should run exactly that). A bare `dictated` typed in a
+terminal still runs, but it is in your login scope rather than the unit, may
+read no config file (the built-in defaults), and warns about both at startup and
+in `dictate doctor` (the `launch` check). Isolated test daemons name their own
+`DICTATE_SOCKET` and are not warned.
+
+### Ollama
+
+`dictated` never starts an Ollama server beside a managed one. If the endpoint
+(`[format.llm] host`, default `127.0.0.1:11434`) answers, it only checks the
+configured models against `/api/tags`. If it does not answer and an
+`ollama.service` unit exists (system or user), it reports the server as down,
+fails open (dictations are typed unformatted) and retries on its own; start the
+unit (`sudo systemctl start ollama`). It runs `ollama serve` itself only when no
+unit exists and nothing holds the port. `dictate doctor` does not advise
+`ollama pull` for a model that exists in another Ollama store (the unit
+drop-in's `OLLAMA_MODELS`, `/var/lib/ollama`, `/usr/share/ollama`,
+`~/.ollama`); it names the server reading the wrong store instead.
+
 Bind `dictate toggle` and `dictate cancel` in your window manager, or enable
 `[hotkey]` in the config for evdev hold-to-talk.
 

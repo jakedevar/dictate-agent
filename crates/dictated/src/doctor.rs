@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::ollama;
+use dictate_core::ollama_host::OllamaHost;
 use dictate_core::ports::BoxFuture;
 use dictate_core::Pipeline;
 use dictate_proto::{DiagnosticCheck, DiagnosticsReport, FormatterHealth};
@@ -54,6 +55,12 @@ pub struct Doctor {
     /// What became of the network API at startup; `None` for a doctor whose
     /// daemon never starts one (tests, and the API check then reads `[api]`).
     api_status: Option<ApiStatusCell>,
+    /// Units and model stores to consult before advising `ollama pull` (#5725).
+    /// Empty by default so tests never read the machine; the daemon passes
+    /// [`OllamaHost::system`].
+    ollama_host: OllamaHost,
+    /// Problems with how this daemon was launched, found at startup (#5725).
+    launch_notes: Vec<String>,
 }
 
 impl Doctor {
@@ -71,7 +78,24 @@ impl Doctor {
             runtime,
             pipeline,
             api_status: None,
+            ollama_host: OllamaHost::default(),
+            launch_notes: Vec::new(),
         }
+    }
+
+    /// Consult `host`'s Ollama units and model stores in fix lines.
+    #[must_use]
+    pub fn with_ollama_host(mut self, host: OllamaHost) -> Self {
+        self.ollama_host = host;
+        self
+    }
+
+    /// Report these startup findings (a daemon launched outside systemd, a
+    /// config that is not the user's) as the `launch` check.
+    #[must_use]
+    pub fn with_launch_notes(mut self, notes: Vec<String>) -> Self {
+        self.launch_notes = notes;
+        self
     }
 
     /// Report on the network API through `status`, which the daemon fills in
@@ -111,6 +135,7 @@ impl Doctor {
         checks.push(network_api);
         checks.push(mac_tunnel);
         checks.push(self.check_legacy_pid());
+        checks.extend(self.check_launch());
         DiagnosticsReport { checks }
     }
 
@@ -350,13 +375,22 @@ impl Doctor {
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                format!("`ollama pull {model}`, or put an installed model in format.llm.models"),
+                self.ollama_host
+                    .wrong_store_explanation(&model, &self.config.format.llm.host)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "`ollama pull {model}`, or put an installed model in format.llm.models"
+                        )
+                    }),
             ),
             FormatterHealth::Unreachable => DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!("{detail} — every dictation is typed unformatted"),
-                "start Ollama (`ollama serve`) or set format.llm.enabled = false",
+                format!(
+                    "{} or set format.llm.enabled = false",
+                    self.start_ollama_advice()
+                ),
             ),
             FormatterHealth::Failing | FormatterHealth::Unknown(_) => DiagnosticCheck::fail(
                 ID,
@@ -421,7 +455,7 @@ impl Doctor {
         } else {
             let why = llm_probe.error.clone().unwrap_or_default();
             let detail = format!("no answer from {}: {why}", llm.host);
-            let fix = "start it with `ollama serve` (or `systemctl --user start ollama`)";
+            let fix = self.start_ollama_advice();
             if llm.enabled {
                 DiagnosticCheck::fail("ollama", "Ollama server", detail, fix)
             } else {
@@ -429,9 +463,9 @@ impl Doctor {
             }
         });
 
-        checks.push(check_formatter_ladder(llm, &llm_probe));
+        checks.push(check_formatter_ladder(llm, &llm_probe, &self.ollama_host));
 
-        checks.push(check_local_ladder(local, &local_probe));
+        checks.push(check_local_ladder(local, &local_probe, &self.ollama_host));
         checks
     }
 
@@ -613,6 +647,33 @@ impl Doctor {
                 "start dictated from within your desktop session",
             )
         }
+    }
+
+    /// How to bring Ollama up. With a managed `ollama.service` the answer is
+    /// that unit, never a hand-run `ollama serve`: a second server reads a
+    /// different model store and takes the port from the unit (#5725).
+    fn start_ollama_advice(&self) -> String {
+        match self.ollama_host.managed_unit() {
+            Some(unit) => format!(
+                "start the Ollama service with `{}` (dictated never starts its own server while ollama.service exists)",
+                unit.start_command()
+            ),
+            None => "start it with `ollama serve` (or `systemctl --user start ollama`)".to_string(),
+        }
+    }
+
+    /// Findings about how this daemon was launched (#5725). Present only when
+    /// there is something to say.
+    fn check_launch(&self) -> Option<DiagnosticCheck> {
+        if self.launch_notes.is_empty() {
+            return None;
+        }
+        Some(DiagnosticCheck::warn(
+            "launch",
+            "How dictated was started",
+            self.launch_notes.join("; "),
+            "stop this daemon and run `systemctl --user start dictated`, the only supported launch",
+        ))
     }
 
     fn check_legacy_pid(&self) -> DiagnosticCheck {
@@ -1007,6 +1068,39 @@ fn process_name(pid: u32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The fix for models the server does not list. When one of `models` exists
+/// in another Ollama model store, the cause is a server reading the wrong
+/// store, and a pull would duplicate gigabytes there (#5725): name the cause.
+/// Otherwise `fallback` (the pull advice) applies.
+fn missing_model_fix(
+    host: &OllamaHost,
+    endpoint: &str,
+    models: &[&str],
+    fallback: impl FnOnce() -> String,
+) -> String {
+    models
+        .iter()
+        .find_map(|m| host.wrong_store_explanation(m, endpoint))
+        .unwrap_or_else(fallback)
+}
+
+/// The installed models worth offering as ladder entries: chat models only,
+/// the same set `dictate status` shows (an embedding model cannot format).
+fn installed_chat_models(probe: &ollama::OllamaProbe) -> String {
+    ollama::describe_installed(&ollama::chat_models(&probe.models))
+}
+
+/// `, or put one of these in {key}: {installed}` — or nothing when no chat
+/// model is installed, so the fix never suggests an embedding model.
+fn use_installed_clause(probe: &ollama::OllamaProbe, key: &str) -> String {
+    let chat = ollama::chat_models(&probe.models);
+    if chat.is_empty() {
+        String::new()
+    } else {
+        format!(", or put one of these in {key}: {}", chat.join(", "))
+    }
+}
+
 /// The `grammar_model` check (the id predates S21 and is kept for `doctor
 /// --json` consumers): walk the `[format.llm]` ladder the way the formatter
 /// resolves it. Ok when the preferred (head) model is installed, Warn when a
@@ -1014,6 +1108,7 @@ fn process_name(pid: u32) -> Option<String> {
 fn check_formatter_ladder(
     llm: &dictate_fmt::llm::LlmConfig,
     probe: &ollama::OllamaProbe,
+    host: &OllamaHost,
 ) -> DiagnosticCheck {
     const ID: &str = "grammar_model";
     const TITLE: &str = "Formatter model";
@@ -1036,6 +1131,7 @@ fn check_formatter_ladder(
             "list at least one installed model in format.llm.models",
         );
     };
+    let wanted: Vec<&str> = llm.models.iter().map(String::as_str).collect();
     match llm.models.iter().position(|m| probe.has_model(m)) {
         Some(0) => DiagnosticCheck::ok(ID, TITLE, format!("'{head}' is installed")),
         Some(i) => DiagnosticCheck::warn(
@@ -1045,19 +1141,24 @@ fn check_formatter_ladder(
                 "preferred '{head}' is not installed; falling back to '{}' (ladder: {ladder})",
                 llm.models[i]
             ),
-            format!("`ollama pull {head}` to use the preferred model"),
+            missing_model_fix(host, &llm.host, &wanted[..i], || {
+                format!("`ollama pull {head}` to use the preferred model")
+            }),
         ),
         None => {
-            let installed = ollama::describe_installed(&probe.models);
+            let installed = installed_chat_models(probe);
             DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!(
                     "no model in the ladder ({ladder}) is installed (installed: {installed}) — the formatting pass fails open on every dictation"
                 ),
-                format!(
-                    "`ollama pull {head}`, or put one of these in format.llm.models: {installed}"
-                ),
+                missing_model_fix(host, &llm.host, &wanted, || {
+                    format!(
+                        "`ollama pull {head}`{}",
+                        use_installed_clause(probe, "format.llm.models")
+                    )
+                }),
             )
         }
     }
@@ -1069,6 +1170,7 @@ fn check_formatter_ladder(
 fn check_local_ladder(
     local: &dictate_core::config::LocalConfig,
     probe: &ollama::OllamaProbe,
+    host: &OllamaHost,
 ) -> DiagnosticCheck {
     const ID: &str = "local_model";
     const TITLE: &str = "Local-route model";
@@ -1103,19 +1205,24 @@ fn check_local_ladder(
                 "preferred '{head}' is not installed; the `local` route falls back to '{}' (ladder: {chain})",
                 ladder[i]
             ),
-            format!("`ollama pull {head}` to use the preferred model"),
+            missing_model_fix(host, &local.host, &ladder[..i], || {
+                format!("`ollama pull {head}` to use the preferred model")
+            }),
         ),
         None => {
-            let installed = ollama::describe_installed(&probe.models);
+            let installed = installed_chat_models(probe);
             DiagnosticCheck::fail(
                 ID,
                 TITLE,
                 format!(
                     "no model in the ladder ({chain}) is installed (installed: {installed}); the `local` route will fail"
                 ),
-                format!(
-                    "`ollama pull {head}`, or put one of these in local.model / local.models: {installed}"
-                ),
+                missing_model_fix(host, &local.host, &ladder, || {
+                    format!(
+                        "`ollama pull {head}`{}",
+                        use_installed_clause(probe, "local.model / local.models")
+                    )
+                }),
             )
         }
     }

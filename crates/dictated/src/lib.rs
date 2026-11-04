@@ -26,6 +26,7 @@
 
 pub mod config_rpc;
 pub mod doctor;
+pub mod launch;
 pub mod network;
 pub mod paths;
 pub mod server;
@@ -33,10 +34,12 @@ pub mod signals;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use dictate_core::config::{Config, ConfigReport};
 use dictate_core::engine::DaemonIdentity;
+use dictate_core::ollama_host::OllamaHost;
 use dictate_core::ports::{
     AudioSource, DesktopNotifier, DisabledAudioSource, HostAudioSource, HostEarcons, HostInjector,
     PlayerctlMedia, StatusNotifier, TextInjector, WhisperStt,
@@ -317,7 +320,8 @@ pub fn build_pipeline(config: &Config) -> Result<(Arc<Pipeline>, Arc<Mutex<Histo
     // through the same notifier the pipeline uses.
     let formatter = Arc::new(
         dictate_core::llm_formatter::LlmFormatterPort::new(config.format.llm.clone())
-            .with_notifier(notifier.clone() as Arc<dyn StatusNotifier>),
+            .with_notifier(notifier.clone() as Arc<dyn StatusNotifier>)
+            .with_model_stores(OllamaHost::system()),
     );
     let injector = Arc::new(HostInjector::new(&config.output));
     let injection_available = injector.is_available();
@@ -415,6 +419,21 @@ pub async fn run(config: Config) -> Result<()> {
 ///
 /// As [`run`].
 pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()> {
+    run_with_launch(config, report, Vec::new()).await
+}
+
+/// As [`run_with_report`], also carrying what startup found wrong with how
+/// the daemon was launched ([`launch::launch_notes`]) so `dictate doctor`
+/// shows it too.
+///
+/// # Errors
+///
+/// As [`run`].
+pub async fn run_with_launch(
+    config: Config,
+    report: ConfigReport,
+    launch_notes: Vec<String>,
+) -> Result<()> {
     let runtime = RuntimePaths::from_env();
     runtime.ensure_dirs()?;
 
@@ -439,7 +458,20 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
         let (host, port) = dictate_fmt::llm::parse_host_port(&config.format.llm.host);
         let formatter = pipeline.formatter.clone();
         tokio::spawn(async move {
-            dictate_core::local_executor::ensure_ollama_running(&host, port, 10).await;
+            // #5725: never become the owner of the endpoint when a managed
+            // Ollama exists; start `ollama serve` only with no unit at all.
+            let outcome = dictate_core::local_executor::ensure_ollama(
+                &host,
+                port,
+                Duration::from_secs(10),
+                &OllamaHost::system(),
+                &dictate_core::local_executor::ProcessSpawner,
+            )
+            .await;
+            outcome.log(&host, port);
+            // Verifies the configured `format.llm.models` against `/api/tags`
+            // and names the missing ones (the resolver logs them; status and
+            // doctor show them). Fails open.
             formatter.probe().await;
         });
     }
@@ -466,7 +498,9 @@ pub async fn run_with_report(config: Config, report: ConfigReport) -> Result<()>
     let api_status = network::ApiStatusCell::default();
     let doctor = Arc::new(
         doctor::Doctor::new(config.clone(), report, runtime.clone(), pipeline.clone())
-            .with_api_status(api_status.clone()),
+            .with_api_status(api_status.clone())
+            .with_ollama_host(OllamaHost::system())
+            .with_launch_notes(launch_notes),
     );
     let mut daemon = Daemon::start_with(
         pipeline,

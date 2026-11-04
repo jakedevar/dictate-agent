@@ -45,6 +45,15 @@ fn main() -> Result<()> {
         );
     }
 
+    // #5725: say so loudly when this is not the supported launch (a bare
+    // `dictated` beside an inactive dictated.service, or not the user's
+    // config). Only a warning: isolated test daemons start this way on purpose.
+    let launch_notes =
+        dictated::launch::launch_notes(&dictated::launch::LaunchFacts::detect_here(&report));
+    for note in &launch_notes {
+        tracing::warn!("launch: {note}");
+    }
+
     // Built here rather than via `#[tokio::main]` so the worker count is a
     // deliberate choice: the daemon is almost entirely idle, and its blocking
     // work (clipboard paste, SQLite, whisper) goes to the blocking pool
@@ -52,7 +61,7 @@ fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(dictated::run_with_report(config, report))
+        .block_on(dictated::run_with_launch(config, report, launch_notes))
 }
 
 fn init_tracing() -> Result<()> {
@@ -103,6 +112,11 @@ OPTIONS:
                             new one from its next request on
     --version               Print the version
     --help                  Print this help
+
+LAUNCH:
+    Run it with `systemctl --user start dictated`; that is the only supported
+    launch. A bare `dictated` from a terminal works but warns at startup (and in
+    `dictate doctor`) when that unit exists or no config file is read.
 
 CONTROL:
     dictate toggle | cancel | status | tail     (unix socket)
