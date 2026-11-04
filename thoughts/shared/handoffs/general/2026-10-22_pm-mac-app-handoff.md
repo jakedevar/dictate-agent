@@ -392,3 +392,10 @@ Friction: #6023, #6024, #6025
 - **PM rule:** do nothing on the hub, and run no GPU tests until the GM sends its one-line notice.
 - **#5725 stays Open** until a login or reboot after the install proves acceptance.
 - **Parked:** health wake only.
+
+## Update 11-04 05:55Z: #5725 installed on the hub by the GM
+
+- **Installed at master 20b5156.** The new journal line reads "dictated did not start it". :11434 is owned by ollama.service, gemma4:e4b is ok and transcribe works. GPU tests are allowed again.
+- **Rollback backups** are in /tmp/gm/*.pre-5725. /tmp is tmpfs, so they are lost at reboot; the GM is told.
+- **Acceptance still open:** on any wake, compare `uptime -s` with 2026-11-04 05:55Z (boot was 2026-10-30 23:48 PDT). After a reboot or login, check read-only that `ss -ltnp` shows :11434 owned by ollama.service, that no ollama process is a child of dictated, and that `dictate status` reads format ok. Then close #5725 with that evidence.
+- **Cold warm-up timeout** (4000 ms, non-fatal) is noted on #5725 only.
