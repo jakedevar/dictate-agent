@@ -385,3 +385,10 @@ Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
 - **Parked:** health wake only. No other Dictate work is released.
 
 Friction: #6023, #6024, #6025
+
+## Update 11-04: GM owns the #5725 install
+
+- **Install deferred** (GM 99c3f03b). The GM installs after the PlayboyAI --story smoke, or at 06:25Z at the latest: backup, pull, `just install`, restart, doctor and status. Rollback is the saved copy.
+- **PM rule:** do nothing on the hub, and run no GPU tests until the GM sends its one-line notice.
+- **#5725 stays Open** until a login or reboot after the install proves acceptance.
+- **Parked:** health wake only.
