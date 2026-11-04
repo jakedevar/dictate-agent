@@ -375,3 +375,13 @@ Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
 - **Worker:** 8906712f (Claude sonnet-5-5 high), launch op 07c011b9, from origin/rolling. Brief: invariant (a)-(d), hermetic CPU-only tests, never :11434, no install or restart.
 - **Next:** pre-merge review via review_of on Claude opus-5-5 high, not Codex (its window is nearly dry). Then enqueue with derive_filters. Report ONCE to the GM: landed SHA, review verdict and the install steps. The GM decides the install. Keep #5725 open until a login or reboot after install proves acceptance; reopen it if publication closes it.
 - **Not released:** no other Dictate work. Park again after the report.
+
+## Update 11-04 05:2xZ: #5725 prevention on master 8f25133 (not installed)
+
+- **Landed:** worker 8906712f commit 861a93a, merged by the PM onto 458ea88 as 8f25133 and pushed to master. The worker's sandbox was cut from a stale base (aca8a9b) because this repo has no `rolling` branch, which is harness kaizen RSI #6023. Next time, pass `sandbox_source {commit: <master tip>}`.
+- **Gates (all on 8f25133):** check-cpu job 13cff1e3 and mac-dictated-test job 3d795db8 (mac-mini) passed. Review #6022 (2fb0af3c, Opus): approve, no BLOCKER. Follow-ups #6024 and #6025, not released.
+- **Not installed:** the GM decides. Steps: `just install`, then `systemctl --user restart dictated`, then `dictate doctor` and `dictate status`.
+- **#5725 stays Open** until a login or reboot after install proves acceptance.
+- **Parked:** health wake only. No other Dictate work is released.
+
+Friction: #6023, #6024, #6025
