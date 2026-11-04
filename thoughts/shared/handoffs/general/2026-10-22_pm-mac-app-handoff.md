@@ -368,3 +368,10 @@ Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
 - **Wakes:** `health` armed, ignoring the restart-loop key above and the Claude and Codex seven-day keys. `watchdog-recheck` cancelled.
 
 Friction: #3831, #3954, #3955, #3963, #3968, #3985, #4010
+
+## Update 11-04 04:5xZ: GM 99c3f03b released #5725 only (prevention)
+
+- **Recovery:** the GM already recovered the hub. ollama.service owns :11434 and dictated.service runs with format gemma4:e4b ok. The cause was a stray tty-started `dictated` that spawned `ollama serve`.
+- **Worker:** 8906712f (Claude sonnet-5-5 high), launch op 07c011b9, from origin/rolling. Brief: invariant (a)-(d), hermetic CPU-only tests, never :11434, no install or restart.
+- **Next:** pre-merge review via review_of on Claude opus-5-5 high, not Codex (its window is nearly dry). Then enqueue with derive_filters. Report ONCE to the GM: landed SHA, review verdict and the install steps. The GM decides the install. Keep #5725 open until a login or reboot after install proves acceptance; reopen it if publication closes it.
+- **Not released:** no other Dictate work. Park again after the report.
