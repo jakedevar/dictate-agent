@@ -598,3 +598,161 @@ async fn the_dictionary_check_reports_a_missing_disabled_and_open_dictionary() {
     assert_eq!(report.check("dictionary").unwrap().status, CheckStatus::Ok);
     h.stop().await;
 }
+
+// ---- #5725: a model in another store, a managed unit, how dictated started ----
+
+use dictate_core::ollama_host::{OllamaHost, UnitScope};
+
+/// A scratch directory holding a fake `ollama.service` and a model store.
+struct Machine(std::path::PathBuf);
+
+impl Machine {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("doctor-5725-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    /// A system `ollama.service` whose drop-in points OLLAMA_MODELS at a store
+    /// that holds `models` (e.g. `gemma4/e4b`).
+    fn with_unit_and_store(self, models: &[&str]) -> (Self, OllamaHost) {
+        let store = self.0.join("var-lib-ollama/models");
+        for m in models {
+            let manifest = store.join("manifests/registry.ollama.ai/library").join(m);
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            std::fs::write(manifest, "{}").unwrap();
+        }
+        let dropin = self.0.join("units/ollama.service.d");
+        std::fs::create_dir_all(&dropin).unwrap();
+        std::fs::write(
+            dropin.join("10-models.conf"),
+            format!(
+                "[Service]\nEnvironment=\"OLLAMA_MODELS={}\"\n",
+                store.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(self.0.join("units/ollama.service"), "[Service]\n").unwrap();
+        let host = OllamaHost::default().with_unit_dir(self.0.join("units"), UnitScope::System);
+        (self, host)
+    }
+}
+
+impl Drop for Machine {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn diagnose_with_host(
+    ollama: &str,
+    ladder: &[&str],
+    host: OllamaHost,
+    notes: Vec<String>,
+) -> DiagnosticsReport {
+    let h = Harness::with(Setup {
+        ollama_host: host,
+        launch_notes: notes,
+        ..Setup::default().with_doctor(
+            config_with_ladder(&std::env::temp_dir(), ollama, ladder),
+            ConfigReport::default(),
+        )
+    })
+    .await;
+    let report = diagnose(&h, true).await;
+    h.stop().await;
+    report
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_in_another_store_is_never_answered_with_a_pull() {
+    // The #5725 state: the server on the port holds only an embedding model,
+    // while the chat models sit in the store the unit's drop-in names.
+    let ollama = fake_ollama(&["nomic-embed-text:latest"]).await;
+    let (_machine, host) = Machine::new("store").with_unit_and_store(&["gemma4/e4b", "gemma4/12b"]);
+    let report = diagnose_with_host(&ollama, &["gemma4:e4b", "gemma4:12b"], host, vec![]).await;
+
+    let model = report.check("grammar_model").unwrap();
+    assert_eq!(model.status, CheckStatus::Fail, "{model:?}");
+    let fix = model.fix.as_deref().unwrap();
+    assert!(!fix.contains("ollama pull"), "{fix}");
+    assert!(fix.contains("sudo systemctl restart ollama"), "{fix}");
+    assert!(fix.contains("different store"), "{fix}");
+    assert!(
+        !fix.contains("nomic-embed-text") && !model.detail.contains("nomic-embed-text"),
+        "an embedding model is not an installed formatter model: {} / {fix}",
+        model.detail
+    );
+    assert!(
+        model.detail.contains("installed: none installed"),
+        "{}",
+        model.detail
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fallback_rung_found_in_another_store_also_skips_the_pull() {
+    let ollama = fake_ollama(&["gemma4:12b"]).await;
+    let (_machine, host) = Machine::new("rung").with_unit_and_store(&["gemma4/e4b"]);
+    let report = diagnose_with_host(&ollama, &["gemma4:e4b", "gemma4:12b"], host, vec![]).await;
+    let model = report.check("grammar_model").unwrap();
+    assert_eq!(model.status, CheckStatus::Warn, "{model:?}");
+    assert!(!model.fix.as_deref().unwrap().contains("ollama pull"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_in_no_store_still_gets_the_pull_advice_without_an_embedding_model() {
+    let ollama = fake_ollama(&["nomic-embed-text:latest"]).await;
+    let report = diagnose_with_host(&ollama, &["gemma4:e4b"], OllamaHost::default(), vec![]).await;
+    let model = report.check("grammar_model").unwrap();
+    assert_eq!(model.status, CheckStatus::Fail);
+    let fix = model.fix.as_deref().unwrap();
+    assert!(fix.contains("ollama pull gemma4:e4b"), "{fix}");
+    assert!(!fix.contains("nomic-embed-text"), "{fix}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_local_route_check_also_names_the_wrong_store() {
+    let ollama = fake_ollama(&["nomic-embed-text:latest"]).await;
+    let (_machine, host) = Machine::new("local").with_unit_and_store(&["local-model/1b"]);
+    let report = diagnose_with_host(&ollama, &["gemma4:12b"], host, vec![]).await;
+    let local = report.check("local_model").unwrap();
+    assert_eq!(local.status, CheckStatus::Fail, "{local:?}");
+    assert!(!local.fix.as_deref().unwrap().contains("ollama pull"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_down_ollama_with_a_unit_names_the_unit_not_ollama_serve() {
+    let (_machine, host) = Machine::new("down").with_unit_and_store(&[]);
+    // Port 1 on loopback is never an Ollama server.
+    let report = diagnose_with_host("http://127.0.0.1:1", &["gemma4:12b"], host, vec![]).await;
+    let ollama = report.check("ollama").unwrap();
+    assert_eq!(ollama.status, CheckStatus::Fail);
+    let fix = ollama.fix.as_deref().unwrap();
+    assert!(fix.contains("sudo systemctl start ollama"), "{fix}");
+    assert!(!fix.contains("`ollama serve`"), "{fix}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stray_launch_is_a_warning_with_a_fix_and_a_normal_launch_adds_no_check() {
+    let ollama = fake_ollama(&["gemma4:12b"]).await;
+    let quiet = diagnose_with_host(&ollama, &["gemma4:12b"], OllamaHost::default(), vec![]).await;
+    assert!(quiet.check("launch").is_none());
+
+    let report = diagnose_with_host(
+        &ollama,
+        &["gemma4:12b"],
+        OllamaHost::default(),
+        vec!["dictated was started outside systemd".into()],
+    )
+    .await;
+    let launch = report.check("launch").expect("launch check");
+    assert_eq!(launch.status, CheckStatus::Warn);
+    assert!(launch.detail.contains("outside systemd"));
+    assert!(launch
+        .fix
+        .as_deref()
+        .unwrap()
+        .contains("systemctl --user start dictated"));
+}

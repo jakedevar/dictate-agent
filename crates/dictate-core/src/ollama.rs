@@ -138,6 +138,27 @@ pub fn is_unreachable_error(message: &str) -> bool {
         || m.contains("connect error")
 }
 
+/// Whether a model name is an embedding model, which cannot format text.
+///
+/// The name-only twin of `dictate_fmt::llm::InstalledModel::is_embedding`
+/// (which also sees the model family): `dictate status` and `dictate doctor`
+/// must agree on what "installed" means, and `nomic-embed-text` is not a
+/// formatter model (#5725).
+#[must_use]
+pub fn is_embedding_name(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("embed")
+}
+
+/// The models in `installed` that could format text: embedding models removed.
+#[must_use]
+pub fn chat_models(installed: &[String]) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|m| !is_embedding_name(m))
+        .cloned()
+        .collect()
+}
+
 /// A short, human list of installed alternatives for a "model missing" message.
 #[must_use]
 pub fn describe_installed(models: &[String]) -> String {
@@ -201,6 +222,24 @@ mod tests {
         ));
         assert!(is_unreachable_error("Connection refused (os error 111)"));
         assert!(!is_unreachable_error("model 'x' not found"));
+    }
+
+    #[test]
+    fn an_embedding_model_is_not_an_installed_alternative() {
+        let all: Vec<String> = [
+            "nomic-embed-text:latest",
+            "qwen3-embedding:0.6b",
+            "gemma4:12b",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(chat_models(&all), vec!["gemma4:12b".to_string()]);
+        assert_eq!(
+            describe_installed(&chat_models(&all[..2])),
+            "none installed",
+            "an embedding-only server has no formatter model, in status and in doctor alike"
+        );
     }
 
     #[test]

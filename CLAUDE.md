@@ -239,6 +239,17 @@ put the token on an argv (curl `-K -` from stdin, not `-H "Bearer $(…)"`). Tok
 `thoughts/shared/plans/2026-10-07-s33-network-api-security-design.md`.
 Tests bind ephemeral 127.0.0.1 ports only.
 
+### Launch and Ollama (#5725)
+
+`systemctl --user start dictated` is the only supported launch; a bare
+`dictated` warns at startup and in `dictate doctor` (`launch`). `dictated`
+never spawns `ollama serve` when the endpoint answers, is bound, or an
+`ollama.service` unit exists (system or user): it reports the server down, fails
+open and names the unit (`sudo systemctl start ollama`). It spawns only with no
+unit and a free local port. `OllamaHost` (`dictate-core/src/ollama_host.rs`)
+holds the unit-dir and model-store seams tests inject; doctor never says
+`ollama pull` for a model found in another store.
+
 ### Headless transcription, doctor, real-hardware checks (S03)
 
 ```bash

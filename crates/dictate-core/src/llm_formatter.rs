@@ -45,6 +45,15 @@ impl LlmFormatterPort {
         self
     }
 
+    /// Look in the other Ollama model stores of `host` before advising a pull
+    /// for a model the server lacks (#5725).
+    #[must_use]
+    pub fn with_model_stores(mut self, host: crate::ollama_host::OllamaHost) -> Self {
+        let endpoint = self.llm.config().host.clone();
+        self.health = self.health.with_model_stores(host, endpoint);
+        self
+    }
+
     /// The wrapped formatter.
     #[must_use]
     pub fn inner(&self) -> &Arc<LlmFormatter> {

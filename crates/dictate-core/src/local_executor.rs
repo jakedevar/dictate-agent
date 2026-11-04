@@ -2,6 +2,8 @@ use anyhow::Result;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+use crate::ollama_host::{ManagedUnit, OllamaHost};
+
 use dictate_fmt::llm::{BackendError, HttpBackend, LlmHealth, ModelResolver};
 use dictate_fmt::text_cleanup::scrub_returned_text;
 
@@ -150,42 +152,178 @@ pub async fn is_ollama_running(host: &str, port: u16) -> bool {
     )
 }
 
-/// Start Ollama if not running. Poll until ready or timeout.
-/// Port of local_executor.py:124-168
-pub async fn ensure_ollama_running(host: &str, port: u16, max_wait_s: u64) -> bool {
-    if let Err(why) = crate::ollama::client_at(host, port) {
-        // Starting a server would not make a malformed host reachable.
-        warn!("not starting Ollama: host {why}");
-        return false;
+/// Starts `ollama serve`. A trait so tests can prove a server was (not) started
+/// without running a real one.
+pub trait OllamaSpawner: Send + Sync {
+    /// Start the server and return without waiting for it.
+    ///
+    /// # Errors
+    ///
+    /// When the process cannot be started.
+    fn spawn_serve(&self) -> std::io::Result<()>;
+}
+
+/// The production spawner: a bare `ollama serve` on the user's environment.
+pub struct ProcessSpawner;
+
+impl OllamaSpawner for ProcessSpawner {
+    fn spawn_serve(&self) -> std::io::Result<()> {
+        tokio::process::Command::new("ollama")
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_| ())
     }
-    if is_ollama_running(host, port).await {
-        return true;
+}
+
+/// What [`ensure_ollama`] found, and did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OllamaStartup {
+    /// The configured host is not a usable URL; nothing was tried.
+    InvalidHost(String),
+    /// A server answers at the endpoint. dictated did not start it.
+    Up,
+    /// Something holds the port but does not answer `/api/tags`.
+    Busy,
+    /// Nothing answers, and a managed `ollama.service` exists: it is down.
+    /// dictated does not start a second server beside it.
+    ManagedDown(ManagedUnit),
+    /// Nothing answers and the host is another machine; a local server would
+    /// not help.
+    NotLocal,
+    /// No unit and nothing on the port: dictated started `ollama serve`, and
+    /// it answers.
+    Spawned,
+    /// As [`Spawned`](Self::Spawned), but it did not answer in time.
+    SpawnedNotReady,
+    /// `ollama serve` could not be started.
+    SpawnFailed(String),
+}
+
+impl OllamaStartup {
+    /// Whether dictated started a server.
+    #[must_use]
+    pub fn spawned(&self) -> bool {
+        matches!(self, Self::Spawned | Self::SpawnedNotReady)
     }
 
-    info!("Starting Ollama server...");
-    match tokio::process::Command::new("ollama")
-        .arg("serve")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => {
-            let deadline = Instant::now() + Duration::from_secs(max_wait_s);
-            while Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                if is_ollama_running(host, port).await {
-                    info!("Ollama server ready");
-                    return true;
-                }
-            }
-            warn!("Ollama server did not start within {}s", max_wait_s);
-            false
-        }
-        Err(e) => {
-            error!("Failed to start Ollama: {}", e);
-            false
+    /// Say what happened, once, at the right level.
+    pub fn log(&self, host: &str, port: u16) {
+        match self {
+            Self::InvalidHost(why) => warn!("not starting Ollama: host {why}"),
+            Self::Up => info!("Ollama answers at {host}:{port}; dictated did not start it"),
+            Self::Busy => warn!(
+                "something holds {host}:{port} but does not answer Ollama's /api/tags; \
+                 dictated will not start a second server (the formatter fails open until it answers)"
+            ),
+            Self::ManagedDown(unit) => warn!(
+                "Ollama is down at {host}:{port} and {} exists, so dictated will not start its own \
+                 server (it would read a different model store). Run `{}`; the formatter fails open \
+                 and retries on its own",
+                unit.path.display(),
+                unit.start_command()
+            ),
+            Self::NotLocal => warn!(
+                "Ollama does not answer at {host}:{port}, which is not this machine; not starting a local server"
+            ),
+            Self::Spawned => info!("Ollama server started by dictated and ready"),
+            Self::SpawnedNotReady => warn!("Ollama server started by dictated did not answer in time"),
+            Self::SpawnFailed(e) => error!("Failed to start Ollama: {e}"),
         }
     }
+}
+
+/// Make sure an Ollama answers at `host:port`, starting one only when nothing
+/// else could (#5725).
+///
+/// dictated never owns the endpoint when a managed Ollama exists: if the port
+/// answers, or is bound, or an `ollama.service` unit exists, it waits up to
+/// `wait` for the endpoint to answer and otherwise reports it and fails open.
+/// Only with no unit, nothing on the port and a local host does it run
+/// `ollama serve` through `spawner`.
+pub async fn ensure_ollama(
+    host: &str,
+    port: u16,
+    wait: Duration,
+    ollama_host: &OllamaHost,
+    spawner: &dyn OllamaSpawner,
+) -> OllamaStartup {
+    let endpoint_host = match crate::ollama::client_at(host, port) {
+        Ok(client) => client
+            .url()
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string(),
+        Err(why) => return OllamaStartup::InvalidHost(why),
+    };
+    if is_ollama_running(host, port).await {
+        return OllamaStartup::Up;
+    }
+    let unit = ollama_host.managed_unit();
+    let bound = endpoint_bound(&endpoint_host, port).await;
+
+    if unit.is_some() || bound {
+        // Not ours to start. The unit may simply be a moment behind us at boot.
+        if wait_until_answering(host, port, wait).await {
+            return OllamaStartup::Up;
+        }
+        return match unit {
+            Some(unit) if !bound => OllamaStartup::ManagedDown(unit),
+            _ => OllamaStartup::Busy,
+        };
+    }
+    if !is_loopback(&endpoint_host) {
+        return OllamaStartup::NotLocal;
+    }
+
+    info!("Starting Ollama server (no ollama.service exists and nothing holds the port)...");
+    match spawner.spawn_serve() {
+        Ok(()) => {
+            if wait_until_answering(host, port, wait).await {
+                OllamaStartup::Spawned
+            } else {
+                OllamaStartup::SpawnedNotReady
+            }
+        }
+        Err(e) => OllamaStartup::SpawnFailed(e.to_string()),
+    }
+}
+
+/// Poll `/api/tags` until it answers or `wait` passes (one try when zero).
+async fn wait_until_answering(host: &str, port: u16, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if is_ollama_running(host, port).await {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        tokio::time::sleep(left.min(Duration::from_millis(500))).await;
+    }
+}
+
+/// Whether something accepts a TCP connection at the endpoint.
+async fn endpoint_bound(host: &str, port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            tokio::net::TcpStream::connect((host, port))
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Classify Ollama errors into user-friendly messages.
@@ -270,5 +408,240 @@ mod tests {
     fn test_classify_error_generic() {
         let err = anyhow::anyhow!("timeout after 120s");
         assert_eq!(classify_error(&err), "timeout after 120s");
+    }
+}
+
+/// #5725: dictated must never become the owner of the Ollama endpoint when a
+/// managed Ollama exists. Every test uses a private ephemeral port and a
+/// private unit directory; none touches 11434 or a real unit.
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use crate::ollama_host::testing::Scratch;
+    use crate::ollama_host::UnitScope;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[derive(Default)]
+    struct CountingSpawner {
+        calls: AtomicUsize,
+        fail: bool,
+    }
+
+    impl OllamaSpawner for CountingSpawner {
+        fn spawn_serve(&self) -> std::io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err(std::io::Error::other("no such program"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl CountingSpawner {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A port nothing listens on right now.
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// A fake Ollama answering `/api/tags` with `models` on `listener`.
+    fn serve_fake(listener: tokio::net::TcpListener, models: &'static [&'static str]) {
+        let body = serde_json::json!({
+            "models": models.iter().map(|m| serde_json::json!({
+                "name": m, "modified_at": "2026-01-01T00:00:00Z", "size": 1,
+            })).collect::<Vec<_>>()
+        })
+        .to_string();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+    }
+
+    async fn fake_ollama(models: &'static [&'static str]) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        serve_fake(listener, models);
+        port
+    }
+
+    fn host_with_unit(dir: &Scratch) -> OllamaHost {
+        dir.write(
+            "units/ollama.service",
+            "[Service]\nExecStart=/usr/bin/ollama serve\n",
+        );
+        OllamaHost::default().with_unit_dir(dir.path("units"), UnitScope::System)
+    }
+
+    const LOCAL: &str = "http://127.0.0.1";
+
+    #[tokio::test]
+    async fn a_managed_unit_that_is_down_is_reported_and_no_server_is_spawned() {
+        let dir = Scratch::new("managed");
+        let spawner = CountingSpawner::default();
+        let outcome = ensure_ollama(
+            LOCAL,
+            free_port(),
+            Duration::ZERO,
+            &host_with_unit(&dir),
+            &spawner,
+        )
+        .await;
+        match outcome {
+            OllamaStartup::ManagedDown(unit) => {
+                assert_eq!(unit.start_command(), "sudo systemctl start ollama");
+            }
+            other => panic!("expected ManagedDown, got {other:?}"),
+        }
+        assert_eq!(spawner.calls(), 0, "dictated must not start ollama serve");
+    }
+
+    #[tokio::test]
+    async fn a_drop_in_directory_alone_still_counts_as_a_managed_unit() {
+        let dir = Scratch::new("dropin-only");
+        dir.write("units/ollama.service.d/10-models.conf", "[Service]\n");
+        let host = OllamaHost::default().with_unit_dir(dir.path("units"), UnitScope::System);
+        let spawner = CountingSpawner::default();
+        let outcome = ensure_ollama(LOCAL, free_port(), Duration::ZERO, &host, &spawner).await;
+        assert!(
+            matches!(outcome, OllamaStartup::ManagedDown(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(spawner.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_answering_endpoint_is_never_replaced_whether_or_not_a_unit_exists() {
+        let dir = Scratch::new("answering");
+        let port = fake_ollama(&["gemma4:e4b"]).await;
+        for host in [OllamaHost::default(), host_with_unit(&dir)] {
+            let spawner = CountingSpawner::default();
+            let outcome = ensure_ollama(LOCAL, port, Duration::ZERO, &host, &spawner).await;
+            assert_eq!(outcome, OllamaStartup::Up);
+            assert_eq!(spawner.calls(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bound_port_that_does_not_answer_is_left_alone() {
+        // Accepts and hangs up: bound, but not an Ollama.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+        let spawner = CountingSpawner::default();
+        let outcome = ensure_ollama(
+            LOCAL,
+            port,
+            Duration::ZERO,
+            &OllamaHost::default(),
+            &spawner,
+        )
+        .await;
+        assert_eq!(outcome, OllamaStartup::Busy);
+        assert_eq!(spawner.calls(), 0, "no unit, but the port is taken");
+    }
+
+    #[tokio::test]
+    async fn a_unit_that_comes_up_during_the_wait_is_used_not_replaced() {
+        let dir = Scratch::new("late");
+        let port = free_port();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .unwrap();
+            serve_fake(listener, &["gemma4:e4b"]);
+        });
+        let spawner = CountingSpawner::default();
+        let outcome = ensure_ollama(
+            LOCAL,
+            port,
+            Duration::from_secs(5),
+            &host_with_unit(&dir),
+            &spawner,
+        )
+        .await;
+        assert_eq!(outcome, OllamaStartup::Up);
+        assert_eq!(spawner.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn with_no_unit_and_no_server_the_old_behaviour_is_kept() {
+        let spawner = Arc::new(CountingSpawner::default());
+        let outcome = ensure_ollama(
+            LOCAL,
+            free_port(),
+            Duration::ZERO,
+            &OllamaHost::default(),
+            spawner.as_ref(),
+        )
+        .await;
+        assert_eq!(outcome, OllamaStartup::SpawnedNotReady);
+        assert!(outcome.spawned());
+        assert_eq!(spawner.calls(), 1);
+
+        let failing = CountingSpawner {
+            fail: true,
+            ..CountingSpawner::default()
+        };
+        let outcome = ensure_ollama(
+            LOCAL,
+            free_port(),
+            Duration::ZERO,
+            &OllamaHost::default(),
+            &failing,
+        )
+        .await;
+        assert!(
+            matches!(outcome, OllamaStartup::SpawnFailed(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(failing.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_host_spawns_nothing() {
+        let spawner = CountingSpawner::default();
+        let outcome = ensure_ollama(
+            "not a url",
+            1,
+            Duration::ZERO,
+            &OllamaHost::default(),
+            &spawner,
+        )
+        .await;
+        assert!(matches!(outcome, OllamaStartup::InvalidHost(_)));
+        assert_eq!(spawner.calls(), 0);
+    }
+
+    #[test]
+    fn only_a_local_host_can_be_served_by_a_local_spawn() {
+        for local in ["127.0.0.1", "localhost", "LOCALHOST", "::1", "127.0.0.2"] {
+            assert!(is_loopback(local), "{local}");
+        }
+        for remote in ["192.0.2.1", "ollama.example.com", "0.0.0.0", ""] {
+            assert!(!is_loopback(remote), "{remote}");
+        }
     }
 }

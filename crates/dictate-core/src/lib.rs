@@ -38,6 +38,7 @@ pub mod local_executor;
 #[cfg(target_os = "linux")]
 pub mod notify;
 pub mod ollama;
+pub mod ollama_host;
 pub mod pipeline;
 pub mod ports;
 pub mod router;

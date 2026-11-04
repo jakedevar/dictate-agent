@@ -80,6 +80,11 @@ pub struct Setup {
     pub audio_source: Option<Arc<dyn AudioSource>>,
     /// When set, the daemon gets a real `Doctor` built from this config.
     pub doctor: Option<(Config, ConfigReport)>,
+    /// Units and model stores the doctor consults (empty by default, so a
+    /// test never reads this machine's ollama.service or stores).
+    pub ollama_host: dictate_core::ollama_host::OllamaHost,
+    /// Startup findings about how the daemon was launched, for the doctor.
+    pub launch_notes: Vec<String>,
     /// When set, the daemon serves `get_config`/`set_config` for this file,
     /// running whatever it resolves to at start (defaults if it is missing).
     pub config_file: Option<PathBuf>,
@@ -116,6 +121,8 @@ impl Default for Setup {
             earcons: Arc::new(NullEarcons),
             audio_source: None,
             doctor: None,
+            ollama_host: Default::default(),
+            launch_notes: Vec::new(),
             config_file: None,
             local: dictate_core::config::LocalConfig::default(),
             no_dictionary: false,
@@ -267,13 +274,13 @@ impl Harness {
         });
 
         let runtime = RuntimePaths::under(&dir);
+        let (ollama_host, launch_notes) = (setup.ollama_host, setup.launch_notes);
         let diagnostics = setup.doctor.map(|(config, report)| {
-            Arc::new(dictated::doctor::Doctor::new(
-                config,
-                report,
-                runtime.clone(),
-                pipeline.clone(),
-            )) as Arc<dyn dictated::server::DiagnosticsProvider>
+            Arc::new(
+                dictated::doctor::Doctor::new(config, report, runtime.clone(), pipeline.clone())
+                    .with_ollama_host(ollama_host)
+                    .with_launch_notes(launch_notes),
+            ) as Arc<dyn dictated::server::DiagnosticsProvider>
         });
         let config = setup.config_file.map(|path| {
             let (running, _) = dictate_core::config::load_config_with_report(Some(&path))
